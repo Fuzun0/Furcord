@@ -81,7 +81,8 @@ object UpdateManager {
      * Installer tamamlandıktan sonra kullanıcı yeni sürümü açabilir.
      */
     fun launchInstallerAndExit(file: File) {
-        ProcessBuilder("cmd", "/c", "start", "", "\"\"", "\"${file.absolutePath}\"")
+        ProcessBuilder(file.absolutePath)
+            .inheritIO()
             .start()
         kotlin.system.exitProcess(0)
     }
