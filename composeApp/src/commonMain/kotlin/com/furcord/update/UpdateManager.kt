@@ -81,17 +81,13 @@ object UpdateManager {
      * Installer tamamlandıktan sonra kullanıcı yeni sürümü açabilir.
      */
     fun launchInstallerAndExit(file: File) {
-        // Bat dosyası: uygulama tamamen kapandıktan sonra installer'ı başlatır.
-        // exitProcess hemen child process'i öldüreceğinden gecikme şart.
-        val bat = File(System.getProperty("java.io.tmpdir"), "furcord-update-launch.bat")
-        bat.writeText(
-            "@echo off\r\n" +
-            "ping -n 3 127.0.0.1 > nul\r\n" +
-            "start \"\" \"${file.absolutePath}\"\r\n" +
-            "del \"%~f0\"\r\n"
-        )
-        ProcessBuilder("cmd", "/c", "start", "", "/min", bat.absolutePath)
-            .start()
+        // PowerShell Start-Process: UAC yükseltmesini doğru halleder,
+        // 2 sn bekleyip JVM tamamen kapandıktan sonra installer'ı başlatır.
+        val psPath = file.absolutePath.replace("'", "''")
+        ProcessBuilder(
+            "powershell", "-NonInteractive", "-WindowStyle", "Hidden", "-Command",
+            "Start-Sleep -Seconds 2; Start-Process -FilePath '$psPath'"
+        ).start()
         kotlin.system.exitProcess(0)
     }
 }
