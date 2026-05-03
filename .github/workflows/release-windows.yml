@@ -1,0 +1,71 @@
+name: Release Windows + Update Firestore
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+  id-token: write
+
+jobs:
+  build-release:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v3
+
+      - name: Derive version from tag
+        id: ver
+        shell: pwsh
+        run: |
+          $tag = "${{ github.ref_name }}"
+          $ver = if ($tag.StartsWith("v")) { $tag.Substring(1) } else { $tag }
+          "version=$ver" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
+      - name: Build EXE
+        shell: pwsh
+        run: ./gradlew.bat :composeApp:packageExe -PappVersion=${{ steps.ver.outputs.version }}
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          files: composeApp/build/compose/binaries/main/exe/Furcord-${{ steps.ver.outputs.version }}.exe
+          generate_release_notes: true
+
+      - name: Authenticate GCP (service account)
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Setup gcloud
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Get access token
+        id: token
+        shell: pwsh
+        run: |
+          $tok = gcloud auth print-access-token
+          "value=$tok" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
+      - name: Update Firestore appVersion
+        shell: pwsh
+        env:
+          FIREBASE_PROJECT_ID: furcord-13ab3
+          APP_VERSION: ${{ steps.ver.outputs.version }}
+          DOWNLOAD_URL: https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/Furcord-${{ steps.ver.outputs.version }}.exe
+          RELEASE_NOTES: GitHub release ${{ github.ref_name }}
+          FIRESTORE_BEARER_TOKEN: ${{ steps.token.outputs.value }}
+        run: node scripts/update-firestore-version.js

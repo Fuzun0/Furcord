@@ -1,0 +1,16 @@
+[versions]
+kotlin                  = "2.1.0"
+compose-multiplatform   = "1.7.0"
+lifecycle               = "2.8.3"
+coroutines              = "1.9.0"
+
+[libraries]
+androidx-lifecycle-viewmodel        = { module = "org.jetbrains.androidx.lifecycle:lifecycle-viewmodel",         version.ref = "lifecycle" }
+androidx-lifecycle-viewmodel-compose= { module = "org.jetbrains.androidx.lifecycle:lifecycle-viewmodel-compose", version.ref = "lifecycle" }
+androidx-lifecycle-runtime-compose  = { module = "org.jetbrains.androidx.lifecycle:lifecycle-runtime-compose",   version.ref = "lifecycle" }
+kotlinx-coroutines-swing            = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-swing", version.ref = "coroutines" }
+
+[plugins]
+kotlinMultiplatform  = { id = "org.jetbrains.kotlin.multiplatform",  version.ref = "kotlin" }
+composeMultiplatform = { id = "org.jetbrains.compose",               version.ref = "compose-multiplatform" }
+composeCompiler      = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }

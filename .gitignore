@@ -1,0 +1,32 @@
+# Gradle/Kotlin
+.gradle/
+**/build/
+.kotlinc/
+.kotlin/
+
+# IDE
+.idea/
+.vscode/
+
+# Local machine files
+local.properties
+*.iml
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Runtime/cache/log
+*.log
+*.pyc
+__pycache__/
+
+# Node
+node_modules/
+
+# Python/local data
+*.db
+
+# Web build/env
+web/dist/
+web/.env

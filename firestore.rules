@@ -1,0 +1,53 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ── Kullanıcı profilleri ──────────────────────────────────────────────────
+    match /users/{userId} {
+      allow read:  if request.auth != null;
+      allow write: if request.auth != null && request.auth.uid == userId;
+    }
+
+    // ── Sunucular ────────────────────────────────────────────────────────────
+    match /servers/{serverId} {
+      allow read:  if request.auth != null;
+      allow write: if request.auth != null;
+
+      match /{subCollection}/{docId} {
+        allow read:  if request.auth != null;
+        allow write: if request.auth != null;
+      }
+    }
+
+    // ── DM kanalları ─────────────────────────────────────────────────────────
+    match /dmChannels/{channelId} {
+      allow read:  if request.auth != null;
+      allow write: if request.auth != null;
+
+      match /messages/{msgId} {
+        allow read:  if request.auth != null;
+        allow write: if request.auth != null;
+      }
+    }
+
+    // ── Arkadaşlık istekleri ─────────────────────────────────────────────────
+    match /friendRequests/{reqId} {
+      allow read:  if request.auth != null;
+      allow write: if request.auth != null;
+    }
+
+    // ── Uygulama konfigürasyonu (güncelleme sistemi) ─────────────────────────
+    // Authenticated kullanıcılar okuyabilir; sadece Firebase Console'dan yazılır.
+    match /config/{document} {
+      allow read:  if request.auth != null;
+      allow write: if false;
+    }
+
+    // ── Ses relay sinyalizasyonu ─────────────────────────────────────────────
+    match /voiceRelay/{channelId}/{document=**} {
+      allow read:  if request.auth != null;
+      allow write: if request.auth != null;
+    }
+
+  }
+}
