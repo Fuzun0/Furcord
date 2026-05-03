@@ -81,10 +81,16 @@ object UpdateManager {
      * Installer tamamlandıktan sonra kullanıcı yeni sürümü açabilir.
      */
     fun launchInstallerAndExit(file: File) {
-        // "cmd /c start "" path" Windows'ta UAC yükseltmesini doğru tetikler.
-        // ProcessBuilder her argümanı ayrı geçer, ekstra quote eklenmez.
-        ProcessBuilder("cmd", "/c", "start", "", file.absolutePath)
-            .inheritIO()
+        // Bat dosyası: uygulama tamamen kapandıktan sonra installer'ı başlatır.
+        // exitProcess hemen child process'i öldüreceğinden gecikme şart.
+        val bat = File(System.getProperty("java.io.tmpdir"), "furcord-update-launch.bat")
+        bat.writeText(
+            "@echo off\r\n" +
+            "ping -n 3 127.0.0.1 > nul\r\n" +
+            "start \"\" \"${file.absolutePath}\"\r\n" +
+            "del \"%~f0\"\r\n"
+        )
+        ProcessBuilder("cmd", "/c", "start", "", "/min", bat.absolutePath)
             .start()
         kotlin.system.exitProcess(0)
     }
