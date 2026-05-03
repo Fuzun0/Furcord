@@ -81,13 +81,16 @@ object UpdateManager {
      * Installer tamamlandıktan sonra kullanıcı yeni sürümü açabilir.
      */
     fun launchInstallerAndExit(file: File) {
-        // PowerShell Start-Process: UAC yükseltmesini doğru halleder,
-        // 2 sn bekleyip JVM tamamen kapandıktan sonra installer'ı başlatır.
-        val psPath = file.absolutePath.replace("'", "''")
-        ProcessBuilder(
-            "powershell", "-NonInteractive", "-WindowStyle", "Hidden", "-Command",
-            "Start-Sleep -Seconds 2; Start-Process -FilePath '$psPath'"
-        ).start()
+        // wscript + VBScript ShellExecute: Windows Job Object'ten tamamen bağımsız çalışır,
+        // UAC yükseltmesini doğru tetikler, JVM kapandıktan sonra hayatta kalır.
+        val vbs = File(System.getProperty("java.io.tmpdir"), "furcord_update.vbs")
+        val escapedPath = file.absolutePath.replace("\\", "\\\\").replace("\"", "\\\"")
+        vbs.writeText(
+            "WScript.Sleep 2000\r\n" +
+            "Set sh = CreateObject(\"Shell.Application\")\r\n" +
+            "sh.ShellExecute \"${escapedPath}\", \"\", \"\", \"open\", 1\r\n"
+        )
+        ProcessBuilder("wscript", "//b", "//nologo", vbs.absolutePath).start()
         kotlin.system.exitProcess(0)
     }
 }
