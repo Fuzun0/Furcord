@@ -64,12 +64,24 @@ compose.desktop {
         jvmArgs(*appJvmArgs.toTypedArray())
 
         nativeDistributions {
-            targetFormats(TargetFormat.Msi, TargetFormat.Exe)
-            packageName = "Furcord"
-            packageVersion = providers.gradleProperty("appVersion")
+            val appVersionRaw = providers.gradleProperty("appVersion")
                 .orElse(providers.environmentVariable("APP_VERSION"))
                 .orElse("1.0.0")
                 .get()
+
+            val winVersionParts = appVersionRaw
+                .split(".")
+                .map { it.filter(Char::isDigit) }
+                .mapNotNull { it.toIntOrNull() }
+
+            val winMajor = winVersionParts.getOrElse(0) { 1 }.coerceIn(0, 255)
+            val winMinor = winVersionParts.getOrElse(1) { 0 }.coerceIn(0, 255)
+            val winBuild = winVersionParts.getOrElse(2) { 0 }.coerceIn(0, 65535)
+            val windowsPackageVersion = "$winMajor.$winMinor.$winBuild"
+
+            targetFormats(TargetFormat.Msi, TargetFormat.Exe)
+            packageName = "Furcord"
+            packageVersion = windowsPackageVersion
             description = "Furcord Voice Chat"
             includeAllModules = true
             val localJavaHome = "C:\\jdk21_temp\\jdk-21.0.7+6"
@@ -78,6 +90,9 @@ compose.desktop {
             }
 
             windows {
+                packageVersion = windowsPackageVersion
+                msiPackageVersion = windowsPackageVersion
+                exePackageVersion = windowsPackageVersion
                 menuGroup = "Furcord"
                 upgradeUuid = "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
                 perUserInstall = true
