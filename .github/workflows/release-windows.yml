@@ -36,6 +36,9 @@ jobs:
 
       - name: Build EXE
         shell: pwsh
+        env:
+          FURCORD_GOOGLE_CLIENT_ID: ${{ secrets.FURCORD_GOOGLE_CLIENT_ID }}
+          FURCORD_GOOGLE_CLIENT_SECRET: ${{ secrets.FURCORD_GOOGLE_CLIENT_SECRET }}
         run: |
           $ver = "${{ steps.ver.outputs.version }}"
           ./gradlew.bat :composeApp:packageExe "-PappVersion=$ver"

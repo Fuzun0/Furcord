@@ -55,10 +55,24 @@ compose.desktop {
             ?.trim()
             ?.toIntOrNull()
 
+        val googleClientId = providers.gradleProperty("furcordGoogleClientId")
+            .orElse(providers.environmentVariable("FURCORD_GOOGLE_CLIENT_ID"))
+            .orNull?.trim()
+
+        val googleClientSecret = providers.gradleProperty("furcordGoogleClientSecret")
+            .orElse(providers.environmentVariable("FURCORD_GOOGLE_CLIENT_SECRET"))
+            .orNull?.trim()
+
         val appJvmArgs = mutableListOf("-Xmx512m")
         if (!relayHost.isNullOrEmpty() && relayPort != null) {
             appJvmArgs += "-Dfurcord.relay.host=$relayHost"
             appJvmArgs += "-Dfurcord.relay.port=$relayPort"
+        }
+        if (!googleClientId.isNullOrEmpty()) {
+            appJvmArgs += "-Dfurcord.google.clientId=$googleClientId"
+        }
+        if (!googleClientSecret.isNullOrEmpty()) {
+            appJvmArgs += "-Dfurcord.google.clientSecret=$googleClientSecret"
         }
 
         jvmArgs(*appJvmArgs.toTypedArray())
