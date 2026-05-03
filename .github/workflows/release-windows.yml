@@ -36,7 +36,9 @@ jobs:
 
       - name: Build EXE
         shell: pwsh
-        run: ./gradlew.bat :composeApp:packageExe -PappVersion=${{ steps.ver.outputs.version }}
+        run: |
+          $ver = "${{ steps.ver.outputs.version }}"
+          ./gradlew.bat :composeApp:packageExe "-PappVersion=$ver"
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
