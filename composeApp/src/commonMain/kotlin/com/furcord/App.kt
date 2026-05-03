@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.ui.graphics.Color
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.LinearProgressIndicator
@@ -221,6 +222,16 @@ fun App() {
                 }
 
                 Box(Modifier.fillMaxSize()) {
+                    // Sol alt köşede sürüm numarası
+                    Text(
+                        text = "v${UpdateManager.currentVersion}",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = Color.White.copy(alpha = 0.35f),
+                        modifier = Modifier
+                            .align(Alignment.BottomStart)
+                            .padding(start = 8.dp, bottom = 8.dp)
+                    )
+
                     when (val ss = serverState) {
                         is AppServerState.None -> {
                             ServerLobbyScreen(

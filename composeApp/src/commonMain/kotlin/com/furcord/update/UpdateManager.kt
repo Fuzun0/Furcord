@@ -81,15 +81,25 @@ object UpdateManager {
      * Installer tamamlandıktan sonra kullanıcı yeni sürümü açabilir.
      */
     fun launchInstallerAndExit(file: File) {
-        // wscript + VBScript ShellExecute: Windows Job Object'ten tamamen bağımsız çalışır,
-        // UAC yükseltmesini doğru tetikler, JVM kapandıktan sonra hayatta kalır.
+        // VBScript ile:
+        //  1) /quiet /norestart flag'leriyle sessiz kurulum (sihirbaz çıkmaz)
+        //  2) Kurulum bitince uygulamayı otomatik yeniden başlat
+        val appExe = File(
+            System.getenv("LOCALAPPDATA") ?: "",
+            "Furcord\\Furcord.exe"
+        ).absolutePath
         val vbs = File(System.getProperty("java.io.tmpdir"), "furcord_update.vbs")
-        val escapedPath = file.absolutePath.replace("\\", "\\\\").replace("\"", "\\\"")
-        vbs.writeText(
-            "WScript.Sleep 2000\r\n" +
-            "Set sh = CreateObject(\"Shell.Application\")\r\n" +
-            "sh.ShellExecute \"${escapedPath}\", \"\", \"\", \"open\", 1\r\n"
-        )
+        // VBScript'te tırnak içinde tırnak """ ile gösterilir.
+        vbs.writeText(buildString {
+            appendLine("WScript.Sleep 2000")
+            appendLine("Set wsh = CreateObject(\"WScript.Shell\")")
+            // Sessiz kurulum — sihirbaz göstermez
+            appendLine("wsh.Run \"\"\"${file.absolutePath}\"\" /quiet /norestart\", 0, True")
+            // Kurulum bitti, uygulamayı yeniden başlat
+            appendLine("If CreateObject(\"Scripting.FileSystemObject\").FileExists(\"$appExe\") Then")
+            appendLine("    wsh.Run \"\"\"$appExe\"\"\", 1, False")
+            appendLine("End If")
+        })
         ProcessBuilder("wscript", "//b", "//nologo", vbs.absolutePath).start()
         kotlin.system.exitProcess(0)
     }
