@@ -81,7 +81,9 @@ object UpdateManager {
      * Installer tamamlandıktan sonra kullanıcı yeni sürümü açabilir.
      */
     fun launchInstallerAndExit(file: File) {
-        ProcessBuilder(file.absolutePath)
+        // "cmd /c start "" path" Windows'ta UAC yükseltmesini doğru tetikler.
+        // ProcessBuilder her argümanı ayrı geçer, ekstra quote eklenmez.
+        ProcessBuilder("cmd", "/c", "start", "", file.absolutePath)
             .inheritIO()
             .start()
         kotlin.system.exitProcess(0)
