@@ -8,6 +8,7 @@ import java.net.http.HttpClient
 import java.net.http.HttpRequest
 import java.net.http.HttpResponse
 import java.time.Duration
+import java.util.concurrent.TimeUnit
 
 object UpdateManager {
 
@@ -42,7 +43,8 @@ object UpdateManager {
         onProgress: (Float) -> Unit,
     ): File? = withContext(Dispatchers.IO) {
         try {
-            val destFile = File(System.getProperty("java.io.tmpdir"), "Furcord-update.exe")
+            val ext = if (downloadUrl.endsWith(".msi", ignoreCase = true)) ".msi" else ".exe"
+            val destFile = File(System.getProperty("java.io.tmpdir"), "Furcord-update$ext")
             val client = HttpClient.newBuilder()
                 .followRedirects(HttpClient.Redirect.ALWAYS)
                 .connectTimeout(Duration.ofSeconds(30))
@@ -77,21 +79,32 @@ object UpdateManager {
     }
 
     /**
-     * İndirilen installer'ı çalıştırır ve uygulamayı kapatır.
-     * Installer tamamlandıktan sonra kullanıcı yeni sürümü açabilir.
+     * MSI dosyasını sessizce kurar, uygulama açık kalır.
+     * true = başarılı, false = hata
      */
-    fun launchInstallerAndExit(file: File) {
-        // MSI: msiexec /i /quiet /norestart — sihirbaz çıkmaz, app klasörünü temiz kurar.
-        // VBScript ile: JVM kapandıktan 2 sn sonra çalışır, Job Object'ten bağımsız.
+    suspend fun installMsi(file: File): Boolean = withContext(Dispatchers.IO) {
+        try {
+            val process = ProcessBuilder(
+                "msiexec", "/i", file.absolutePath,
+                "/quiet", "/norestart"
+            ).start()
+            process.waitFor(10, TimeUnit.MINUTES)
+            process.exitValue() == 0
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    /** Kurulum bitti, uygulamayı yeniden başlat (VBScript ile Job Object'ten bağımsız). */
+    fun restartApp() {
         val appExe = File(
             System.getenv("LOCALAPPDATA") ?: "",
             "Furcord\\Furcord.exe"
         ).absolutePath
-        val vbs = File(System.getProperty("java.io.tmpdir"), "furcord_update.vbs")
+        val vbs = File(System.getProperty("java.io.tmpdir"), "furcord_restart.vbs")
         vbs.writeText(buildString {
-            appendLine("WScript.Sleep 2000")
+            appendLine("WScript.Sleep 1000")
             appendLine("Set wsh = CreateObject(\"WScript.Shell\")")
-            appendLine("wsh.Run \"msiexec /i \"\"${file.absolutePath}\"\" /quiet /norestart\", 0, True")
             appendLine("If CreateObject(\"Scripting.FileSystemObject\").FileExists(\"$appExe\") Then")
             appendLine("    wsh.Run \"\"\"$appExe\"\"\", 1, False")
             appendLine("End If")

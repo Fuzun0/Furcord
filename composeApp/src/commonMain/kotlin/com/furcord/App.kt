@@ -1,5 +1,7 @@
 ﻿package com.furcord
 
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
@@ -9,6 +11,8 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.ui.graphics.Color
 import androidx.compose.material3.AlertDialog
+import java.io.File
+import kotlinx.coroutines.delay
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
@@ -128,6 +132,27 @@ fun App() {
                 var downloading       by remember { mutableStateOf(false) }
                 var downloadProgress  by remember { mutableStateOf(0f) }
                 var downloadError     by remember { mutableStateOf(false) }
+                var installerFile     by remember { mutableStateOf<File?>(null) }
+                var installing        by remember { mutableStateOf(false) }
+                var installStatus     by remember { mutableStateOf("") }
+                var installError      by remember { mutableStateOf(false) }
+
+                // İndirme bitti → kurulum başlat
+                LaunchedEffect(installerFile) {
+                    val file = installerFile ?: return@LaunchedEffect
+                    installing = true
+                    installStatus = "Kuruluyor..."
+                    val ok = UpdateManager.installMsi(file)
+                    if (ok) {
+                        installStatus = "Yeniden başlatılıyor..."
+                        delay(1500)
+                        UpdateManager.restartApp()
+                    } else {
+                        installStatus = "Kurulum başarısız!"
+                        installError = true
+                        installing = false
+                    }
+                }
 
                 // Giriş sonrası güncelleme kontrolü (tek seferlik)
                 LaunchedEffect(currentUser.uid) {
@@ -139,8 +164,39 @@ fun App() {
                     }
                 }
 
+                // Kurulum tam ekran overlay
+                if (installing) {
+                    Box(
+                        Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.Center
+                        ) {
+                            if (!installError) CircularProgressIndicator()
+                            Spacer(Modifier.height(20.dp))
+                            Text(installStatus, style = MaterialTheme.typography.titleMedium)
+                            if (!installError) {
+                                Spacer(Modifier.height(8.dp))
+                                Text(
+                                    "Uygulama kapanıp geri açılacak",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            } else {
+                                Spacer(Modifier.height(12.dp))
+                                TextButton(onClick = { installing = false; installerFile = null; installError = false }) {
+                                    Text("Tamam")
+                                }
+                            }
+                        }
+                    }
+                    return@MaterialTheme
+                }
+
                 // Güncelleme dialog'u
-                if (pendingUpdate != null && !updateDismissed) {
+                if (pendingUpdate != null && !updateDismissed && installerFile == null) {
                     val info = pendingUpdate!!
                     AlertDialog(
                         onDismissRequest = { if (!downloading) updateDismissed = true },
@@ -189,7 +245,7 @@ fun App() {
                                             downloadProgress = p
                                         }
                                         if (file != null) {
-                                            UpdateManager.launchInstallerAndExit(file)
+                                            installerFile = file
                                         } else {
                                             downloadError = true
                                             downloading = false
