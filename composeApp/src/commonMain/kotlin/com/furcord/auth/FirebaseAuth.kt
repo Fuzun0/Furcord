@@ -151,8 +151,14 @@ object FirebaseAuth {
                 saveToken(user.idToken)
                 if (refreshToken.isNotEmpty()) saveSession(user.uid, user.email, refreshToken)
                 AuthResult.Success(user)
-            } catch (e: Exception) {
-                AuthResult.Failure(e.message ?: "Google ile giriş başarısız.")
+            } catch (e: Throwable) {
+                val msg = when {
+                    e.message?.contains("Client ID eksik") == true ||
+                    e.message?.contains("Client Secret eksik") == true ->
+                        "Google OAuth yapılandırması eksik. Lütfen destek ekibiyle iletişime geçin."
+                    else -> e.message ?: "Google ile giriş başarısız."
+                }
+                AuthResult.Failure(msg)
             }
         }
 
