@@ -583,17 +583,54 @@ object FirestoreClient {
      * Kullanıcı profilini Firestore'a kaydeder (displayName, photoURL, furcordId, email).
      * Her login/kayıt + profil güncelleme sırasında çağrılır.
      */
+    /**
+     * Kullanıcıyı nickname ile arar. Nickname e\u015fsiz oldu\u011fu için tam e\u015fle\u015fme yap\u0131l\u0131r.
+     */
+    suspend fun getUserByNickname(nickname: String, idToken: String): Pair<String, String>? =
+        withContext(Dispatchers.IO) {
+            val (code, text) = request("GET", "$BASE/users?pageSize=500", idToken = idToken)
+            if (code !in 200..299) return@withContext null
+            val uidRegex  = Regex("""/users/([^"/\s]+)""")
+            val docs      = uidRegex.findAll(text).toList()
+            docs.forEach { m ->
+                val uid   = m.groupValues[1]
+                val from  = m.range.last
+                val to    = docs.getOrNull(docs.indexOf(m) + 1)?.range?.first ?: text.length
+                val chunk = text.substring(from, to)
+                val nic   = Regex(""""nickname"\s*:\s*\{"stringValue"\s*:\s*"([^"]+)"""").find(chunk)?.groupValues?.get(1)
+                if (nic == nickname) {
+                    val name  = Regex(""""displayName"\s*:\s*\{"stringValue"\s*:\s*"([^"]+)"""").find(chunk)?.groupValues?.get(1) ?: uid
+                    return@withContext uid to name
+                }
+            }
+            null
+        }
+
+    /**
+     * Belirli bir nickname'in kullan\u0131labilir olup olmad\u0131\u011f\u0131n\u0131 kontrol eder.
+     */
+    suspend fun checkNicknameAvailable(nickname: String, idToken: String): Boolean =
+        withContext(Dispatchers.IO) {
+            (getUserByNickname(nickname, idToken) == null)
+        }
+
+    /**
+     * Kullan\u0131c\u0131 profilini Firestore'a kaydeder (displayName, photoURL, furcordId, email, nickname).
+     * Her login/kay\u0131t + profil g\u00fcncellemesi s\u0131ras\u0131nda \u00e7a\u011fr\u0131l\u0131r.
+     */
     suspend fun saveUserRecord(
         uid: String, displayName: String, photoURL: String,
-        furcordId: String, email: String, idToken: String,
+        furcordId: String, email: String, idToken: String, nickname: String = "",
     ) = withContext(Dispatchers.IO) {
         val escN = displayName.replace("\\", "\\\\").replace("\"", "\\\"")
         val escE = email.replace("\\", "\\\\").replace("\"", "\\\"")
+        val escNic = nickname.replace("\\", "\\\\").replace("\"", "\\\"")
         val body = """{"fields":{
             "displayName":{"stringValue":"$escN"},
             "photoURL":{"stringValue":"$photoURL"},
             "furcordId":{"stringValue":"$furcordId"},
-            "email":{"stringValue":"$escE"}
+            "email":{"stringValue":"$escE"},
+            "nickname":{"stringValue":"$escNic"}
         }}""".trimIndent()
         runCatching { request("PATCH", "$BASE/users/$uid", idToken = idToken, body = body) }
     }

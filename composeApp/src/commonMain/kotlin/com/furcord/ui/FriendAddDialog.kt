@@ -23,7 +23,7 @@ private val TxtF     = Color(0xFFDCDDDE)
 private val TxtSubF  = Color(0xFF96989D)
 
 /**
- * Furcord ID girerek arkadaş arama ve DM başlatma diyaloğu.
+ * Nickname veya Furcord ID girerek arkadaş arama ve DM başlatma diyaloğu.
  *
  * @param currentUser Oturum açmış kullanıcı
  * @param onStartDm DM ekranı açılması için uid + displayName döner
@@ -51,7 +51,8 @@ fun FriendAddDialog(
                 color = TxtF, fontWeight = FontWeight.Bold, fontSize = 18.sp)
             Spacer(Modifier.height(6.dp))
             Text(
-                "Kişinin Furcord ID'sini gir (örnek: ABCD1234)\n" +
+                "Kişinin Kullanıcı Adını (Nickname) veya Furcord ID'sini gir\n" +
+                "Örnek: john_doe veya ABCD1234\n" +
                 "Kendi ID'n: ${currentUser.furcordId.ifBlank { "yükleniyor…" }}",
                 color = TxtSubF, fontSize = 12.sp,
             )
@@ -59,8 +60,8 @@ fun FriendAddDialog(
 
             OutlinedTextField(
                 value         = tagInput,
-                onValueChange = { tagInput = it.uppercase().take(8) },
-                label         = { Text("Furcord ID", color = TxtSubF) },
+                onValueChange = { tagInput = it.take(32) },
+                label         = { Text("Kullanıcı Adı veya ID", color = TxtSubF) },
                 singleLine    = true,
                 colors        = OutlinedTextFieldDefaults.colors(
                     focusedBorderColor   = AccentF,
@@ -85,10 +86,17 @@ fun FriendAddDialog(
                 Button(
                     onClick = {
                         val query = tagInput.trim()
-                        if (query.length < 4) { error = "Geçerli bir ID girin."; return@Button }
+                        if (query.length < 2) { error = "En az 2 karakter girin."; return@Button }
                         loading = true; error = ""
                         scope.launch {
-                            val result = FirestoreClient.getUserByFurcordId(query, currentUser.idToken)
+                            // Uppercase kontr veya lowercase — nickname gibi davran
+                            val result = if (query.length == 8 && query.all { it.isLetterOrDigit() }) {
+                                // Furcord ID gibi görünüyor (8 karakterli alphanumeric)
+                                FirestoreClient.getUserByFurcordId(query.uppercase(), currentUser.idToken)
+                            } else {
+                                // Nickname araması
+                                FirestoreClient.getUserByNickname(query, currentUser.idToken)
+                            }
                             loading = false
                             if (result == null) {
                                 error = "Kullanıcı bulunamadı."

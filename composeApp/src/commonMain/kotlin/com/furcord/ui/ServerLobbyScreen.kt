@@ -237,17 +237,6 @@ fun ServerLobbyScreen(
                         color = MUTED, letterSpacing = 0.8.sp,
                         modifier = Modifier.weight(1f),
                     )
-                    // Arkadaş ekle butonu
-                    Box(
-                        Modifier
-                            .size(24.dp)
-                            .clip(RoundedCornerShape(6.dp))
-                            .background(ACCENT)
-                            .clickable { showAddFriend = true },
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        Icon(Icons.Default.Add, null, tint = Color.White, modifier = Modifier.size(14.dp))
-                    }
                 }
                 HorizontalDivider(color = OUTLINE)
 
@@ -282,6 +271,17 @@ fun ServerLobbyScreen(
                                         .background(OUTLINE)
                                         .padding(horizontal = 5.dp, vertical = 1.dp),
                                 )
+                            }
+                            // Arkadaş ekle butonu
+                            Box(
+                                Modifier
+                                    .size(24.dp)
+                                    .clip(RoundedCornerShape(6.dp))
+                                    .background(ACCENT)
+                                    .clickable { showAddFriend = true },
+                                contentAlignment = Alignment.Center,
+                            ) {
+                                Icon(Icons.Default.Add, null, tint = Color.White, modifier = Modifier.size(14.dp))
                             }
                         }
                     }
