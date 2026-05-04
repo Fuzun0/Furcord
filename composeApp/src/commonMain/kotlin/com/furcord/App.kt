@@ -162,13 +162,17 @@ fun App() {
                     }
                 }
 
-                // Giriş sonrası güncelleme kontrolü (tek seferlik)
+                // Güncelleme kontrolü: giriş anında + her 10 dakikada bir
                 LaunchedEffect(currentUser.uid) {
-                    val info = runCatching {
-                        FirestoreClient.getLatestVersion(currentUser.idToken)
-                    }.getOrNull()
-                    if (info != null && UpdateManager.isNewerVersion(info.latestVersion)) {
-                        pendingUpdate = info
+                    while (true) {
+                        val info = runCatching {
+                            FirestoreClient.getLatestVersion(currentUser.idToken)
+                        }.getOrNull()
+                        if (info != null && UpdateManager.isNewerVersion(info.latestVersion)) {
+                            if (pendingUpdate == null) updateDismissed = false  // yeni sürüm → dismiss sıfırla
+                            pendingUpdate = info
+                        }
+                        delay(10 * 60 * 1000L)  // 10 dakika
                     }
                 }
 
