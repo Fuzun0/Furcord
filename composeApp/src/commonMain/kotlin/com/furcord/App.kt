@@ -34,6 +34,7 @@ import com.furcord.ui.ServerLobbyScreen
 import com.furcord.ui.ServerDetailScreen
 import com.furcord.ui.DmChatScreen
 import com.furcord.ui.FloatingDmPanel
+import com.furcord.ui.NicknameSetupDialog
 
 private sealed class AppAuthState {
     object Loading         : AppAuthState()
@@ -124,7 +125,10 @@ fun App() {
                 )
             }
             is AppAuthState.Authenticated -> {
-                val currentUser = state.user
+                var currentUser      = state.user
+
+                // Nickname setup
+                var showNicknameSetup by remember { mutableStateOf(currentUser.nickname.isEmpty()) }
 
                 // Güncelleme durumu
                 var pendingUpdate     by remember { mutableStateOf<AppVersionInfo?>(null) }
@@ -161,6 +165,20 @@ fun App() {
                     if (info != null && UpdateManager.isNewerVersion(info.latestVersion)) {
                         pendingUpdate = info
                     }
+                }
+
+                // Nickname setup dialog
+                if (showNicknameSetup) {
+                    NicknameSetupDialog(
+                        uid = currentUser.uid,
+                        email = currentUser.email,
+                        idToken = currentUser.idToken,
+                        onNicknameSet = { uid, nickname ->
+                            currentUser = currentUser.copy(nickname = nickname)
+                            showNicknameSetup = false
+                        }
+                    )
+                    return@MaterialTheme
                 }
 
                 // Kurulum tam ekran overlay
