@@ -449,6 +449,7 @@ fun ServerDetailScreen(
     serverId: String,
     serverName: String,
     currentUser: AuthUser,
+    hasUpdate: Boolean = false,
     onLeaveServer: () -> Unit,
     onUserUpdated: (newDisplayName: String, newPhotoURL: String) -> Unit = { _, _ -> },
     onOpenDm: ((uid: String, name: String) -> Unit)? = null,
@@ -807,7 +808,7 @@ fun ServerDetailScreen(
                 // Notification bell
                 NotificationBell(
                     currentUser = currentUser,
-                    hasUpdate = false,  // Güncelleme bildirimi burada kontrol edilmez, sunucu sahnesinde
+                    hasUpdate = hasUpdate,
                 )
                 // Invite button
                 IconButton(onClick = { showInviteDialog = true }, modifier = Modifier.size(28.dp)) {

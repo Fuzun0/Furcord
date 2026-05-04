@@ -69,12 +69,14 @@ fun App() {
                 val user = if (profile != null)
                     restored.copy(
                         displayName = profile.first.ifEmpty { restored.displayName },
-                        photoURL    = profile.second.ifEmpty { restored.photoURL }
+                        photoURL    = profile.second.ifEmpty { restored.photoURL },
+                        nickname    = profile.third.ifEmpty { restored.nickname },
                     )
                 else restored
                 authState = AppAuthState.Authenticated(user)
                 // Firestore'dan gelen güncel profili yerel dosyaya da yaz
                 FirebaseAuth.saveProfile(user.displayName, user.photoURL)
+                if (user.nickname.isNotEmpty()) FirebaseAuth.saveNickname(user.nickname)
             } else {
                 authState = AppAuthState.Unauthenticated
             }
@@ -89,7 +91,8 @@ fun App() {
             val updatedUser = if (profile != null) {
                 user.copy(
                     displayName = profile.first.ifEmpty { user.displayName },
-                    photoURL    = profile.second.ifEmpty { user.photoURL }
+                    photoURL    = profile.second.ifEmpty { user.photoURL },
+                    nickname    = profile.third.ifEmpty { user.nickname },
                 )
             } else user
             authState = AppAuthState.Authenticated(updatedUser)
@@ -104,6 +107,7 @@ fun App() {
                     furcordId   = updatedUser.furcordId,
                     email       = updatedUser.email,
                     idToken     = updatedUser.idToken,
+                    nickname    = updatedUser.nickname,
                 )
             }
             pendingProfileLoad = null
@@ -148,8 +152,9 @@ fun App() {
                     installStatus = "Kuruluyor..."
                     val ok = UpdateManager.installMsi(file)
                     if (ok) {
-                        // Kurulum başarılı — durumu kalsın
-                        installStatus = "Kurulum tamamlandı"
+                        installStatus = "Yeniden başlatılıyor..."
+                        delay(800)
+                        UpdateManager.restartApp()  // VBScript ile yeni sürümü başlat
                     } else {
                         installStatus = "Kurulum başarısız!"
                         installError = true
@@ -174,8 +179,8 @@ fun App() {
                         email = currentUser.email,
                         idToken = currentUser.idToken,
                         onNicknameSet = { uid, nickname ->
-                            currentUser = currentUser.copy(nickname = nickname)
                             showNicknameSetup = false
+                            authState = AppAuthState.Authenticated(currentUser.copy(nickname = nickname))
                         }
                     )
                     return@MaterialTheme
@@ -194,14 +199,7 @@ fun App() {
                             if (!installError) CircularProgressIndicator()
                             Spacer(Modifier.height(20.dp))
                             Text(installStatus, style = MaterialTheme.typography.titleMedium)
-                            if (!installError) {
-                                Spacer(Modifier.height(8.dp))
-                                Text(
-                                    "Uygulama kapanıp geri açılacak",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            } else {
+                            if (installError) {
                                 Spacer(Modifier.height(12.dp))
                                 TextButton(onClick = { installing = false; installerFile = null; installError = false }) {
                                     Text("Tamam")
@@ -307,6 +305,7 @@ fun App() {
                         is AppServerState.None -> {
                             ServerLobbyScreen(
                                 currentUser    = currentUser,
+                                hasUpdate      = pendingUpdate != null && !updateDismissed,
                                 onJoinServer   = { id, name ->
                                     serverState = AppServerState.InServer(id, name)
                                 },
@@ -329,6 +328,7 @@ fun App() {
                                 serverId      = ss.serverId,
                                 serverName    = ss.serverName,
                                 currentUser   = currentUser,
+                                hasUpdate     = pendingUpdate != null && !updateDismissed,
                                 onLeaveServer = {
                                     serverState = AppServerState.None
                                 },

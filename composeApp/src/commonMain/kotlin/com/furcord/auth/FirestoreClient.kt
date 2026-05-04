@@ -419,13 +419,15 @@ object FirestoreClient {
     }
 
     /** Reads user profile from users/{uid} document. Returns null if not found. */
-    suspend fun getUserProfile(uid: String, idToken: String): Pair<String, String>? =
+    /** Kullanıcı profilini Firestore'dan getirir: (displayName, photoURL, nickname) */
+    suspend fun getUserProfile(uid: String, idToken: String): Triple<String, String, String>? =
         withContext(Dispatchers.IO) {
             val (code, text) = request("GET", "$BASE/users/$uid", idToken = idToken)
             if (code !in 200..299) return@withContext null
-            val displayName = Regex(""""displayName"\s*:\s*\{"stringValue"\s*:\s*"([^"]*)"""").find(text)?.groupValues?.get(1) ?: ""
-            val photoURL    = Regex(""""photoURL"\s*:\s*\{"stringValue"\s*:\s*"([^"]*)"""").find(text)?.groupValues?.get(1) ?: ""
-            displayName to photoURL
+            val displayName = Regex("\"displayName\"\\s*:\\s*\\{\"stringValue\"\\s*:\\s*\"([^\"]*)\"").find(text)?.groupValues?.get(1) ?: ""
+            val photoURL    = Regex("\"photoURL\"\\s*:\\s*\\{\"stringValue\"\\s*:\\s*\"([^\"]*)\"").find(text)?.groupValues?.get(1) ?: ""
+            val nickname    = Regex("\"nickname\"\\s*:\\s*\\{\"stringValue\"\\s*:\\s*\"([^\"]*)\"").find(text)?.groupValues?.get(1) ?: ""
+            Triple(displayName, photoURL, nickname)
         }
 
     /** Returns the active users list for a single voice channel document. */

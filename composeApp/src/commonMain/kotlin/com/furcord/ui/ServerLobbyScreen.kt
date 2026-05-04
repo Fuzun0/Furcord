@@ -45,6 +45,7 @@ private val GREEN        = Color(0xFF23A55A)
 @Composable
 fun ServerLobbyScreen(
     currentUser: AuthUser,
+    hasUpdate: Boolean = false,
     onJoinServer: (serverId: String, serverName: String) -> Unit,
     onSignOut: () -> Unit,
     onUserUpdated: (newDisplayName: String, newPhotoURL: String) -> Unit = { _, _ -> },
@@ -192,6 +193,7 @@ fun ServerLobbyScreen(
             // Bildirim çanı
             NotificationBell(
                 currentUser  = currentUser,
+                hasUpdate    = hasUpdate,
                 onJoinServer = { sid: String, sname: String ->
                     scope.launch {
                         runCatching {
