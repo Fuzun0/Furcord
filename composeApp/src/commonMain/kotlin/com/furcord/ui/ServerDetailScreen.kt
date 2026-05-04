@@ -151,6 +151,86 @@ private fun PanelIconBtn(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Unified user context menu (right-click on any user in grid or sidebar)
+// ─────────────────────────────────────────────────────────────────────────────
+@Composable
+private fun UserContextMenu(
+    user: ActiveUser,
+    isOwner: Boolean,
+    volume: Float,
+    showVolSlider: Boolean,
+    onToggleVol: () -> Unit,
+    onVolumeChange: (Float) -> Unit,
+    onDismiss: () -> Unit,
+    onMessage: () -> Unit,
+    onAddFriend: () -> Unit,
+    onKick: (() -> Unit)?,
+) {
+    DropdownMenu(
+        expanded         = true,
+        onDismissRequest = onDismiss,
+        containerColor   = Color(0xFF111214),
+    ) {
+        DropdownMenuItem(
+            text    = { Text("💬 Mesaj Gönder", color = Color(0xFFDCDDDE), fontSize = 13.sp) },
+            onClick = onMessage,
+        )
+        HorizontalDivider(color = Color(0xFF2B2D31))
+        DropdownMenuItem(
+            text    = { Text("➕ Arkadaş Ekle", color = Color(0xFFDCDDDE), fontSize = 13.sp) },
+            onClick = onAddFriend,
+        )
+        HorizontalDivider(color = Color(0xFF2B2D31))
+        // Ses seviyesi
+        DropdownMenuItem(
+            text = {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text(
+                        "🔊 Ses: ${(volume * 100).toInt()}%",
+                        color = Color(0xFFDCDDDE), fontSize = 13.sp,
+                        modifier = Modifier.weight(1f),
+                    )
+                    Text(if (showVolSlider) "▲" else "▼", color = Color(0xFF8E9297), fontSize = 11.sp)
+                }
+            },
+            onClick = onToggleVol,
+        )
+        if (showVolSlider) {
+            DropdownMenuItem(
+                text = {
+                    Column(modifier = Modifier.width(200.dp)) {
+                        Slider(
+                            value          = volume,
+                            onValueChange  = onVolumeChange,
+                            valueRange     = 0f..2f,
+                            modifier       = Modifier.fillMaxWidth().height(28.dp),
+                            colors         = SliderDefaults.colors(
+                                thumbColor        = Color(0xFF5865F2),
+                                activeTrackColor  = Color(0xFF5865F2),
+                                inactiveTrackColor= Color(0xFF4E5058),
+                            ),
+                        )
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                            Text("0%",   color = Color(0xFF8E9297), fontSize = 10.sp)
+                            Text("100%", color = Color(0xFF8E9297), fontSize = 10.sp)
+                            Text("200%", color = Color(0xFF8E9297), fontSize = 10.sp)
+                        }
+                    }
+                },
+                onClick = {},
+            )
+        }
+        if (onKick != null) {
+            HorizontalDivider(color = Color(0xFF2B2D31))
+            DropdownMenuItem(
+                text    = { Text("🔨 Sunucudan At", color = Color(0xFFED4245), fontSize = 13.sp) },
+                onClick = onKick,
+            )
+        }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // User avatar (initial letter)
 // ─────────────────────────────────────────────────────────────────────────────
 @Composable
@@ -182,6 +262,7 @@ private fun ChannelRow(
     activeUsers: List<ActiveUser>,
     currentUid: String,
     onClick: () -> Unit,
+    onUserRightClick: ((ActiveUser) -> Unit)? = null,
 ) {
     Column {
         Row(
@@ -225,25 +306,43 @@ private fun ChannelRow(
         if (activeUsers.isNotEmpty()) {
             activeUsers.forEach { u ->
                 val isSelf = u.uid == currentUid
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(start = 30.dp, end = 8.dp, top = 2.dp, bottom = 2.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    UserAvatar(
-                        displayName = u.username,
-                        photoURL    = u.photoURL,
-                        size        = 20,
-                    )
-                    Text(
-                        text = if (isSelf) "${u.username} (sen)" else u.username,
-                        fontSize = 12.sp,
-                        color = if (isSelf) Color(0xFF23A55A) else Color(0xFFB5BAC1),
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
+                Box {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(start = 30.dp, end = 8.dp, top = 2.dp, bottom = 2.dp)
+                            .then(
+                                if (!isSelf && onUserRightClick != null) {
+                                    Modifier.pointerInput(u.uid) {
+                                        awaitPointerEventScope {
+                                            while (true) {
+                                                val event = awaitPointerEvent()
+                                                if (event.type == PointerEventType.Press &&
+                                                    event.buttons.isSecondaryPressed
+                                                ) {
+                                                    onUserRightClick(u)
+                                                }
+                                            }
+                                        }
+                                    }
+                                } else Modifier
+                            ),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        UserAvatar(
+                            displayName = u.username,
+                            photoURL    = u.photoURL,
+                            size        = 20,
+                        )
+                        Text(
+                            text = if (isSelf) "${u.username} (sen)" else u.username,
+                            fontSize = 12.sp,
+                            color = if (isSelf) Color(0xFF23A55A) else Color(0xFFB5BAC1),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
                 }
             }
         }
@@ -375,8 +474,12 @@ fun ServerDetailScreen(
     var showProfileDialog by remember { mutableStateOf(false) }
     // Invite dialog
     var showInviteDialog  by remember { mutableStateOf(false) }
-    // Voice grid right-click menu
-    var contextMenuUid    by remember { mutableStateOf<String?>(null) }
+    // Birleşik sağ tık menüsü (ses grid + sidebar her ikisinden de tetiklenir)
+    var contextMenuUser   by remember { mutableStateOf<ActiveUser?>(null) }
+    // Per-user ses seviyeleri (uid → 0.0-2.0, default 1.0)
+    val peerVolumes       = remember { androidx.compose.runtime.snapshots.SnapshotStateMap<String, Float>() }
+    // Ses seviyesi slider gösterilecek mi?
+    var showVolumeSlider  by remember { mutableStateOf(false) }
     // Sunucu sahibi mi?
     var isOwner           by remember { mutableStateOf(false) }
     // Atıldı mı?
@@ -676,6 +779,7 @@ fun ServerDetailScreen(
     Row(modifier = Modifier.fillMaxSize()) {
 
         // ── Left sidebar ──────────────────────────────────────────────────────
+        Box {
         Column(
             modifier = Modifier
                 .width(240.dp)
@@ -791,12 +895,13 @@ fun ServerDetailScreen(
             ) {
                 items(channels) { ch ->
                     ChannelRow(
-                        channel     = ch,
-                        isConnected = connectedChannelId == ch.id,
-                        isSelected  = selectedChannelId == ch.id,
-                        activeUsers = channelUsers[ch.id] ?: emptyList(),
-                        currentUid  = currentUser.uid,
-                        onClick     = { joinChannel(ch) },
+                        channel          = ch,
+                        isConnected      = connectedChannelId == ch.id,
+                        isSelected       = selectedChannelId == ch.id,
+                        activeUsers      = channelUsers[ch.id] ?: emptyList(),
+                        currentUid       = currentUser.uid,
+                        onClick          = { joinChannel(ch) },
+                        onUserRightClick = { u -> contextMenuUser = u; showVolumeSlider = false },
                     )
                 }
                 if (channels.isEmpty() && !loading) {
@@ -860,7 +965,55 @@ fun ServerDetailScreen(
                     onClick = { isDeafened = !isDeafened },
                 )
             }
+        }   // end sidebar Column
+
+        // Sidebar context menu (sidebar'da sağ tıklandığında)
+        val sidebarCtxUser = contextMenuUser
+        if (sidebarCtxUser != null) {
+            UserContextMenu(
+                user          = sidebarCtxUser,
+                isOwner       = isOwner,
+                volume        = peerVolumes[sidebarCtxUser.uid] ?: 1f,
+                showVolSlider = showVolumeSlider,
+                onToggleVol   = { showVolumeSlider = !showVolumeSlider },
+                onVolumeChange = { vol ->
+                    peerVolumes[sidebarCtxUser.uid] = vol
+                    VoiceEngine.setPeerVolume(sidebarCtxUser.uid, vol)
+                },
+                onDismiss   = { contextMenuUser = null },
+                onMessage   = { contextMenuUser = null; onOpenDm?.invoke(sidebarCtxUser.uid, sidebarCtxUser.username) },
+                onAddFriend = {
+                    contextMenuUser = null
+                    scope.launch {
+                        runCatching {
+                            FirestoreClient.sendFriendRequest(
+                                toUid     = sidebarCtxUser.uid,
+                                fromUid   = currentUser.uid,
+                                fromName  = currentUser.displayName.ifEmpty { currentUser.email },
+                                furcordId = currentUser.furcordId,
+                                idToken   = currentUser.idToken,
+                            )
+                        }
+                    }
+                },
+                onKick = if (isOwner) {{
+                    val targetUid = sidebarCtxUser.uid
+                    contextMenuUser = null
+                    scope.launch {
+                        runCatching { FirestoreClient.kickUser(serverId, targetUid, currentUser.idToken) }
+                        channelUsers = channelUsers.mapValues { (_, users) ->
+                            users.filter { it.uid != targetUid }
+                        }
+                        channelUsers.forEach { (cid, users) ->
+                            runCatching {
+                                FirestoreClient.setChannelActiveUsers(serverId, cid, users, currentUser.idToken)
+                            }
+                        }
+                    }
+                }} else null,
+            )
         }
+        }   // end sidebar Box
 
         // ── Main content area ─────────────────────────────────────────────────
         if (showTextChannel) {
@@ -961,7 +1114,8 @@ fun ServerDetailScreen(
                                                 if (event.type == PointerEventType.Press &&
                                                     event.buttons.isSecondaryPressed
                                                 ) {
-                                                    contextMenuUid = u.uid
+                                                    contextMenuUser = u
+                                                    showVolumeSlider = false
                                                 }
                                             }
                                         }
@@ -999,67 +1153,50 @@ fun ServerDetailScreen(
                                         textAlign = TextAlign.Center,
                                     )
                                 }
-                                // Sağ tık bağlam menüsü
-                                if (!isSelf && contextMenuUid == u.uid) {
-                                    DropdownMenu(
-                                        expanded = true,
-                                        onDismissRequest = { contextMenuUid = null },
-                                        containerColor = Color(0xFF111214),
-                                    ) {
-                                        DropdownMenuItem(
-                                            text = { Text("💬 Mesaj Gönder", color = Color(0xFFDCDDDE), fontSize = 13.sp) },
-                                            onClick = {
-                                                contextMenuUid = null
-                                                onOpenDm?.invoke(u.uid, u.username)
-                                            },
-                                        )
-                                        HorizontalDivider(color = Color(0xFF2B2D31))
-                                        DropdownMenuItem(
-                                            text = { Text("➕ Arkadaş Ekle", color = Color(0xFFDCDDDE), fontSize = 13.sp) },
-                                            onClick = {
-                                                contextMenuUid = null
-                                                scope.launch {
+                                // Sağ tık bağlam menüsü (grid)
+                                if (!isSelf && contextMenuUser?.uid == u.uid) {
+                                    UserContextMenu(
+                                        user          = u,
+                                        isOwner       = isOwner,
+                                        volume        = peerVolumes[u.uid] ?: 1f,
+                                        showVolSlider = showVolumeSlider,
+                                        onToggleVol   = { showVolumeSlider = !showVolumeSlider },
+                                        onVolumeChange = { vol ->
+                                            peerVolumes[u.uid] = vol
+                                            VoiceEngine.setPeerVolume(u.uid, vol)
+                                        },
+                                        onDismiss     = { contextMenuUser = null },
+                                        onMessage     = { contextMenuUser = null; onOpenDm?.invoke(u.uid, u.username) },
+                                        onAddFriend   = {
+                                            contextMenuUser = null
+                                            scope.launch {
+                                                runCatching {
+                                                    FirestoreClient.sendFriendRequest(
+                                                        toUid     = u.uid,
+                                                        fromUid   = currentUser.uid,
+                                                        fromName  = currentUser.displayName.ifEmpty { currentUser.email },
+                                                        furcordId = currentUser.furcordId,
+                                                        idToken   = currentUser.idToken,
+                                                    )
+                                                }
+                                            }
+                                        },
+                                        onKick = if (isOwner) {{
+                                            val targetUid = u.uid
+                                            contextMenuUser = null
+                                            scope.launch {
+                                                runCatching { FirestoreClient.kickUser(serverId, targetUid, currentUser.idToken) }
+                                                channelUsers = channelUsers.mapValues { (_, users) ->
+                                                    users.filter { it.uid != targetUid }
+                                                }
+                                                channelUsers.forEach { (cid, users) ->
                                                     runCatching {
-                                                        FirestoreClient.sendFriendRequest(
-                                                            toUid     = u.uid,
-                                                            fromUid   = currentUser.uid,
-                                                            fromName  = currentUser.displayName.ifEmpty { currentUser.email },
-                                                            furcordId = currentUser.furcordId,
-                                                            idToken   = currentUser.idToken,
-                                                        )
+                                                        FirestoreClient.setChannelActiveUsers(serverId, cid, users, currentUser.idToken)
                                                     }
                                                 }
-                                            },
-                                        )
-                                        // Sunucu sahibiyse kick seçeneği göster
-                                        if (isOwner) {
-                                            HorizontalDivider(color = Color(0xFF2B2D31))
-                                            DropdownMenuItem(
-                                                text = { Text("🔨 Sunucudan At", color = Color(0xFFED4245), fontSize = 13.sp) },
-                                                onClick = {
-                                                    val targetUid  = u.uid
-                                                    val targetName = u.username
-                                                    contextMenuUid = null
-                                                    scope.launch {
-                                                        // Kicked kaydını yaz
-                                                        runCatching { FirestoreClient.kickUser(serverId, targetUid, currentUser.idToken) }
-                                                        // Hedefi tüm kanallardan yerel olarak kaldır (hızlı görsel güncelleme)
-                                                        channelUsers = channelUsers.mapValues { (_, users) ->
-                                                            users.filter { it.uid != targetUid }
-                                                        }
-                                                        // Firestore'da bağlı kanaldan da çıkar
-                                                        channelUsers.forEach { (cid, users) ->
-                                                            runCatching {
-                                                                FirestoreClient.setChannelActiveUsers(
-                                                                    serverId, cid, users, currentUser.idToken,
-                                                                )
-                                                            }
-                                                        }
-                                                    }
-                                                },
-                                            )
-                                        }
-                                    }
+                                            }
+                                        }} else null,
+                                    )
                                 }
                             }
                         }
