@@ -81,21 +81,17 @@ object UpdateManager {
      * Installer tamamlandıktan sonra kullanıcı yeni sürümü açabilir.
      */
     fun launchInstallerAndExit(file: File) {
-        // VBScript ile:
-        //  1) /quiet /norestart flag'leriyle sessiz kurulum (sihirbaz çıkmaz)
-        //  2) Kurulum bitince uygulamayı otomatik yeniden başlat
+        // MSI: msiexec /i /quiet /norestart — sihirbaz çıkmaz, app klasörünü temiz kurar.
+        // VBScript ile: JVM kapandıktan 2 sn sonra çalışır, Job Object'ten bağımsız.
         val appExe = File(
             System.getenv("LOCALAPPDATA") ?: "",
             "Furcord\\Furcord.exe"
         ).absolutePath
         val vbs = File(System.getProperty("java.io.tmpdir"), "furcord_update.vbs")
-        // VBScript'te tırnak içinde tırnak """ ile gösterilir.
         vbs.writeText(buildString {
             appendLine("WScript.Sleep 2000")
             appendLine("Set wsh = CreateObject(\"WScript.Shell\")")
-            // Sessiz kurulum — sihirbaz göstermez
-            appendLine("wsh.Run \"\"\"${file.absolutePath}\"\" /quiet /norestart\", 0, True")
-            // Kurulum bitti, uygulamayı yeniden başlat
+            appendLine("wsh.Run \"msiexec /i \"\"${file.absolutePath}\"\" /quiet /norestart\", 0, True")
             appendLine("If CreateObject(\"Scripting.FileSystemObject\").FileExists(\"$appExe\") Then")
             appendLine("    wsh.Run \"\"\"$appExe\"\"\", 1, False")
             appendLine("End If")

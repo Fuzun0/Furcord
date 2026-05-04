@@ -34,20 +34,20 @@ jobs:
           $ver = if ($tag.StartsWith("v")) { $tag.Substring(1) } else { $tag }
           "version=$ver" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
 
-      - name: Build EXE
+      - name: Build MSI
         shell: pwsh
         env:
           FURCORD_GOOGLE_CLIENT_ID: ${{ secrets.FURCORD_GOOGLE_CLIENT_ID }}
           FURCORD_GOOGLE_CLIENT_SECRET: ${{ secrets.FURCORD_GOOGLE_CLIENT_SECRET }}
         run: |
           $ver = "${{ steps.ver.outputs.version }}"
-          ./gradlew.bat :composeApp:packageExe "-PappVersion=$ver"
+          ./gradlew.bat :composeApp:packageMsi "-PappVersion=$ver"
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
-          files: composeApp/build/compose/binaries/main/exe/Furcord-${{ steps.ver.outputs.version }}.exe
+          files: composeApp/build/compose/binaries/main/msi/Furcord-${{ steps.ver.outputs.version }}.msi
           generate_release_notes: true
 
       - name: Authenticate GCP (service account)
@@ -70,7 +70,7 @@ jobs:
         env:
           FIREBASE_PROJECT_ID: furcord-13ab3
           APP_VERSION: ${{ steps.ver.outputs.version }}
-          DOWNLOAD_URL: https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/Furcord-${{ steps.ver.outputs.version }}.exe
+          DOWNLOAD_URL: https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/Furcord-${{ steps.ver.outputs.version }}.msi
           RELEASE_NOTES: GitHub release ${{ github.ref_name }}
           FIRESTORE_BEARER_TOKEN: ${{ steps.token.outputs.value }}
         run: node scripts/update-firestore-version.js
