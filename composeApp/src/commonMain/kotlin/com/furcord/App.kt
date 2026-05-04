@@ -77,6 +77,18 @@ fun App() {
                 // Firestore'dan gelen güncel profili yerel dosyaya da yaz
                 FirebaseAuth.saveProfile(user.displayName, user.photoURL)
                 if (user.nickname.isNotEmpty()) FirebaseAuth.saveNickname(user.nickname)
+                // Kullanıcı kaydını Firestore'a yaz (her session restore'da güncellensin)
+                runCatching {
+                    FirestoreClient.saveUserRecord(
+                        uid         = user.uid,
+                        displayName = user.displayName,
+                        photoURL    = user.photoURL,
+                        furcordId   = user.furcordId,
+                        email       = user.email,
+                        idToken     = user.idToken,
+                        nickname    = user.nickname,
+                    )
+                }
             } else {
                 authState = AppAuthState.Unauthenticated
             }
@@ -173,6 +185,18 @@ fun App() {
                             pendingUpdate = info
                         }
                         delay(10 * 60 * 1000L)  // 10 dakika
+                    }
+                }
+
+                // Token yenileme döngüsü — her 45 dakikada bir (1 saatlik süre dolmadan)
+                LaunchedEffect(currentUser.uid, "tokenRefresh") {
+                    delay(45 * 60 * 1000L)  // ilk 45 dk bekle
+                    while (true) {
+                        val newToken = runCatching { FirebaseAuth.refreshToken() }.getOrNull()
+                        if (newToken != null) {
+                            authState = AppAuthState.Authenticated(currentUser.copy(idToken = newToken))
+                        }
+                        delay(45 * 60 * 1000L)
                     }
                 }
 

@@ -168,6 +168,26 @@ object FirebaseAuth {
         SESSION_FILE.delete()
     }
 
+    /**
+     * refreshToken ile yeni idToken alır. Token süresi dolunca çağrılır.
+     * Returns null if refresh failed (session expired or no session).
+     */
+    suspend fun refreshToken(): String? = withContext(Dispatchers.IO) {
+        val session = loadSession() ?: return@withContext null
+        val (uid, email, refreshToken) = session
+        runCatching {
+            val formBody = "grant_type=refresh_token&refresh_token=${URLEncoder.encode(refreshToken, "UTF-8")}"
+            val response = postForm("$REFRESH_URL?key=$API_KEY", formBody)
+            val newIdToken = Regex("\"id_token\"\\s*:\\s*\"([^\"]+)\"")
+                .find(response)?.groupValues?.get(1) ?: return@runCatching null
+            val newRefreshToken = Regex("\"refresh_token\"\\s*:\\s*\"([^\"]+)\"")
+                .find(response)?.groupValues?.get(1) ?: refreshToken
+            saveToken(newIdToken)
+            saveSession(uid, email, newRefreshToken)
+            newIdToken
+        }.getOrNull()
+    }
+
     // ── Private helpers ───────────────────────────────────────────────────────
 
     private fun post(url: String, body: String): String {

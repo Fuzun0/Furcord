@@ -485,13 +485,17 @@ fun ServerDetailScreen(
     var isOwner           by remember { mutableStateOf(false) }
     // Atıldı mı?
     var wasKicked         by remember { mutableStateOf(false) }
+    // Çevrimiçi üyeler (presence)
+    var presenceUsers     by remember { mutableStateOf<List<ActiveUser>>(emptyList()) }
 
     val latestConnectedId   by rememberUpdatedState(connectedChannelId)
     val latestChannelUsers  by rememberUpdatedState(channelUsers)
 
+    val displayNickname = currentUser.nickname.ifEmpty { currentUser.displayName.ifEmpty { currentUser.email } }
+
     val userEntry = ActiveUser(
         uid      = currentUser.uid,
-        username = currentUser.displayName.ifEmpty { currentUser.email },
+        username = displayNickname,
         color    = "#5865F2",
         photoURL = currentUser.photoURL,
     )
@@ -579,6 +583,27 @@ fun ServerDetailScreen(
         }
     }
 
+    // ── Presence heartbeat — 30s'de bir yaz ─────────────────────────────────
+    LaunchedEffect(serverId, currentUser.uid) {
+        while (true) {
+            runCatching {
+                FirestoreClient.upsertPresence(serverId, currentUser.uid, displayNickname, currentUser.photoURL, currentUser.idToken)
+            }
+            delay(30_000)
+        }
+    }
+
+    // ── Presence poll — 5s'de bir oku ────────────────────────────────────────
+    LaunchedEffect(serverId, "presence") {
+        while (true) {
+            runCatching {
+                val fetched = FirestoreClient.listPresence(serverId, currentUser.idToken)
+                if (fetched != presenceUsers) presenceUsers = fetched
+            }
+            delay(5_000)
+        }
+    }
+
     // ── Cleanup on dispose ────────────────────────────────────────────────────
     DisposableEffect(Unit) {
         onDispose {
@@ -595,6 +620,7 @@ fun ServerDetailScreen(
                     } catch (_: Exception) {}
                     runCatching { FirestoreClient.removeVoicePeer(serverId, currentUser.uid, currentUser.idToken) }
                 }
+                runCatching { FirestoreClient.deletePresence(serverId, currentUser.uid, currentUser.idToken) }
             }
             VoiceEngine.stop()
         }
@@ -735,7 +761,7 @@ fun ServerDetailScreen(
         val optimistic = ChatMessage(
             id        = "pending-$now",
             uid       = currentUser.uid,
-            username  = currentUser.displayName.ifEmpty { currentUser.email },
+            username  = displayNickname,
             photoURL  = currentUser.photoURL,
             text      = txt,
             timestamp = now,
@@ -749,7 +775,7 @@ fun ServerDetailScreen(
                 FirestoreClient.sendMessage(
                     serverId  = serverId,
                     uid       = currentUser.uid,
-                    username  = currentUser.displayName.ifEmpty { currentUser.email },
+                    username  = displayNickname,
                     photoURL  = currentUser.photoURL,
                     text      = txt,
                     idToken   = currentUser.idToken,
@@ -774,7 +800,7 @@ fun ServerDetailScreen(
 
     val connectedChannel = channels.find { it.id == connectedChannelId }
     val selectedChannel  = channels.find { it.id == selectedChannelId }
-    val displayName      = currentUser.displayName.ifEmpty { currentUser.email }
+    val displayName      = displayNickname
     val initial          = displayName.firstOrNull()?.uppercaseChar() ?: '?'
 
     Row(modifier = Modifier.fillMaxSize()) {
@@ -913,6 +939,47 @@ fun ServerDetailScreen(
                             color = Color(0xFF8E9297),
                             modifier = Modifier.padding(8.dp),
                         )
+                    }
+                }
+                // ── Çevrimiçi üyeler (presence) ──────────────────────────────
+                if (presenceUsers.isNotEmpty()) {
+                    item {
+                        Text(
+                            text = "ÇEVRİMİÇİ ÜYELER — ${presenceUsers.size}",
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = Color(0xFF8E9297),
+                            letterSpacing = 0.8.sp,
+                            modifier = Modifier.padding(start = 8.dp, top = 12.dp, bottom = 4.dp),
+                        )
+                    }
+                    items(presenceUsers) { u ->
+                        val isSelf = u.uid == currentUser.uid
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 8.dp, vertical = 2.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            Box(
+                                modifier = Modifier.size(8.dp)
+                                    .clip(CircleShape)
+                                    .background(Color(0xFF23A55A))
+                            )
+                            UserAvatar(
+                                displayName = u.username,
+                                photoURL    = u.photoURL,
+                                size        = 20,
+                            )
+                            Text(
+                                text = if (isSelf) "${u.username} (sen)" else u.username,
+                                fontSize = 12.sp,
+                                color = if (isSelf) Color(0xFF23A55A) else Color(0xFFB5BAC1),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
                     }
                 }
             }

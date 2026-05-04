@@ -637,6 +637,46 @@ object FirestoreClient {
         runCatching { request("PATCH", "$BASE/users/$uid", idToken = idToken, body = body) }
     }
 
+    // ── Server Presence ───────────────────────────────────────────────────────
+
+    /** Kullanıcının sunucuda çevrimiçi olduğunu Firestore'a yazar (kalp atışı). */
+    suspend fun upsertPresence(
+        serverId: String, uid: String, username: String, photoURL: String, idToken: String,
+    ) = withContext(Dispatchers.IO) {
+        fun String.esc() = replace("\\", "\\\\").replace("\"", "\\\"")
+        val ts = System.currentTimeMillis()
+        val body = """{"fields":{"uid":{"stringValue":"${uid.esc()}"},"username":{"stringValue":"${username.esc()}"},"photoURL":{"stringValue":"${photoURL.esc()}"},"lastSeen":{"integerValue":"$ts"}}}"""
+        runCatching { request("PATCH", "$BASE/servers/$serverId/presence/$uid", body, idToken) }
+    }
+
+    /** Sunucudaki tüm çevrimiçi kullanıcıları döner (son 60 sn içinde lastSeen güncellemiş). */
+    suspend fun listPresence(serverId: String, idToken: String): List<ActiveUser> =
+        withContext(Dispatchers.IO) {
+            val (code, text) = request("GET", "$BASE/servers/$serverId/presence?pageSize=100", idToken = idToken)
+            if (code !in 200..299) return@withContext emptyList()
+            if (!text.contains("/presence/")) return@withContext emptyList()
+            val cutoff = System.currentTimeMillis() - 90_000L  // 90 saniye
+            val result = mutableListOf<ActiveUser>()
+            val segments = text.split(Regex("""/presence/"""))
+            for (i in 1 until segments.size) {
+                val seg = segments[i]
+                fun str(name: String) = Regex(""""$name"\s*:\s*\{"stringValue"\s*:\s*"([^"]*)"""").find(seg)?.groupValues?.get(1) ?: ""
+                fun lng(name: String) = Regex(""""$name"\s*:\s*\{"integerValue"\s*:\s*"?(\d+)"?""").find(seg)?.groupValues?.get(1)?.toLongOrNull() ?: 0L
+                val uid = str("uid")
+                val lastSeen = lng("lastSeen")
+                if (uid.isNotEmpty() && lastSeen >= cutoff) {
+                    result.add(ActiveUser(uid = uid, username = str("username"), color = "#5865F2", photoURL = str("photoURL")))
+                }
+            }
+            result
+        }
+
+    /** Kullanıcının sunucu presence kaydını siler (sunucudan çıkınca). */
+    suspend fun deletePresence(serverId: String, uid: String, idToken: String) =
+        withContext(Dispatchers.IO) {
+            runCatching { request("DELETE", "$BASE/servers/$serverId/presence/$uid", idToken = idToken) }
+        }
+
     // ── Request helper ────────────────────────────────────────────────────────
 
     /**
