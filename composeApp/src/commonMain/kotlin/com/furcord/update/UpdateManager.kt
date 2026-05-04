@@ -16,6 +16,19 @@ object UpdateManager {
     val currentVersion: String
         get() = System.getProperty("jpackage.app-version") ?: "1.0.0"
 
+    private fun resolveAppExecutablePath(): String {
+        val jpackagePath = System.getProperty("jpackage.app-path")
+        if (!jpackagePath.isNullOrBlank()) return jpackagePath
+
+        val local = System.getenv("LOCALAPPDATA").orEmpty()
+        val candidates = listOf(
+            File(local, "Furcord\\Furcord.exe"),
+            File(local, "Programs\\Furcord\\Furcord.exe"),
+        )
+        return candidates.firstOrNull { it.exists() }?.absolutePath
+            ?: candidates.first().absolutePath
+    }
+
     /**
      * latest > current ise true döner.
      * Semver karşılaştırması: "1.2.0" vs "1.1.5"
@@ -97,10 +110,7 @@ object UpdateManager {
 
     /** Kurulum bitti, uygulamayı yeniden başlat (VBScript ile Job Object'ten bağımsız). */
     fun restartApp() {
-        val appExe = File(
-            System.getenv("LOCALAPPDATA") ?: "",
-            "Furcord\\Furcord.exe"
-        ).absolutePath
+        val appExe = resolveAppExecutablePath()
         val vbs = File(System.getProperty("java.io.tmpdir"), "furcord_restart.vbs")
         vbs.writeText(buildString {
             appendLine("WScript.Sleep 1000")

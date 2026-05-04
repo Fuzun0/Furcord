@@ -19,6 +19,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.furcord.auth.AuthUser
@@ -39,6 +40,7 @@ private val OutlineP  = Color(0xFF3F4147)
 @Composable
 fun FloatingDmPanel(
     currentUser: AuthUser?,
+    bottomOffset: Dp = 0.dp,
     onOpenDm: (uid: String, name: String) -> Unit,
 ) {
     if (currentUser == null) return
@@ -71,7 +73,7 @@ fun FloatingDmPanel(
 
     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.BottomEnd) {
         Column(
-            Modifier.padding(16.dp),
+            Modifier.padding(start = 16.dp, end = 16.dp, top = 16.dp, bottom = 16.dp + bottomOffset),
             horizontalAlignment = Alignment.End,
         ) {
             AnimatedVisibility(

@@ -273,21 +273,19 @@ fun App() {
                             recipientName = dm.name,
                             onBack        = { dmTarget = null },
                         )
+                        Text(
+                            text = "v${UpdateManager.currentVersion}",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = Color.White.copy(alpha = 0.6f),
+                            modifier = Modifier
+                                .align(Alignment.BottomStart)
+                                .padding(start = 8.dp, bottom = 8.dp)
+                        )
                     }
                     return@MaterialTheme
                 }
 
                 Box(Modifier.fillMaxSize()) {
-                    // Sol alt köşede sürüm numarası
-                    Text(
-                        text = "v${UpdateManager.currentVersion}",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = Color.White.copy(alpha = 0.35f),
-                        modifier = Modifier
-                            .align(Alignment.BottomStart)
-                            .padding(start = 8.dp, bottom = 8.dp)
-                    )
-
                     when (val ss = serverState) {
                         is AppServerState.None -> {
                             ServerLobbyScreen(
@@ -332,9 +330,20 @@ fun App() {
                     if (serverState is AppServerState.InServer) {
                         FloatingDmPanel(
                             currentUser = currentUser,
+                            bottomOffset = 64.dp,
                             onOpenDm    = { uid, name -> dmTarget = DmTarget(uid, name) },
                         )
                     }
+
+                    // Sol altta her zaman görünür sürüm etiketi (en üst katman)
+                    Text(
+                        text = "v${UpdateManager.currentVersion}",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = Color.White.copy(alpha = 0.6f),
+                        modifier = Modifier
+                            .align(Alignment.BottomStart)
+                            .padding(start = 8.dp, bottom = 8.dp)
+                    )
                 }
             }
         }
