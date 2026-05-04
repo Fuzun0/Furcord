@@ -51,6 +51,7 @@ private val NB_SUB     = Color(0xFF96989D)
 @Composable
 fun NotificationBell(
     currentUser: AuthUser,
+    hasUpdate: Boolean = false,
     onJoinServer: ((serverId: String, serverName: String) -> Unit)? = null,
 ) {
     val scope = rememberCoroutineScope()
@@ -65,7 +66,7 @@ fun NotificationBell(
     var expandedFriendUid   by remember { mutableStateOf<String?>(null) }
     var expandedInviteId    by remember { mutableStateOf<String?>(null) }
 
-    val totalCount = friendRequests.size + serverInvites.size
+    val totalCount = friendRequests.size + serverInvites.size + (if (hasUpdate) 1 else 0)
 
     // 15 sn'de bir bildirimleri yenile
     LaunchedEffect(currentUser.uid) {

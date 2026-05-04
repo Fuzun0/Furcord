@@ -144,9 +144,8 @@ fun App() {
                     installStatus = "Kuruluyor..."
                     val ok = UpdateManager.installMsi(file)
                     if (ok) {
-                        installStatus = "Yeniden başlatılıyor..."
-                        delay(1500)
-                        UpdateManager.restartApp()
+                        // Kurulum başarılı — durumu kalsın
+                        installStatus = "Kurulum tamamlandı"
                     } else {
                         installStatus = "Kurulum başarısız!"
                         installError = true

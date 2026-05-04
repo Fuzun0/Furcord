@@ -701,7 +701,10 @@ fun ServerDetailScreen(
                     overflow = TextOverflow.Ellipsis,
                 )
                 // Notification bell
-                NotificationBell(currentUser = currentUser)
+                NotificationBell(
+                    currentUser = currentUser,
+                    hasUpdate = false,  // Güncelleme bildirimi burada kontrol edilmez, sunucu sahnesinde
+                )
                 // Invite button
                 IconButton(onClick = { showInviteDialog = true }, modifier = Modifier.size(28.dp)) {
                     Text("🔗", fontSize = 14.sp)
