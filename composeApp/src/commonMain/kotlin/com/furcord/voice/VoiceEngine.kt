@@ -66,7 +66,8 @@ object VoiceEngine {
 
     private val peers        = ConcurrentHashMap<String, VoicePeer>()
     private val peerBuffers  = ConcurrentHashMap<Int, PeerBuffer>()
-    private val peerVolumes  = ConcurrentHashMap<Int, Float>()  // uidHash → 0.0-2.0 (1.0 = normal)
+    private val peerVolumes  = ConcurrentHashMap<Int, Float>()      // uidHash → 0.0-2.0 (1.0 = normal)
+    private val prevPeerVols = ConcurrentHashMap<Int, Float>()      // smooth ramp: previous-frame volume
     private val seqCounter   = AtomicInteger(0)
 
     // ── Per-peer jitter buffer ────────────────────────────────────────────────
@@ -155,7 +156,7 @@ object VoiceEngine {
         runCatching { speakerLine?.drain(); speakerLine?.stop(); speakerLine?.close() }; speakerLine = null
         runCatching { socket?.close() }; socket = null
         relayClient?.disconnect(); relayClient = null
-        peers.clear(); peerBuffers.clear(); peerVolumes.clear()
+        peers.clear(); peerBuffers.clear(); peerVolumes.clear(); prevPeerVols.clear()
         localPort = 0; localPublicIp = ""
         isMuted = false; isDeafened = false; isRelayMode = false
     }
@@ -171,7 +172,8 @@ object VoiceEngine {
 
     fun updatePeers(newPeers: List<VoicePeer>) {
         val newHashSet = newPeers.map { it.uid.hashCode() }.toSet()
-        peerBuffers.keys.filter { it !in newHashSet }.forEach { peerBuffers.remove(it) }
+        peerBuffers.keys.filter  { it !in newHashSet }.forEach { peerBuffers.remove(it) }
+        prevPeerVols.keys.filter { it !in newHashSet }.forEach { prevPeerVols.remove(it) }
         val added = newPeers.filter { !peers.containsKey(it.uid) }
         peers.clear()
         newPeers.forEach { peers[it.uid] = it; peerBuffers.getOrPut(it.uid.hashCode()) { PeerBuffer() } }
@@ -216,27 +218,66 @@ object VoiceEngine {
 
     private fun mixerLoop() {
         val mixBuf  = IntArray(SAMPLES_FRAME)
-        val tempBuf = IntArray(SAMPLES_FRAME)   // tek peer geçici tampon
+        val tempBuf = IntArray(SAMPLES_FRAME)
         val outBuf  = ByteArray(FRAME_BYTES)
         val outBB   = ByteBuffer.wrap(outBuf)
+        // outputFade: 1.0 = full audio, ramps smoothly to 0.0 when deafened.
+        // Prevents the audio click/pop caused by abruptly cutting the SourceDataLine feed.
+        var outputFade = 1f
         while (isActive) {
             Thread.sleep(20)
-            if (isDeafened) continue
+
+            // ── Smooth deafen fade (≈40ms ramp at 50% per frame) ─────────────
+            val targetFade = if (isDeafened) 0f else 1f
+            outputFade     = outputFade + (targetFade - outputFade) * 0.5f
+
+            // Once fully faded out, write silence to keep the line fed (no underrun pop)
+            if (outputFade < 0.005f) {
+                outBuf.fill(0)
+                runCatching { speakerLine?.write(outBuf, 0, FRAME_BYTES) }
+                continue
+            }
+
             val activeEntries = peerBuffers.entries.filter { it.value.hasData() }
             if (activeEntries.isEmpty()) continue
             mixBuf.fill(0)
+
             for ((hash, buf) in activeEntries) {
                 tempBuf.fill(0)
                 buf.read(tempBuf, 0, SAMPLES_FRAME)
-                val vol = peerVolumes[hash] ?: 1f
-                if (vol == 1f) {
-                    for (i in 0 until SAMPLES_FRAME) mixBuf[i] += tempBuf[i]
+
+                // ── Per-peer smooth volume ramp ───────────────────────────────
+                // Linearly interpolate between previous and target volume over the
+                // frame (320 samples ≈ 20ms). Eliminates pops when setPeerVolume
+                // jumps discontinuously (e.g. muting a specific user).
+                val targetVol = peerVolumes[hash] ?: 1f
+                val prevVol   = prevPeerVols.getOrDefault(hash, targetVol)
+                prevPeerVols[hash] = targetVol
+
+                if (prevVol == targetVol) {
+                    // No change — fast path, no interpolation needed
+                    if (targetVol == 1f) {
+                        for (i in 0 until SAMPLES_FRAME) mixBuf[i] += tempBuf[i]
+                    } else {
+                        for (i in 0 until SAMPLES_FRAME) mixBuf[i] += (tempBuf[i] * targetVol).toInt()
+                    }
                 } else {
-                    for (i in 0 until SAMPLES_FRAME) mixBuf[i] += (tempBuf[i] * vol).toInt()
+                    // Volume changed this frame — ramp to avoid discontinuity
+                    val last = SAMPLES_FRAME - 1
+                    for (i in 0 until SAMPLES_FRAME) {
+                        val t   = i.toFloat() / last
+                        val vol = prevVol + (targetVol - prevVol) * t
+                        mixBuf[i] += (tempBuf[i] * vol).toInt()
+                    }
                 }
             }
+
+            // ── Write to speaker with deafen fade applied ─────────────────────
             outBB.rewind()
-            mixBuf.forEach { outBB.putShort(it.coerceIn(-32768, 32767).toShort()) }
+            for (i in 0 until SAMPLES_FRAME) {
+                val s = (mixBuf[i] * outputFade).toInt().coerceIn(-32768, 32767)
+                outBB.putShort(s.toShort())
+            }
             runCatching { speakerLine?.write(outBuf, 0, FRAME_BYTES) }
         }
     }
