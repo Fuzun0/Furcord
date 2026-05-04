@@ -31,6 +31,10 @@ import com.furcord.auth.FirestoreClient
 import com.furcord.auth.RecentServers
 import kotlinx.coroutines.launch
 
+// ─── Arama sonuçları ─────────────────────────────────────────────────────────
+private enum class SearchType { PERSON, SERVER }
+private data class SearchResult(val type: SearchType, val id: String, val name: String)
+
 // ─── Renk paleti ─────────────────────────────────────────────────────────────
 private val BG           = Color(0xFF1E1F22)
 private val SURFACE      = Color(0xFF2B2D31)
@@ -53,9 +57,10 @@ fun ServerLobbyScreen(
 ) {
     val scope = rememberCoroutineScope()
 
-    var joinId        by remember { mutableStateOf("") }
-    var joinError     by remember { mutableStateOf("") }
-    var joinLoading   by remember { mutableStateOf(false) }
+    var searchQuery   by remember { mutableStateOf("") }
+    var searchLoading by remember { mutableStateOf(false) }
+    var searchResults by remember { mutableStateOf<List<SearchResult>>(emptyList()) }
+    var searchError   by remember { mutableStateOf("") }
 
     var createName    by remember { mutableStateOf("") }
     var createError   by remember { mutableStateOf("") }
@@ -104,27 +109,41 @@ fun ServerLobbyScreen(
         onJoinServer(id, name)
     }
 
-    fun doJoin() {
-        scope.launch {
-            val input = joinId.trim()
-            if (input.isEmpty()) { joinError = "Bir sunucu ID'si veya davet kodu girin."; return@launch }
-            joinLoading = true
-            try {
-                val inviteResult = if (input.length == 8 && input.all { it.isLetterOrDigit() })
-                    FirestoreClient.getServerByInvite(input.uppercase(), currentUser.idToken)
-                else null
-                if (inviteResult != null) {
-                    connectToServer(inviteResult.first, inviteResult.second)
-                } else {
-                    val name = FirestoreClient.getServerName(input, currentUser.idToken)
-                    connectToServer(input, name)
-                }
-            } catch (_: Exception) {
-                joinError = "Bu ID veya davet koduyla sunucu bulunamadı."
-            } finally {
-                joinLoading = false
+    // ── Arama: nickname / FurcordID → kişi, davet kodu → sunucu ─────────────
+    LaunchedEffect(searchQuery) {
+        if (searchQuery.length < 2) {
+            searchResults = emptyList()
+            searchError = ""
+            return@LaunchedEffect
+        }
+        delay(400L) // debounce
+        searchLoading = true
+        searchError   = ""
+        val results = mutableListOf<SearchResult>()
+        val trimmed = searchQuery.trim()
+        val upper   = trimmed.uppercase()
+        // Nickname ile kişi ara
+        runCatching {
+            FirestoreClient.getUserByNickname(trimmed, currentUser.idToken)?.let { (uid, uname) ->
+                results += SearchResult(SearchType.PERSON, uid, uname)
             }
         }
+        // 8 karakter alfanümerik: FurcordID ve davet kodu olabilir
+        if (trimmed.length == 8 && trimmed.all { it.isLetterOrDigit() }) {
+            runCatching {
+                FirestoreClient.getUserByFurcordId(upper, currentUser.idToken)?.let { (uid, uname) ->
+                    if (results.none { it.id == uid }) results += SearchResult(SearchType.PERSON, uid, uname)
+                }
+            }
+            runCatching {
+                FirestoreClient.getServerByInvite(upper, currentUser.idToken)?.let { (sid, sname) ->
+                    results += SearchResult(SearchType.SERVER, sid, sname)
+                }
+            }
+        }
+        searchResults = results
+        if (results.isEmpty()) searchError = "Sonuç bulunamadı."
+        searchLoading = false
     }
 
     if (showProfileDialog) {
@@ -170,13 +189,13 @@ fun ServerLobbyScreen(
                     .padding(horizontal = 10.dp, vertical = 6.dp),
             ) {
                 UserAvatar(
-                    displayName = currentUser.displayName.ifEmpty { currentUser.email },
+                    displayName = currentUser.nickname.ifEmpty { currentUser.displayName.ifEmpty { currentUser.email } },
                     photoURL    = currentUser.photoURL,
                     size        = 32,
                 )
                 Column {
                     Text(
-                        text = currentUser.displayName.ifEmpty { currentUser.email.substringBefore("@") },
+                        text = currentUser.nickname.ifEmpty { currentUser.displayName.ifEmpty { currentUser.email.substringBefore("@") } },
                         fontSize = 13.sp,
                         fontWeight = FontWeight.SemiBold,
                         color = TEXT,
@@ -408,47 +427,89 @@ fun ServerLobbyScreen(
                 )
                 Spacer(Modifier.height(32.dp))
 
-                // ── Sunucuya Katıl ───────────────────────────────────────────
-                SectionLabel("SUNUCUYA KATIL")
+                // ── Kişi veya Sunucu Ara ─────────────────────────────────────
+                SectionLabel("KİŞİ VEYA SUNUCU ARA")
                 Spacer(Modifier.height(10.dp))
-                Row(
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalAlignment = Alignment.Top,
-                ) {
-                    OutlinedTextField(
-                        value = joinId,
-                        onValueChange = { joinId = it; joinError = "" },
-                        placeholder = { Text("Sunucu ID'si veya davet kodu", color = MUTED, fontSize = 13.sp) },
-                        modifier = Modifier
-                            .weight(1f)
-                            .onKeyEvent { e ->
-                                if (e.key == Key.Enter) { doJoin(); true } else false
-                            },
-                        singleLine = true,
-                        isError = joinError.isNotEmpty(),
-                        supportingText = if (joinError.isNotEmpty()) {
-                            { Text(joinError, color = MaterialTheme.colorScheme.error, fontSize = 12.sp) }
-                        } else null,
-                        shape = RoundedCornerShape(8.dp),
-                        colors = OutlinedTextFieldDefaults.colors(
-                            focusedBorderColor   = ACCENT,
-                            unfocusedBorderColor = OUTLINE,
-                            focusedContainerColor   = SURFACE2,
-                            unfocusedContainerColor = SURFACE2,
-                        ),
-                    )
-                    Button(
-                        onClick  = ::doJoin,
-                        enabled  = !joinLoading,
-                        modifier = Modifier.height(56.dp),
-                        shape    = RoundedCornerShape(8.dp),
-                        colors   = ButtonDefaults.buttonColors(containerColor = ACCENT),
-                    ) {
-                        if (joinLoading) {
-                            CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp, color = Color.White)
-                        } else {
-                            Text("Bağlan", fontWeight = FontWeight.SemiBold)
+                OutlinedTextField(
+                    value = searchQuery,
+                    onValueChange = { searchQuery = it; searchError = "" },
+                    placeholder = { Text("Nickname, ID veya davet kodu...", color = MUTED, fontSize = 13.sp) },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    trailingIcon = {
+                        if (searchLoading) CircularProgressIndicator(
+                            modifier = Modifier.size(18.dp),
+                            strokeWidth = 2.dp,
+                            color = MUTED,
+                        )
+                    },
+                    shape = RoundedCornerShape(8.dp),
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor      = ACCENT,
+                        unfocusedBorderColor    = OUTLINE,
+                        focusedContainerColor   = SURFACE2,
+                        unfocusedContainerColor = SURFACE2,
+                    ),
+                )
+
+                if (searchError.isNotEmpty() && searchResults.isEmpty()) {
+                    Spacer(Modifier.height(4.dp))
+                    Text(searchError, fontSize = 12.sp, color = MUTED)
+                }
+
+                if (searchResults.isNotEmpty()) {
+                    Spacer(Modifier.height(8.dp))
+                    searchResults.forEach { result ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(SURFACE2)
+                                .padding(horizontal = 12.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(
+                                if (result.type == SearchType.PERSON) "👤" else "🏠",
+                                fontSize = 18.sp,
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            Text(
+                                result.name,
+                                fontSize = 14.sp,
+                                color = TEXT,
+                                modifier = Modifier.weight(1f),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            if (result.type == SearchType.PERSON) {
+                                Button(
+                                    onClick = {
+                                        scope.launch {
+                                            runCatching {
+                                                FirestoreClient.addFriend(
+                                                    currentUser.uid, result.id, currentUser.idToken
+                                                )
+                                            }
+                                            onOpenDm?.invoke(result.id, result.name)
+                                        }
+                                    },
+                                    shape = RoundedCornerShape(6.dp),
+                                    colors = ButtonDefaults.buttonColors(containerColor = ACCENT),
+                                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
+                                    modifier = Modifier.height(30.dp),
+                                ) { Text("Arkadaş Ekle", fontSize = 12.sp) }
+                            } else {
+                                Button(
+                                    onClick = { connectToServer(result.id, result.name) },
+                                    shape = RoundedCornerShape(6.dp),
+                                    colors = ButtonDefaults.buttonColors(containerColor = GREEN),
+                                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
+                                    modifier = Modifier.height(30.dp),
+                                ) { Text("Bağlan", fontSize = 12.sp) }
+                            }
                         }
+                        Spacer(Modifier.height(4.dp))
                     }
                 }
 
