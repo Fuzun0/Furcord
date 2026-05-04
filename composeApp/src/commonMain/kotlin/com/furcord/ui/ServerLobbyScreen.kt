@@ -32,9 +32,6 @@ import com.furcord.auth.RecentServers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
-// ─── Arama sonuçları ─────────────────────────────────────────────────────────
-private enum class SearchType { PERSON, SERVER }
-private data class SearchResult(val type: SearchType, val id: String, val name: String)
 
 // ─── Renk paleti ─────────────────────────────────────────────────────────────
 private val BG           = Color(0xFF1E1F22)
@@ -60,7 +57,7 @@ fun ServerLobbyScreen(
 
     var searchQuery   by remember { mutableStateOf("") }
     var searchLoading by remember { mutableStateOf(false) }
-    var searchResults by remember { mutableStateOf<List<SearchResult>>(emptyList()) }
+    var serverResult  by remember { mutableStateOf<Pair<String, String>?>(null) }  // (id, name)
     var searchError   by remember { mutableStateOf("") }
 
     var createName    by remember { mutableStateOf("") }
@@ -110,40 +107,23 @@ fun ServerLobbyScreen(
         onJoinServer(id, name)
     }
 
-    // ── Arama: nickname / FurcordID → kişi, davet kodu → sunucu ─────────────
+    // ── Sunucu ara: davet kodu → sunucu ──────────────────────────────────────
     LaunchedEffect(searchQuery) {
-        if (searchQuery.length < 2) {
-            searchResults = emptyList()
-            searchError = ""
-            return@LaunchedEffect
-        }
+        serverResult = null
+        searchError  = ""
+        val trimmed = searchQuery.trim()
+        if (trimmed.length < 4) return@LaunchedEffect
         delay(400L) // debounce
         searchLoading = true
-        searchError   = ""
-        val results = mutableListOf<SearchResult>()
-        val trimmed = searchQuery.trim()
-        val upper   = trimmed.uppercase()
-        // Nickname ile kişi ara
         runCatching {
-            FirestoreClient.getUserByNickname(trimmed, currentUser.idToken)?.let { (uid, uname) ->
-                results += SearchResult(SearchType.PERSON, uid, uname)
+            val result = FirestoreClient.getServerByInvite(trimmed.uppercase(), currentUser.idToken)
+                ?: FirestoreClient.getServerByInvite(trimmed, currentUser.idToken)
+            if (result != null) {
+                serverResult = result
+            } else {
+                searchError = "Sunucu bulunamadı. Davet kodunu kontrol edin."
             }
-        }
-        // 8 karakter alfanümerik: FurcordID ve davet kodu olabilir
-        if (trimmed.length == 8 && trimmed.all { it.isLetterOrDigit() }) {
-            runCatching {
-                FirestoreClient.getUserByFurcordId(upper, currentUser.idToken)?.let { (uid, uname) ->
-                    if (results.none { it.id == uid }) results += SearchResult(SearchType.PERSON, uid, uname)
-                }
-            }
-            runCatching {
-                FirestoreClient.getServerByInvite(upper, currentUser.idToken)?.let { (sid, sname) ->
-                    results += SearchResult(SearchType.SERVER, sid, sname)
-                }
-            }
-        }
-        searchResults = results
-        if (results.isEmpty()) searchError = "Sonuç bulunamadı."
+        }.onFailure { searchError = "Bağlantı hatası: ${it.message}" }
         searchLoading = false
     }
 
@@ -428,13 +408,13 @@ fun ServerLobbyScreen(
                 )
                 Spacer(Modifier.height(32.dp))
 
-                // ── Kişi veya Sunucu Ara ─────────────────────────────────────
-                SectionLabel("KİŞİ VEYA SUNUCU ARA")
+                // ── Sunucu Ara (Davet Kodu) ───────────────────────────────────
+                SectionLabel("SUNUCU ARA")
                 Spacer(Modifier.height(10.dp))
                 OutlinedTextField(
                     value = searchQuery,
-                    onValueChange = { searchQuery = it; searchError = "" },
-                    placeholder = { Text("Nickname, ID veya davet kodu...", color = MUTED, fontSize = 13.sp) },
+                    onValueChange = { searchQuery = it; searchError = ""; serverResult = null },
+                    placeholder = { Text("Davet kodu girin...", color = MUTED, fontSize = 13.sp) },
                     modifier = Modifier.fillMaxWidth(),
                     singleLine = true,
                     trailingIcon = {
@@ -453,64 +433,40 @@ fun ServerLobbyScreen(
                     ),
                 )
 
-                if (searchError.isNotEmpty() && searchResults.isEmpty()) {
+                if (searchError.isNotEmpty()) {
                     Spacer(Modifier.height(4.dp))
                     Text(searchError, fontSize = 12.sp, color = MUTED)
                 }
 
-                if (searchResults.isNotEmpty()) {
+                val sr = serverResult
+                if (sr != null) {
                     Spacer(Modifier.height(8.dp))
-                    searchResults.forEach { result ->
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clip(RoundedCornerShape(8.dp))
-                                .background(SURFACE2)
-                                .padding(horizontal = 12.dp, vertical = 8.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            Text(
-                                if (result.type == SearchType.PERSON) "👤" else "🏠",
-                                fontSize = 18.sp,
-                            )
-                            Spacer(Modifier.width(8.dp))
-                            Text(
-                                result.name,
-                                fontSize = 14.sp,
-                                color = TEXT,
-                                modifier = Modifier.weight(1f),
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                            )
-                            Spacer(Modifier.width(8.dp))
-                            if (result.type == SearchType.PERSON) {
-                                Button(
-                                    onClick = {
-                                        scope.launch {
-                                            runCatching {
-                                                FirestoreClient.addFriend(
-                                                    currentUser.uid, result.id, currentUser.idToken
-                                                )
-                                            }
-                                            onOpenDm?.invoke(result.id, result.name)
-                                        }
-                                    },
-                                    shape = RoundedCornerShape(6.dp),
-                                    colors = ButtonDefaults.buttonColors(containerColor = ACCENT),
-                                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
-                                    modifier = Modifier.height(30.dp),
-                                ) { Text("Arkadaş Ekle", fontSize = 12.sp) }
-                            } else {
-                                Button(
-                                    onClick = { connectToServer(result.id, result.name) },
-                                    shape = RoundedCornerShape(6.dp),
-                                    colors = ButtonDefaults.buttonColors(containerColor = GREEN),
-                                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
-                                    modifier = Modifier.height(30.dp),
-                                ) { Text("Bağlan", fontSize = 12.sp) }
-                            }
-                        }
-                        Spacer(Modifier.height(4.dp))
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(SURFACE2)
+                            .padding(horizontal = 12.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text("🏠", fontSize = 18.sp)
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            sr.second,
+                            fontSize = 14.sp,
+                            color = TEXT,
+                            modifier = Modifier.weight(1f),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Button(
+                            onClick = { connectToServer(sr.first, sr.second) },
+                            shape = RoundedCornerShape(6.dp),
+                            colors = ButtonDefaults.buttonColors(containerColor = GREEN),
+                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
+                            modifier = Modifier.height(30.dp),
+                        ) { Text("Bağlan", fontSize = 12.sp) }
                     }
                 }
 

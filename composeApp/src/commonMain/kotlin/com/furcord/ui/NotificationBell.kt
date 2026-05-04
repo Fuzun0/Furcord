@@ -68,14 +68,14 @@ fun NotificationBell(
 
     val totalCount = friendRequests.size + serverInvites.size + (if (hasUpdate) 1 else 0)
 
-    // 15 sn'de bir bildirimleri yenile
+    // 10 sn'de bir bildirimleri yenile (unified: users/{uid}/notifications)
     LaunchedEffect(currentUser.uid) {
         while (isActive) {
             runCatching {
                 friendRequests = FirestoreClient.listFriendRequests(currentUser.uid, currentUser.idToken)
                 serverInvites  = FirestoreClient.listServerInviteNotifs(currentUser.uid, currentUser.idToken)
             }
-            delay(15_000)
+            delay(10_000)
         }
     }
 

@@ -515,13 +515,13 @@ object FirestoreClient {
             "text":{"stringValue":"$esc"},
             "timestamp":{"integerValue":"${System.currentTimeMillis()}"}
         }}""".trimIndent()
-        request("POST", "$BASE/directMessages/$dmId/messages", idToken = idToken, body = body)
+        request("POST", "$BASE/dm_threads/$dmId/messages", idToken = idToken, body = body)
     }
 
     suspend fun listDms(senderUid: String, recipientUid: String, idToken: String): List<ChatMessage> =
         withContext(Dispatchers.IO) {
             val dmId = listOf(senderUid, recipientUid).sorted().joinToString("_")
-            val (code, text) = request("GET", "$BASE/directMessages/$dmId/messages?pageSize=200", idToken = idToken)
+            val (code, text) = request("GET", "$BASE/dm_threads/$dmId/messages?pageSize=200", idToken = idToken)
             if (code !in 200..299) return@withContext emptyList()
             parseMsgsFromJson(text)
         }
@@ -642,7 +642,7 @@ object FirestoreClient {
      */
     suspend fun listDmConversations(myUid: String, idToken: String): List<DmConversation> =
         withContext(Dispatchers.IO) {
-            val (code, text) = request("GET", "$BASE/directMessages?pageSize=500", idToken = idToken)
+            val (code, text) = request("GET", "$BASE/dm_threads?pageSize=500", idToken = idToken)
             if (code !in 200..299) return@withContext emptyList()
             val resp = runCatching { fsJson.decodeFromString<FsListResponse>(text) }.getOrNull()
                 ?: return@withContext emptyList()
@@ -654,7 +654,7 @@ object FirestoreClient {
                 if (!dmId.contains(myUid)) continue
                 val otherUid = parts.firstOrNull { it != myUid } ?: continue
                 val (mc, mt) = request("GET",
-                    "$BASE/directMessages/$dmId/messages?pageSize=1&orderBy=timestamp%20desc",
+                    "$BASE/dm_threads/$dmId/messages?pageSize=1&orderBy=timestamp%20desc",
                     idToken = idToken)
                 if (mc !in 200..299) continue
                 val msgs = parseMsgsFromJson(mt)
@@ -717,23 +717,25 @@ object FirestoreClient {
         val escN  = fromName.replace("\\", "\\\\").replace("\"", "\\\"")
         val escId = furcordId.replace("\\", "\\\\").replace("\"", "\\\"")
         val body  = """{"fields":{
+            "type":{"stringValue":"friend_request"},
             "fromUid":{"stringValue":"$fromUid"},
             "fromName":{"stringValue":"$escN"},
             "furcordId":{"stringValue":"$escId"},
             "timestamp":{"integerValue":"${System.currentTimeMillis()}"}
         }}""".trimIndent()
-        runCatching { request("PATCH", "$BASE/friendRequests/$toUid/pending/$fromUid", idToken = idToken, body = body) }
+        runCatching { request("PATCH", "$BASE/users/$toUid/notifications/$fromUid", idToken = idToken, body = body) }
     }
 
     /** Gelen arkadaşlık isteklerini listeler. */
     suspend fun listFriendRequests(myUid: String, idToken: String): List<FriendRequest> =
         withContext(Dispatchers.IO) {
-            val (code, text) = request("GET", "$BASE/friendRequests/$myUid/pending?pageSize=50", idToken = idToken)
+            val (code, text) = request("GET", "$BASE/users/$myUid/notifications?pageSize=100", idToken = idToken)
             if (code !in 200..299) return@withContext emptyList()
             val resp = runCatching { fsJson.decodeFromString<FsListResponse>(text) }.getOrNull()
                 ?: return@withContext emptyList()
             resp.documents.mapNotNull { doc ->
-                val f   = doc.fields
+                val f = doc.fields
+                if (f.str("type") != "friend_request") return@mapNotNull null
                 val uid = f.str("fromUid").takeIf { it.isNotEmpty() } ?: return@mapNotNull null
                 FriendRequest(uid, f.str("fromName"), f.str("furcordId"), f.lng("timestamp"))
             }.sortedByDescending { it.timestamp }
@@ -742,12 +744,12 @@ object FirestoreClient {
     /** Arkadaşlık isteğini kabul et. */
     suspend fun acceptFriendRequest(myUid: String, fromUid: String, idToken: String) = withContext(Dispatchers.IO) {
         addFriend(myUid, fromUid, idToken)
-        runCatching { request("DELETE", "$BASE/friendRequests/$myUid/pending/$fromUid", idToken = idToken) }
+        runCatching { request("DELETE", "$BASE/users/$myUid/notifications/$fromUid", idToken = idToken) }
     }
 
     /** Arkadaşlık isteğini reddet. */
     suspend fun rejectFriendRequest(myUid: String, fromUid: String, idToken: String) = withContext(Dispatchers.IO) {
-        runCatching { request("DELETE", "$BASE/friendRequests/$myUid/pending/$fromUid", idToken = idToken) }
+        runCatching { request("DELETE", "$BASE/users/$myUid/notifications/$fromUid", idToken = idToken) }
     }
 
     // ── Server invite notifications ───────────────────────────────────────────
@@ -760,24 +762,26 @@ object FirestoreClient {
         val escS = serverName.replace("\\", "\\\\").replace("\"", "\\\"")
         val escN = fromName.replace("\\", "\\\\").replace("\"", "\\\"")
         val body = """{"fields":{
+            "type":{"stringValue":"server_invite"},
             "serverId":{"stringValue":"$serverId"},
             "serverName":{"stringValue":"$escS"},
             "fromUid":{"stringValue":"$fromUid"},
             "fromName":{"stringValue":"$escN"},
             "timestamp":{"integerValue":"${System.currentTimeMillis()}"}
         }}""".trimIndent()
-        runCatching { request("PATCH", "$BASE/serverInvites/$toUid/pending/$serverId", idToken = idToken, body = body) }
+        runCatching { request("PATCH", "$BASE/users/$toUid/notifications/$serverId", idToken = idToken, body = body) }
     }
 
     /** Gelen sunucu davetlerini listeler. */
     suspend fun listServerInviteNotifs(myUid: String, idToken: String): List<ServerInviteNotif> =
         withContext(Dispatchers.IO) {
-            val (code, text) = request("GET", "$BASE/serverInvites/$myUid/pending?pageSize=50", idToken = idToken)
+            val (code, text) = request("GET", "$BASE/users/$myUid/notifications?pageSize=100", idToken = idToken)
             if (code !in 200..299) return@withContext emptyList()
             val resp = runCatching { fsJson.decodeFromString<FsListResponse>(text) }.getOrNull()
                 ?: return@withContext emptyList()
             resp.documents.mapNotNull { doc ->
                 val f   = doc.fields
+                if (f.str("type") != "server_invite") return@mapNotNull null
                 val sid = f.str("serverId").takeIf { it.isNotEmpty() } ?: return@mapNotNull null
                 ServerInviteNotif(sid, f.str("serverName"), f.str("fromUid"), f.str("fromName"), f.lng("timestamp"))
             }.sortedByDescending { it.timestamp }
@@ -785,7 +789,7 @@ object FirestoreClient {
 
     /** Sunucu davetini siler. */
     suspend fun removeServerInviteNotif(myUid: String, serverId: String, idToken: String) = withContext(Dispatchers.IO) {
-        runCatching { request("DELETE", "$BASE/serverInvites/$myUid/pending/$serverId", idToken = idToken) }
+        runCatching { request("DELETE", "$BASE/users/$myUid/notifications/$serverId", idToken = idToken) }
     }
 
     /** Firestore'daki güncel sürüm bilgisini getirir. */

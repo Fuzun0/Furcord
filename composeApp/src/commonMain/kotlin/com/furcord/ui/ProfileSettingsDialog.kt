@@ -20,10 +20,12 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
+import com.furcord.auth.AppPrefs
 import com.furcord.auth.AuthUser
 import com.furcord.auth.FirestoreClient
 import com.furcord.platform.decodeBase64ToBitmap
 import com.furcord.platform.pickImageAsBase64
+import com.furcord.voice.VoiceEngine
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -84,6 +86,7 @@ fun ProfileSettingsDialog(
     var saving         by remember { mutableStateOf(false) }
     var error          by remember { mutableStateOf("") }
     var success        by remember { mutableStateOf(false) }
+    var micGain        by remember { mutableStateOf(AppPrefs.micGain) }
     val focusRequester = remember { FocusRequester() }
 
     LaunchedEffect(Unit) {
@@ -247,6 +250,52 @@ fun ProfileSettingsDialog(
 
                 if (error.isNotEmpty()) Text(text = error, fontSize = 12.sp, color = Color(0xFFF23F43))
                 if (success)            Text(text = "Profil guncellendi!", fontSize = 12.sp, color = Color(0xFF23A55A))
+
+                HorizontalDivider(color = Color(0xFF3F4147))
+
+                // ── Mikrofon Seviyesi ──────────────────────────────────────────────────
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            text          = "MİKROFON SEVİYESİ",
+                            fontSize      = 11.sp,
+                            fontWeight    = FontWeight.Bold,
+                            color         = Color(0xFF8E9297),
+                            letterSpacing = 0.8.sp,
+                            modifier      = Modifier.weight(1f),
+                        )
+                        Text(
+                            text      = "${(micGain * 100).toInt()}%",
+                            fontSize  = 12.sp,
+                            color     = Color(0xFFDCDDDE),
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                    }
+                    Slider(
+                        value         = micGain,
+                        onValueChange = { v ->
+                            micGain = v
+                            VoiceEngine.micGain = v
+                            AppPrefs.micGain    = v
+                        },
+                        valueRange    = 0f..4f,
+                        steps         = 79,   // 0.05 adım
+                        colors        = SliderDefaults.colors(
+                            thumbColor       = Color(0xFF5865F2),
+                            activeTrackColor = Color(0xFF5865F2),
+                        ),
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    Row(
+                        Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                    ) {
+                        Text("Sessiz", fontSize = 10.sp, color = Color(0xFF6D6F78))
+                        Text("Normal", fontSize = 10.sp, color = Color(0xFF6D6F78))
+                        Text("2x", fontSize = 10.sp, color = Color(0xFF6D6F78))
+                        Text("4x", fontSize = 10.sp, color = Color(0xFF6D6F78))
+                    }
+                }
 
                 HorizontalDivider(color = Color(0xFF3F4147))
 

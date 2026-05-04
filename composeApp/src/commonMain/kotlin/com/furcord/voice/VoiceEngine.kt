@@ -1,6 +1,7 @@
 package com.furcord.voice
 
 import com.furcord.auth.VoicePeer
+import com.furcord.auth.AppPrefs
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -53,6 +54,8 @@ object VoiceEngine {
     @Volatile var isDeafened   = false
     @Volatile var isActive     = false; private set
     @Volatile var isRelayMode  = false; private set
+    /** Mikrofon giriş kazanç: 0.0 = sessiz, 1.0 = normal, 2.0 = 2x. Disk'e kaydedilir. */
+    @Volatile var micGain: Float = AppPrefs.micGain
 
     var localPublicIp: String = ""; private set
     var localPort: Int = 0;         private set
@@ -189,6 +192,18 @@ object VoiceEngine {
         while (isActive) {
             val read = try { micLine?.read(pcmBuf, 0, FRAME_BYTES) ?: break } catch (_: Exception) { break }
             if (read < FRAME_BYTES || isMuted) continue
+
+            // Mikrofon kazanç: little-endian short başvırusu, sınırlama ile distorsiyonu önle
+            val gain = micGain
+            if (gain != 1f) {
+                val bb = java.nio.ByteBuffer.wrap(pcmBuf).order(java.nio.ByteOrder.LITTLE_ENDIAN)
+                for (i in 0 until SAMPLES_FRAME) {
+                    val s = bb.getShort(i * 2).toInt()
+                    val g = (s * gain).toInt().coerceIn(-32768, 32767)
+                    bb.putShort(i * 2, g.toShort())
+                }
+            }
+
             val seq = seqCounter.incrementAndGet()
 
             if (isRelayMode) {
@@ -272,10 +287,16 @@ object VoiceEngine {
                 }
             }
 
-            // ── Write to speaker with deafen fade applied ─────────────────────
+            // ── Write to speaker with deafen fade + peak normalization ─────────
+            // Normalize the mixed frame to prevent hard-clipping distortion when
+            // multiple peers or high volumes would overflow Short range.
+            var peak = 0
+            for (v in mixBuf) { val av = if (v < 0) -v else v; if (av > peak) peak = av }
+            val normScale = if (peak > 32767) 32767f / peak.toFloat() else 1f
+
             outBB.rewind()
             for (i in 0 until SAMPLES_FRAME) {
-                val s = (mixBuf[i] * outputFade).toInt().coerceIn(-32768, 32767)
+                val s = (mixBuf[i] * outputFade * normScale).toInt().coerceIn(-32768, 32767)
                 outBB.putShort(s.toShort())
             }
             runCatching { speakerLine?.write(outBuf, 0, FRAME_BYTES) }
