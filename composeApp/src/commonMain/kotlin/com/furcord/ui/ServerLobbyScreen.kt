@@ -29,6 +29,7 @@ import com.furcord.auth.DmConversation
 import com.furcord.auth.FriendEntry
 import com.furcord.auth.FirestoreClient
 import com.furcord.auth.RecentServers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 // ─── Arama sonuçları ─────────────────────────────────────────────────────────
