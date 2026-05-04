@@ -2,6 +2,7 @@ package com.furcord.auth
 
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.serialization.decodeFromString
 import java.io.File
 import java.net.URI
 import java.net.http.HttpClient
@@ -120,22 +121,18 @@ object FirestoreClient {
     suspend fun getServerName(serverId: String, idToken: String): String =
         withContext(Dispatchers.IO) {
             val (code, text) = request("GET", "$BASE/servers/$serverId", idToken = idToken)
-            if (code !in 200..299) throw Exception("Sunucu bulunamadı.")
-            val fieldsIdx = text.indexOf("\"fields\"")
-            val search = if (fieldsIdx >= 0) text.substring(fieldsIdx) else text
-            Regex("\"name\"\\s*:\\s*\\{\\s*\"stringValue\"\\s*:\\s*\"([^\"]+)\"")
-                .find(search)?.groupValues?.get(1) ?: serverId
+            if (code !in 200..299) throw Exception("Sunucu bulunamad\u0131.")
+            val doc = runCatching { fsJson.decodeFromString<FsDocument>(text) }.getOrNull()
+            doc?.fields?.str("name")?.takeIf { it.isNotEmpty() } ?: serverId
         }
 
-    /** Sunucunun sahibi olan kullanıcının UID'sini döndürür. */
+    /** Sunucunun sahibi olan kullan\u0131c\u0131n\u0131n UID'sini d\u00f6nd\u00fcr\u00fcr. */
     suspend fun getServerCreatorUid(serverId: String, idToken: String): String? =
         withContext(Dispatchers.IO) {
             val (code, text) = request("GET", "$BASE/servers/$serverId", idToken = idToken)
             if (code !in 200..299) return@withContext null
-            val fieldsIdx = text.indexOf("\"fields\"")
-            val search = if (fieldsIdx >= 0) text.substring(fieldsIdx) else text
-            Regex("\"creatorUid\"\\s*:\\s*\\{\\s*\"stringValue\"\\s*:\\s*\"([^\"]+)\"")
-                .find(search)?.groupValues?.get(1)
+            val doc = runCatching { fsJson.decodeFromString<FsDocument>(text) }.getOrNull()
+            doc?.fields?.str("creatorUid")?.takeIf { it.isNotEmpty() }
         }
 
     // ── Kick (sunucudan at) ───────────────────────────────────────────────────
@@ -163,8 +160,7 @@ object FirestoreClient {
      */
     suspend fun getMyServers(creatorUid: String, idToken: String): List<Pair<String, String>> =
         withContext(Dispatchers.IO) {
-            val projectRoot = "projects/$PROJECT_ID/databases/(default)/documents"
-            val queryUrl = "https://firestore.googleapis.com/v1/$projectRoot:runQuery"
+            val queryUrl = "https://firestore.googleapis.com/v1/projects/$PROJECT_ID/databases/(default)/documents:runQuery"
             val body = """
                 {
                   "structuredQuery": {
@@ -182,20 +178,14 @@ object FirestoreClient {
             """.trimIndent()
             val (status, text) = request("POST", queryUrl, body, idToken)
             if (status !in 200..299) return@withContext emptyList()
-            // Her document'ı parse et
-            val result = mutableListOf<Pair<String, String>>()
-            val segments = text.split(Regex("""/servers/"""))
-            for (i in 1 until segments.size) {
-                val seg = segments[i]
-                val sid = seg.substringBefore("\"").trim()
-                if (sid.isEmpty()) continue
-                val fieldsIdx = seg.indexOf("\"fields\"")
-                val search = if (fieldsIdx >= 0) seg.substring(fieldsIdx) else seg
-                val name = Regex("\"name\"\\s*:\\s*\\{\\s*\"stringValue\"\\s*:\\s*\"([^\"]+)\"")
-                    .find(search)?.groupValues?.get(1) ?: continue
-                result.add(sid to name)
+            val results = runCatching { fsJson.decodeFromString<List<FsQueryItem>>(text) }.getOrNull()
+                ?: return@withContext emptyList()
+            results.mapNotNull { item ->
+                val doc  = item.document ?: return@mapNotNull null
+                val sid  = doc.name.substringAfterLast("/").takeIf { it.isNotEmpty() } ?: return@mapNotNull null
+                val name = doc.fields.str("name").takeIf { it.isNotEmpty() } ?: return@mapNotNull null
+                sid to name
             }
-            result
         }
 
     /** Creates a new server document with auto-generated ID. Returns the new document ID. */
@@ -206,9 +196,9 @@ object FirestoreClient {
             val body = """{"fields":{"name":{"stringValue":"$escapedName"},"creatorUid":{"stringValue":"$escapedUid"}}}"""
             val (code, text) = request("POST", "$BASE/servers", body, idToken)
             if (code !in 200..299) throw Exception("Sunucu oluşturulamadı ($code): $text")
-            // Response name: "projects/.../documents/servers/AUTOID"
-            Regex("""/documents/servers/([^"/]+)""")
-                .find(text)?.groupValues?.get(1)
+            val doc = runCatching { fsJson.decodeFromString<FsDocument>(text) }.getOrNull()
+            doc?.name?.substringAfterLast("/")?.takeIf { it.isNotEmpty() }
+                ?: Regex("""/documents/servers/([^"/ ]+)""").find(text)?.groupValues?.get(1)
                 ?: throw Exception("Sunucu ID alınamadı.")
         }
 
@@ -245,43 +235,24 @@ object FirestoreClient {
      */
     suspend fun getServerByInvite(inviteCode: String, idToken: String): Pair<String, String>? =
         withContext(Dispatchers.IO) {
-            val projectRoot = "projects/$PROJECT_ID/databases/(default)/documents"
-            val queryUrl = "https://firestore.googleapis.com/v1/$projectRoot:runQuery"
-            val body = """
-                {
-                  "structuredQuery": {
-                    "from": [{"collectionId": "servers"}],
-                    "where": {
-                      "fieldFilter": {
-                        "field": {"fieldPath": "inviteCode"},
-                        "op": "EQUAL",
-                        "value": {"stringValue": "$inviteCode"}
-                      }
-                    },
-                    "limit": 1
-                  }
-                }
-            """.trimIndent()
-            val (status, text) = request("POST", queryUrl, body, idToken)
-            if (status !in 200..299) return@withContext null
-            // Response is an array; extract document name and name field
-            val docPath = Regex(""""name"\s*:\s*"([^"]+/servers/[^"]+)"""").find(text)?.groupValues?.get(1)
+            val doc = runStructuredQuery("servers", "inviteCode", inviteCode, idToken)
                 ?: return@withContext null
-            val sid = docPath.substringAfterLast("/")
-            if (sid.isEmpty()) return@withContext null
-            // "fields" bölümünden sonra ara — document path "name" alanını atla
-            val fieldsIdx = text.indexOf("\"fields\"")
-            val search = if (fieldsIdx >= 0) text.substring(fieldsIdx) else text
-            val serverName = Regex("\"name\"\\s*:\\s*\\{\\s*\"stringValue\"\\s*:\\s*\"([^\"]+)\"")
-                .find(search)?.groupValues?.get(1) ?: sid
-            sid to serverName
+            val sid  = doc.name.substringAfterLast("/").takeIf { it.isNotEmpty() } ?: return@withContext null
+            val name = doc.fields.str("name").takeIf { it.isNotEmpty() } ?: sid
+            sid to name
         }
 
     /** Lists voice channels for the given server. */
-    suspend fun listVoiceChannels(serverId: String, idToken: String): List<VoiceChannel> =        withContext(Dispatchers.IO) {
+    suspend fun listVoiceChannels(serverId: String, idToken: String): List<VoiceChannel> =
+        withContext(Dispatchers.IO) {
             val (code, text) = request("GET", "$BASE/servers/$serverId/voiceChannels", idToken = idToken)
             if (code !in 200..299) return@withContext emptyList()
-            parseVoiceChannels(text)
+            val resp = runCatching { fsJson.decodeFromString<FsListResponse>(text) }.getOrNull()
+                ?: return@withContext emptyList()
+            resp.documents.mapNotNull { doc ->
+                val name = doc.fields.str("name").takeIf { it.isNotEmpty() } ?: return@mapNotNull null
+                VoiceChannel(doc.name.substringAfterLast("/"), name)
+            }
         }
 
     /**
@@ -291,9 +262,9 @@ object FirestoreClient {
     suspend fun deleteAllServers(idToken: String) = withContext(Dispatchers.IO) {
         val (code, text) = request("GET", "$BASE/servers?pageSize=100", idToken = idToken)
         if (code !in 200..299) return@withContext
-        val serverIds = Regex("""/servers/([^"/]+)""").findAll(text)
-            .map { it.groupValues[1] }.filter { it.isNotEmpty() }.toSet()
-        for (sid in serverIds) {
+        val resp = runCatching { fsJson.decodeFromString<FsListResponse>(text) }.getOrNull() ?: return@withContext
+        for (doc in resp.documents) {
+            val sid = doc.name.substringAfterLast("/").takeIf { it.isNotEmpty() } ?: continue
             deleteServerById(sid, idToken)
         }
     }
@@ -332,39 +303,38 @@ object FirestoreClient {
         }
 
     private fun parseVoicePeers(json: String, filterChannelId: String): List<VoicePeer> {
-        if (!json.contains("\"documents\"")) return emptyList()
-        val nameRegex = Regex("""/voicePeers/([^"/\s]+)""")
-        val docs = nameRegex.findAll(json).toList()
-        return docs.mapIndexed { i, m ->
-            val uid   = m.groupValues[1]
-            val from  = m.range.last
-            val to    = docs.getOrNull(i + 1)?.range?.first ?: json.length
-            val chunk = json.substring(from, to)
-            val ip    = Regex(""""ip"\s*:\s*\{"stringValue"\s*:\s*"([^"]+)"""").find(chunk)?.groupValues?.get(1) ?: return@mapIndexed null
-            val port  = Regex(""""port"\s*:\s*\{"integerValue"\s*:\s*"(\d+)"""").find(chunk)?.groupValues?.get(1)?.toIntOrNull() ?: return@mapIndexed null
-            val chId  = Regex(""""channelId"\s*:\s*\{"stringValue"\s*:\s*"([^"]+)"""").find(chunk)?.groupValues?.get(1) ?: return@mapIndexed null
-            if (chId != filterChannelId) return@mapIndexed null
+        val resp = runCatching { fsJson.decodeFromString<FsListResponse>(json) }.getOrNull()
+            ?: return emptyList()
+        return resp.documents.mapNotNull { doc ->
+            val f    = doc.fields
+            val uid  = doc.name.substringAfterLast("/").takeIf { it.isNotEmpty() } ?: return@mapNotNull null
+            val chId = f.str("channelId").takeIf { it.isNotEmpty() } ?: return@mapNotNull null
+            if (chId != filterChannelId) return@mapNotNull null
+            val ip   = f.str("ip").takeIf { it.isNotEmpty() } ?: return@mapNotNull null
+            val port = f["port"]?.integer?.toIntOrNull() ?: return@mapNotNull null
             VoicePeer(uid = uid, ip = ip, port = port)
-        }.filterNotNull()
+        }
     }
 
     private suspend fun deleteServerById(sid: String, idToken: String) {
         runCatching {
             val (mc, mt) = request("GET", "$BASE/servers/$sid/messages?pageSize=200", idToken = idToken)
             if (mc in 200..299) {
-                Regex("""/messages/([^"/]+)""").findAll(mt).map { it.groupValues[1] }
-                    .filter { it.isNotEmpty() }.forEach { mid ->
-                        runCatching { request("DELETE", "$BASE/servers/$sid/messages/$mid", idToken = idToken) }
-                    }
+                val resp = runCatching { fsJson.decodeFromString<FsListResponse>(mt) }.getOrNull()
+                resp?.documents?.forEach { doc ->
+                    val mid = doc.name.substringAfterLast("/").takeIf { it.isNotEmpty() } ?: return@forEach
+                    runCatching { request("DELETE", "$BASE/servers/$sid/messages/$mid", idToken = idToken) }
+                }
             }
         }
         runCatching {
             val (vc, vt) = request("GET", "$BASE/servers/$sid/voiceChannels?pageSize=100", idToken = idToken)
             if (vc in 200..299) {
-                Regex("""/voiceChannels/([^"/]+)""").findAll(vt).map { it.groupValues[1] }
-                    .filter { it.isNotEmpty() }.forEach { vcid ->
-                        runCatching { request("DELETE", "$BASE/servers/$sid/voiceChannels/$vcid", idToken = idToken) }
-                    }
+                val resp = runCatching { fsJson.decodeFromString<FsListResponse>(vt) }.getOrNull()
+                resp?.documents?.forEach { doc ->
+                    val vcid = doc.name.substringAfterLast("/").takeIf { it.isNotEmpty() } ?: return@forEach
+                    runCatching { request("DELETE", "$BASE/servers/$sid/voiceChannels/$vcid", idToken = idToken) }
+                }
             }
         }
         runCatching { request("DELETE", "$BASE/servers/$sid", idToken = idToken) }
@@ -395,10 +365,9 @@ object FirestoreClient {
     /** Fetches the latest messages (up to 50) from servers/{serverId}/messages. */
     suspend fun listMessages(serverId: String, idToken: String): List<ChatMessage> =
         withContext(Dispatchers.IO) {
-            // Firestore REST doesn't support orderBy without an index; we fetch all and sort client-side
             val (code, text) = request("GET", "$BASE/servers/$serverId/messages?pageSize=50", idToken = idToken)
             if (code !in 200..299) return@withContext emptyList()
-            parseMessages(text)
+            parseMsgsFromJson(text)
         }
 
     // ── User profile ──────────────────────────────────────────────────────────
@@ -418,16 +387,17 @@ object FirestoreClient {
         if (code !in 200..299) throw Exception("Profil kaydedilemedi ($code): $resp")
     }
 
-    /** Reads user profile from users/{uid} document. Returns null if not found. */
-    /** Kullanıcı profilini Firestore'dan getirir: (displayName, photoURL, nickname) */
     suspend fun getUserProfile(uid: String, idToken: String): Triple<String, String, String>? =
         withContext(Dispatchers.IO) {
             val (code, text) = request("GET", "$BASE/users/$uid", idToken = idToken)
             if (code !in 200..299) return@withContext null
-            val displayName = Regex("\"displayName\"\\s*:\\s*\\{\"stringValue\"\\s*:\\s*\"([^\"]*)\"").find(text)?.groupValues?.get(1) ?: ""
-            val photoURL    = Regex("\"photoURL\"\\s*:\\s*\\{\"stringValue\"\\s*:\\s*\"([^\"]*)\"").find(text)?.groupValues?.get(1) ?: ""
-            val nickname    = Regex("\"nickname\"\\s*:\\s*\\{\"stringValue\"\\s*:\\s*\"([^\"]*)\"").find(text)?.groupValues?.get(1) ?: ""
-            Triple(displayName, photoURL, nickname)
+            val doc = runCatching { fsJson.decodeFromString<FsDocument>(text) }.getOrNull()
+                ?: return@withContext null
+            Triple(
+                doc.fields.str("displayName"),
+                doc.fields.str("photoURL"),
+                doc.fields.str("nickname"),
+            )
         }
 
     /** Returns the active users list for a single voice channel document. */
@@ -435,7 +405,9 @@ object FirestoreClient {
         withContext(Dispatchers.IO) {
             val (code, text) = request("GET", "$BASE/servers/$serverId/voiceChannels/$channelId", idToken = idToken)
             if (code !in 200..299) return@withContext emptyList()
-            parseActiveUsers(text)
+            val doc = runCatching { fsJson.decodeFromString<FsDocument>(text) }.getOrNull()
+                ?: return@withContext emptyList()
+            parseActiveUsersFromDoc(doc)
         }
 
     /** Overwrites the activeUsers field of a voice channel document. */
@@ -453,51 +425,37 @@ object FirestoreClient {
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 
-    private fun parseMessages(json: String): List<ChatMessage> {
-        if (!json.contains("/messages/")) return emptyList()
-        val result = mutableListOf<ChatMessage>()
-        val segments = json.split(Regex("""/messages/"""))
-        for (i in 1 until segments.size) {
-            val seg  = segments[i]
-            val docId = seg.substringBefore("\"").trim()
-            fun str(name: String) = Regex(""""$name"\s*:\s*\{"stringValue"\s*:\s*"((?:[^"\\]|\\.)*)"""")
-                .find(seg)?.groupValues?.get(1)
-                ?.replace("\\\"", "\"")?.replace("\\\\", "\\") ?: ""
-            fun lng(name: String) = Regex(""""$name"\s*:\s*\{"integerValue"\s*:\s*"?(\d+)"?""")
-                .find(seg)?.groupValues?.get(1)?.toLongOrNull() ?: 0L
-            val text = str("text")
-            if (docId.isNotEmpty() && text.isNotEmpty()) {
-                result.add(ChatMessage(
-                    id        = docId,
-                    uid       = str("uid"),
-                    username  = str("username"),
-                    photoURL  = str("photoURL"),
-                    text      = text,
-                    timestamp = lng("timestamp"),
-                ))
-            }
-        }
-        return result.sortedBy { it.timestamp }
+    /**
+     * Parses a Firestore list response (GET /collection) into ChatMessage list.
+     * Uses kotlinx.serialization — no regex.
+     */
+    private fun parseMsgsFromJson(json: String): List<ChatMessage> {
+        val resp = runCatching { fsJson.decodeFromString<FsListResponse>(json) }.getOrNull()
+            ?: return emptyList()
+        return resp.documents.mapNotNull { doc ->
+            val f   = doc.fields
+            val msg = f.str("text").takeIf { it.isNotEmpty() } ?: return@mapNotNull null
+            ChatMessage(
+                id        = doc.name.substringAfterLast("/"),
+                uid       = f.str("uid"),
+                username  = f.str("username"),
+                photoURL  = f.str("photoURL"),
+                text      = msg,
+                timestamp = f.lng("timestamp"),
+            )
+        }.sortedBy { it.timestamp }
     }
 
-    private fun parseActiveUsers(json: String): List<ActiveUser> {
-        val auIdx = json.indexOf(""""activeUsers"""")
-        if (auIdx < 0) return emptyList()
-        val afterAu = json.substring(auIdx)
-        val avIdx   = afterAu.indexOf(""""arrayValue"""")
-        if (avIdx < 0) return emptyList()
-        val afterAv = afterAu.substring(avIdx)
-        val mapParts = afterAv.split(""""mapValue"""")
-        if (mapParts.size <= 1) return emptyList()
-        val result = mutableListOf<ActiveUser>()
-        for (i in 1 until mapParts.size) {
-            val part = mapParts[i]
-            fun field(name: String) =
-                Regex(""""$name"\s*:\s*\{"stringValue"\s*:\s*"([^"]*)"""").find(part)?.groupValues?.get(1) ?: ""
-            val uid = field("uid")
-            if (uid.isNotEmpty()) result.add(ActiveUser(uid, field("username"), field("color"), field("photoURL")))
+    /**
+     * Parses activeUsers arrayValue from an already-deserialized FsDocument.
+     */
+    private fun parseActiveUsersFromDoc(doc: FsDocument): List<ActiveUser> {
+        val values = doc.fields["activeUsers"]?.array?.values ?: return emptyList()
+        return values.mapNotNull { v ->
+            val f   = v.map?.fields ?: return@mapNotNull null
+            val uid = f.str("uid").takeIf { it.isNotEmpty() } ?: return@mapNotNull null
+            ActiveUser(uid, f.str("username"), f.str("color"), f.str("photoURL"))
         }
-        return result
     }
 
     private fun buildActiveUsersBody(users: List<ActiveUser>): String {
@@ -508,28 +466,41 @@ object FirestoreClient {
         return """{"fields":{"activeUsers":{"arrayValue":{"values":[$values]}}}}"""
     }
 
-    private fun parseVoiceChannels(json: String): List<VoiceChannel> {
-        if (!json.contains("/voiceChannels/")) return emptyList()
-        val result = mutableListOf<VoiceChannel>()
-        val segments = json.split(Regex("""/voiceChannels/"""))
-        for (i in 1 until segments.size) {
-            val seg = segments[i]
-            val docId = seg.substringBefore("\"").trim()
-            // Specifically extract the "name" field to avoid picking up activeUsers stringValues
-            val channelName = Regex("\"name\"\\s*:\\s*\\{\\s*\"stringValue\"\\s*:\\s*\"([^\"]+)\"")
-                .find(seg)?.groupValues?.get(1) ?: continue
-            if (docId.isNotEmpty()) result.add(VoiceChannel(docId, channelName))
-        }
-        return result
+    /**
+     * Runs a Firestore Structured Query for an exact field match.
+     * Returns the first matching FsDocument or null.
+     */
+    private suspend fun runStructuredQuery(
+        collectionId: String,
+        fieldPath: String,
+        value: String,
+        idToken: String,
+    ): FsDocument? {
+        val queryUrl    = "https://firestore.googleapis.com/v1/projects/$PROJECT_ID/databases/(default)/documents:runQuery"
+        val escapedVal  = value.replace("\\", "\\\\").replace("\"", "\\\"")
+        val body = """
+            {
+              "structuredQuery": {
+                "from": [{"collectionId": "$collectionId"}],
+                "where": {
+                  "fieldFilter": {
+                    "field": {"fieldPath": "$fieldPath"},
+                    "op": "EQUAL",
+                    "value": {"stringValue": "$escapedVal"}
+                  }
+                },
+                "limit": 1
+              }
+            }
+        """.trimIndent()
+        val (code, text) = request("POST", queryUrl, body, idToken)
+        if (code !in 200..299) return null
+        return runCatching { fsJson.decodeFromString<List<FsQueryItem>>(text) }
+            .getOrNull()?.firstOrNull { it.document != null }?.document
     }
 
     // ── Direct Messages ───────────────────────────────────────────────────────
 
-    /**
-     * İki kullanıcı arasındaki DM sohbetine mesaj yazar.
-     * Koleksiyon: directMessages/{dmId}/messages
-     * dmId = küçük uid önce gelecek şekilde iki uid'nin alfabetik birleşimi.
-     */
     suspend fun sendDm(
         senderUid: String, senderName: String, senderPhoto: String,
         recipientUid: String, text: String, idToken: String,
@@ -547,13 +518,12 @@ object FirestoreClient {
         request("POST", "$BASE/directMessages/$dmId/messages", idToken = idToken, body = body)
     }
 
-    /** DM sohbetindeki mesajları getirir (en eski → en yeni). */
     suspend fun listDms(senderUid: String, recipientUid: String, idToken: String): List<ChatMessage> =
         withContext(Dispatchers.IO) {
             val dmId = listOf(senderUid, recipientUid).sorted().joinToString("_")
             val (code, text) = request("GET", "$BASE/directMessages/$dmId/messages?pageSize=200", idToken = idToken)
             if (code !in 200..299) return@withContext emptyList()
-            parseMessages(text)
+            parseMsgsFromJson(text)
         }
 
     /**
@@ -562,23 +532,13 @@ object FirestoreClient {
      */
     suspend fun getUserByFurcordId(furcordId: String, idToken: String): Pair<String, String>? =
         withContext(Dispatchers.IO) {
-            // furcordId arama: users koleksiyonunu tara (pageSize=500, küçük koleksiyon)
-            val (code, text) = request("GET", "$BASE/users?pageSize=500", idToken = idToken)
-            if (code !in 200..299) return@withContext null
-            val uidRegex  = Regex("""/users/([^"/\s]+)""")
-            val docs      = uidRegex.findAll(text).toList()
-            docs.forEach { m ->
-                val uid   = m.groupValues[1]
-                val from  = m.range.last
-                val to    = docs.getOrNull(docs.indexOf(m) + 1)?.range?.first ?: text.length
-                val chunk = text.substring(from, to)
-                val fid   = Regex(""""furcordId"\s*:\s*\{"stringValue"\s*:\s*"([^"]+)"""").find(chunk)?.groupValues?.get(1)
-                if (fid != null && fid.equals(furcordId, ignoreCase = true)) {
-                    val name  = Regex(""""displayName"\s*:\s*\{"stringValue"\s*:\s*"([^"]+)"""").find(chunk)?.groupValues?.get(1) ?: uid
-                    return@withContext uid to name
-                }
-            }
-            null
+            val doc = runStructuredQuery("users", "furcordId", furcordId.uppercase(), idToken)
+                ?: return@withContext null
+            val uid  = doc.name.substringAfterLast("/")
+            val name = doc.fields.str("nickname").takeIf { it.isNotEmpty() }
+                ?: doc.fields.str("displayName").takeIf { it.isNotEmpty() }
+                ?: uid
+            uid to name
         }
 
     /**
@@ -590,22 +550,13 @@ object FirestoreClient {
      */
     suspend fun getUserByNickname(nickname: String, idToken: String): Pair<String, String>? =
         withContext(Dispatchers.IO) {
-            val (code, text) = request("GET", "$BASE/users?pageSize=500", idToken = idToken)
-            if (code !in 200..299) return@withContext null
-            val uidRegex  = Regex("""/users/([^"/\s]+)""")
-            val docs      = uidRegex.findAll(text).toList()
-            docs.forEach { m ->
-                val uid   = m.groupValues[1]
-                val from  = m.range.last
-                val to    = docs.getOrNull(docs.indexOf(m) + 1)?.range?.first ?: text.length
-                val chunk = text.substring(from, to)
-                val nic   = Regex(""""nickname"\s*:\s*\{"stringValue"\s*:\s*"([^"]+)"""").find(chunk)?.groupValues?.get(1)
-                if (nic != null && nic.equals(nickname, ignoreCase = true)) {
-                    val name  = Regex(""""displayName"\s*:\s*\{"stringValue"\s*:\s*"([^"]+)"""").find(chunk)?.groupValues?.get(1) ?: uid
-                    return@withContext uid to name
-                }
-            }
-            null
+            val doc = runStructuredQuery("users", "nickname", nickname, idToken)
+                ?: return@withContext null
+            val uid  = doc.name.substringAfterLast("/")
+            val name = doc.fields.str("nickname").takeIf { it.isNotEmpty() }
+                ?: doc.fields.str("displayName").takeIf { it.isNotEmpty() }
+                ?: uid
+            uid to name
         }
 
     /**
@@ -659,26 +610,21 @@ object FirestoreClient {
         runCatching { request("PATCH", "$BASE/servers/$serverId/presence/$uid", body, idToken) }
     }
 
-    /** Sunucudaki tüm çevrimiçi kullanıcıları döner (son 60 sn içinde lastSeen güncellemiş). */
+    /** Sunucudaki tüm çevrimiçi kullanıcıları döner (son 90 sn içinde lastSeen güncellemiş). */
     suspend fun listPresence(serverId: String, idToken: String): List<ActiveUser> =
         withContext(Dispatchers.IO) {
             val (code, text) = request("GET", "$BASE/servers/$serverId/presence?pageSize=100", idToken = idToken)
             if (code !in 200..299) return@withContext emptyList()
-            if (!text.contains("/presence/")) return@withContext emptyList()
-            val cutoff = System.currentTimeMillis() - 90_000L  // 90 saniye
-            val result = mutableListOf<ActiveUser>()
-            val segments = text.split(Regex("""/presence/"""))
-            for (i in 1 until segments.size) {
-                val seg = segments[i]
-                fun str(name: String) = Regex(""""$name"\s*:\s*\{"stringValue"\s*:\s*"([^"]*)"""").find(seg)?.groupValues?.get(1) ?: ""
-                fun lng(name: String) = Regex(""""$name"\s*:\s*\{"integerValue"\s*:\s*"?(\d+)"?""").find(seg)?.groupValues?.get(1)?.toLongOrNull() ?: 0L
-                val uid = str("uid")
-                val lastSeen = lng("lastSeen")
-                if (uid.isNotEmpty() && lastSeen >= cutoff) {
-                    result.add(ActiveUser(uid = uid, username = str("username"), color = "#5865F2", photoURL = str("photoURL")))
-                }
+            val resp = runCatching { fsJson.decodeFromString<FsListResponse>(text) }.getOrNull()
+                ?: return@withContext emptyList()
+            val cutoff = System.currentTimeMillis() - 90_000L
+            resp.documents.mapNotNull { doc ->
+                val f        = doc.fields
+                val uid      = f.str("uid").takeIf { it.isNotEmpty() } ?: return@mapNotNull null
+                val lastSeen = f.lng("lastSeen")
+                if (lastSeen < cutoff) return@mapNotNull null
+                ActiveUser(uid, f.str("username"), "#5865F2", f.str("photoURL"))
             }
-            result
         }
 
     /** Kullanıcının sunucu presence kaydını siler (sunucudan çıkınca). */
@@ -698,29 +644,27 @@ object FirestoreClient {
         withContext(Dispatchers.IO) {
             val (code, text) = request("GET", "$BASE/directMessages?pageSize=500", idToken = idToken)
             if (code !in 200..299) return@withContext emptyList()
-            val dmIdRegex = Regex("""/directMessages/([^"/\s]+)""")
-            val found     = mutableListOf<DmConversation>()
-            val dmIds     = dmIdRegex.findAll(text).map { it.groupValues[1] }.distinct().toList()
-            for (dmId in dmIds) {
-                val parts = dmId.split("_")
+            val resp = runCatching { fsJson.decodeFromString<FsListResponse>(text) }.getOrNull()
+                ?: return@withContext emptyList()
+            val found = mutableListOf<DmConversation>()
+            for (doc in resp.documents) {
+                val dmId     = doc.name.substringAfterLast("/")
+                val parts    = dmId.split("_")
                 if (parts.size < 2) continue
-                val otherUid = parts.firstOrNull { it != myUid } ?: continue
                 if (!dmId.contains(myUid)) continue
-                // Son mesajı al
+                val otherUid = parts.firstOrNull { it != myUid } ?: continue
                 val (mc, mt) = request("GET",
                     "$BASE/directMessages/$dmId/messages?pageSize=1&orderBy=timestamp%20desc",
                     idToken = idToken)
                 if (mc !in 200..299) continue
-                val msgs = parseMessages(mt)
+                val msgs = parseMsgsFromJson(mt)
                 val last = msgs.lastOrNull() ?: continue
-                // Karşı tarafın adını bul
                 val otherName = if (last.uid == myUid) {
-                    // en son mesaj bizim, diğer kullanıcı adını users koleksiyonundan çek
                     runCatching {
                         val (uc, ut) = request("GET", "$BASE/users/$otherUid", idToken = idToken)
                         if (uc in 200..299) {
-                            Regex(""""displayName"\s*:\s*\{"stringValue"\s*:\s*"([^"]+)"""").find(ut)?.groupValues?.get(1)
-                                ?: otherUid
+                            val udoc = fsJson.decodeFromString<FsDocument>(ut)
+                            udoc.fields.str("displayName").takeIf { it.isNotEmpty() } ?: otherUid
                         } else otherUid
                     }.getOrDefault(otherUid)
                 } else last.username
@@ -743,15 +687,15 @@ object FirestoreClient {
         withContext(Dispatchers.IO) {
             val (code, text) = request("GET", "$BASE/friends/$myUid/list?pageSize=200", idToken = idToken)
             if (code !in 200..299) return@withContext emptyList()
-            val uidRegex = Regex("""/list/([^"/\s]+)""")
-            val uids     = uidRegex.findAll(text).map { it.groupValues[1] }.distinct().toList()
-            val entries  = mutableListOf<FriendEntry>()
-            for (uid in uids) {
+            val resp = runCatching { fsJson.decodeFromString<FsListResponse>(text) }.getOrNull()
+                ?: return@withContext emptyList()
+            val entries = mutableListOf<FriendEntry>()
+            for (fdoc in resp.documents) {
+                val uid = fdoc.name.substringAfterLast("/").takeIf { it.isNotEmpty() } ?: continue
                 val (uc, ut) = request("GET", "$BASE/users/$uid", idToken = idToken)
                 if (uc !in 200..299) continue
-                val name = Regex(""""displayName"\s*:\s*\{"stringValue"\s*:\s*"([^"]+)"""").find(ut)?.groupValues?.get(1) ?: uid
-                val fid  = Regex(""""furcordId"\s*:\s*\{"stringValue"\s*:\s*"([^"]+)"""").find(ut)?.groupValues?.get(1) ?: ""
-                entries.add(FriendEntry(uid, name, fid))
+                val udoc = runCatching { fsJson.decodeFromString<FsDocument>(ut) }.getOrNull() ?: continue
+                entries.add(FriendEntry(uid, udoc.fields.str("displayName"), udoc.fields.str("furcordId")))
             }
             entries
         }
@@ -786,16 +730,13 @@ object FirestoreClient {
         withContext(Dispatchers.IO) {
             val (code, text) = request("GET", "$BASE/friendRequests/$myUid/pending?pageSize=50", idToken = idToken)
             if (code !in 200..299) return@withContext emptyList()
-            val segments = text.split(Regex("""/pending/"""))
-            val result   = mutableListOf<FriendRequest>()
-            for (i in 1 until segments.size) {
-                val seg = segments[i]
-                fun str(n: String) = Regex(""""$n"\s*:\s*\{"stringValue"\s*:\s*"([^"]+)"""").find(seg)?.groupValues?.get(1) ?: ""
-                fun lng(n: String) = Regex(""""$n"\s*:\s*\{"integerValue"\s*:\s*"?(\d+)"?""").find(seg)?.groupValues?.get(1)?.toLongOrNull() ?: 0L
-                val uid = str("fromUid")
-                if (uid.isNotEmpty()) result.add(FriendRequest(uid, str("fromName"), str("furcordId"), lng("timestamp")))
-            }
-            result.sortedByDescending { it.timestamp }
+            val resp = runCatching { fsJson.decodeFromString<FsListResponse>(text) }.getOrNull()
+                ?: return@withContext emptyList()
+            resp.documents.mapNotNull { doc ->
+                val f   = doc.fields
+                val uid = f.str("fromUid").takeIf { it.isNotEmpty() } ?: return@mapNotNull null
+                FriendRequest(uid, f.str("fromName"), f.str("furcordId"), f.lng("timestamp"))
+            }.sortedByDescending { it.timestamp }
         }
 
     /** Arkadaşlık isteğini kabul et. */
@@ -833,16 +774,13 @@ object FirestoreClient {
         withContext(Dispatchers.IO) {
             val (code, text) = request("GET", "$BASE/serverInvites/$myUid/pending?pageSize=50", idToken = idToken)
             if (code !in 200..299) return@withContext emptyList()
-            val segments = text.split(Regex("""/pending/"""))
-            val result   = mutableListOf<ServerInviteNotif>()
-            for (i in 1 until segments.size) {
-                val seg = segments[i]
-                fun str(n: String) = Regex(""""$n"\s*:\s*\{"stringValue"\s*:\s*"([^"]+)"""").find(seg)?.groupValues?.get(1) ?: ""
-                fun lng(n: String) = Regex(""""$n"\s*:\s*\{"integerValue"\s*:\s*"?(\d+)"?""").find(seg)?.groupValues?.get(1)?.toLongOrNull() ?: 0L
-                val sid = str("serverId")
-                if (sid.isNotEmpty()) result.add(ServerInviteNotif(sid, str("serverName"), str("fromUid"), str("fromName"), lng("timestamp")))
-            }
-            result.sortedByDescending { it.timestamp }
+            val resp = runCatching { fsJson.decodeFromString<FsListResponse>(text) }.getOrNull()
+                ?: return@withContext emptyList()
+            resp.documents.mapNotNull { doc ->
+                val f   = doc.fields
+                val sid = f.str("serverId").takeIf { it.isNotEmpty() } ?: return@mapNotNull null
+                ServerInviteNotif(sid, f.str("serverName"), f.str("fromUid"), f.str("fromName"), f.lng("timestamp"))
+            }.sortedByDescending { it.timestamp }
         }
 
     /** Sunucu davetini siler. */
@@ -850,19 +788,15 @@ object FirestoreClient {
         runCatching { request("DELETE", "$BASE/serverInvites/$myUid/pending/$serverId", idToken = idToken) }
     }
 
-    /** Firestore'daki güncel sürüm bilgisini getirir.
-     *  Belge yolu: config/appVersion
-     *  Alanlar   : latestVersion, downloadUrl, releaseNotes */
+    /** Firestore'daki güncel sürüm bilgisini getirir. */
     suspend fun getLatestVersion(idToken: String): AppVersionInfo? = withContext(Dispatchers.IO) {
         try {
-            val (code, body) = request("GET", "$BASE/config/appVersion", idToken = idToken)
+            val (code, text) = request("GET", "$BASE/config/appVersion", idToken = idToken)
             if (code !in 200..299) return@withContext null
-            val latestVersion = Regex("\"latestVersion\"\\s*:\\s*\\{\\s*\"stringValue\"\\s*:\\s*\"([^\"]+)\"")
-                .find(body)?.groupValues?.get(1) ?: return@withContext null
-            val downloadUrl = Regex("\"downloadUrl\"\\s*:\\s*\\{\\s*\"stringValue\"\\s*:\\s*\"([^\"]+)\"")
-                .find(body)?.groupValues?.get(1) ?: return@withContext null
-            val releaseNotes = Regex("\"releaseNotes\"\\s*:\\s*\\{\\s*\"stringValue\"\\s*:\\s*\"([^\"]+)\"")
-                .find(body)?.groupValues?.get(1) ?: ""
+            val doc = fsJson.decodeFromString<FsDocument>(text)
+            val latestVersion = doc.fields.str("latestVersion").takeIf { it.isNotEmpty() } ?: return@withContext null
+            val downloadUrl   = doc.fields.str("downloadUrl").takeIf { it.isNotEmpty() } ?: return@withContext null
+            val releaseNotes  = doc.fields.str("releaseNotes")
             AppVersionInfo(latestVersion, downloadUrl, releaseNotes)
         } catch (_: Exception) { null }
     }
