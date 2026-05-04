@@ -26,20 +26,27 @@ import kotlin.random.Random
  *  ilgili OAuth istemcisi → "Yetkili yeniden yönlendirme URI'leri" bölümüne
  *  http://127.0.0.1 eklemen gerekebilir (tüm portlara izin verir).
  */
-internal val GOOGLE_CLIENT_ID: String =
-    System.getProperty("furcord.google.clientId")
-        ?: System.getenv("FURCORD_GOOGLE_CLIENT_ID")
-        ?: error("Google Client ID eksik. furcord.google.clientId veya FURCORD_GOOGLE_CLIENT_ID ayarla.")
-
-private val GOOGLE_CLIENT_SECRET: String =
-    System.getProperty("furcord.google.clientSecret")
-        ?: System.getenv("FURCORD_GOOGLE_CLIENT_SECRET")
-        ?: error("Google Client Secret eksik. furcord.google.clientSecret veya FURCORD_GOOGLE_CLIENT_SECRET ayarla.")
 
 object GoogleOAuth {
 
     private const val AUTH_URL  = "https://accounts.google.com/o/oauth2/v2/auth"
     private const val TOKEN_URL = "https://oauth2.googleapis.com/token"
+
+    private fun clientId(): String =
+        System.getProperty("furcord.google.clientId")
+            ?: System.getenv("FURCORD_GOOGLE_CLIENT_ID")
+            ?: throw IllegalStateException(
+                "Google Client ID yapılandırması eksik. " +
+                "Lütfen GitHub Releases'tan güncel sürümü indirin."
+            )
+
+    private fun clientSecret(): String =
+        System.getProperty("furcord.google.clientSecret")
+            ?: System.getenv("FURCORD_GOOGLE_CLIENT_SECRET")
+            ?: throw IllegalStateException(
+                "Google Client Secret yapılandırması eksik. " +
+                "Lütfen GitHub Releases'tan güncel sürümü indirin."
+            )
 
     /**
      * Runs the full PKCE flow:
@@ -50,6 +57,8 @@ object GoogleOAuth {
      *  Returns the Google ID token string.
      */
     suspend fun getAccessToken(): String = withContext(Dispatchers.IO) {
+        val clientId     = clientId()
+        val clientSecret = clientSecret()
         val port        = 8085   // sabit port – Google Console'a eklenmeli
         ServerSocket(port).use { server ->
             val redirectUri = "http://127.0.0.1:$port"
@@ -59,7 +68,7 @@ object GoogleOAuth {
 
             val authUrl = buildString {
                 append(AUTH_URL); append("?")
-                append(enc("client_id",             GOOGLE_CLIENT_ID))
+                append(enc("client_id",             clientId))
                 append("&"); append(enc("redirect_uri",  redirectUri))
                 append("&response_type=code")
                 append("&scope=openid%20email%20profile")
@@ -98,15 +107,21 @@ object GoogleOAuth {
                 params["code"] ?: throw Exception("Google'dan auth kodu alınamadı.")
             }
 
-            exchangeCodeForIdToken(code, verifier, redirectUri)
+            exchangeCodeForIdToken(code, verifier, redirectUri, clientId, clientSecret)
         }
     }
 
-    private fun exchangeCodeForIdToken(code: String, verifier: String, redirectUri: String): String {
+    private fun exchangeCodeForIdToken(
+        code: String,
+        verifier: String,
+        redirectUri: String,
+        clientId: String,
+        clientSecret: String,
+    ): String {
         val body = listOf(
             enc("code",          code),
-            enc("client_id",     GOOGLE_CLIENT_ID),
-            enc("client_secret", GOOGLE_CLIENT_SECRET),
+            enc("client_id",     clientId),
+            enc("client_secret", clientSecret),
             enc("redirect_uri",  redirectUri),
             "grant_type=authorization_code",
             enc("code_verifier", verifier),
