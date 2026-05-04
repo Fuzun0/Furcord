@@ -15,6 +15,8 @@ private const val REFRESH_URL = "https://securetoken.googleapis.com/v1/token"
 private val TOKEN_FILE   = File(System.getProperty("user.home"), ".furcord_token")
 // Profil (displayName + photoURL) ayrı dosyada sakla — token'dan bağımsız
 private val PROFILE_FILE = File(System.getProperty("user.home"), ".furcord_profile")
+// Nickname dosyası — eşsiz kullanıcı adı
+private val NICKNAME_FILE = File(System.getProperty("user.home"), ".furcord_nickname")
 // Oturum: uid\temail\trefreshToken — idToken yenileme için
 private val SESSION_FILE = File(System.getProperty("user.home"), ".furcord_session")
 
@@ -27,6 +29,7 @@ data class AuthUser(
     val displayName: String = "",
     val photoURL:    String = "",
     val furcordId:   String = "",
+    val nickname:    String = "",  // Eşsiz kullanıcı adı
 )
 
 sealed class AuthResult {
@@ -104,8 +107,9 @@ object FirebaseAuth {
                 saveToken(newIdToken)
                 saveSession(uid, email, newRefreshToken)
                 val (displayName, photoURL) = loadProfile()
+                val nickname = loadNickname()
                 val furcordId = getOrCreateFurcordId(uid)
-                AuthUser(uid = uid, email = email, idToken = newIdToken, displayName = displayName, photoURL = photoURL, furcordId = furcordId)
+                AuthUser(uid = uid, email = email, idToken = newIdToken, displayName = displayName, photoURL = photoURL, furcordId = furcordId, nickname = nickname)
             }.getOrElse {
                 SESSION_FILE.delete()
                 TOKEN_FILE.delete()
@@ -120,8 +124,9 @@ object FirebaseAuth {
                 val uid   = extractField(response, "localId")
                 val email = extractField(response, "email")
                 val (displayName, photoURL) = loadProfile()
+                val nickname = loadNickname()
                 val furcordId = getOrCreateFurcordId(uid)
-                AuthUser(uid = uid, email = email, idToken = token, displayName = displayName, photoURL = photoURL, furcordId = furcordId)
+                AuthUser(uid = uid, email = email, idToken = token, displayName = displayName, photoURL = photoURL, furcordId = furcordId, nickname = nickname)
             }.getOrElse {
                 TOKEN_FILE.delete()
                 null
@@ -203,6 +208,7 @@ object FirebaseAuth {
             displayName = Regex("\"displayName\"\\s*:\\s*\"([^\"]+)\"").find(json)?.groupValues?.getOrNull(1) ?: "",
             photoURL    = Regex("\"photoUrl\"\\s*:\\s*\"([^\"]+)\"").find(json)?.groupValues?.getOrNull(1) ?: "",
             furcordId   = getOrCreateFurcordId(uid),
+            nickname    = loadNickname(),
         )
     }
 
@@ -232,15 +238,24 @@ object FirebaseAuth {
         if (parts.size == 3 && parts[0].isNotEmpty()) Triple(parts[0], parts[1], parts[2]) else null
     } catch (_: Exception) { null }
 
-    /** Profil adını ve fotoğrafını yerel dosyaya kaydeder. App.kt'den çağrılır. */
+    /** Profil adını, fotoğrafını ve nickname'i yerel dosyaya kaydeder. App.kt'den çağrılır. */
     fun saveProfile(displayName: String, photoURL: String) {
         try { PROFILE_FILE.writeText("$displayName\n$photoURL") } catch (_: Exception) {}
+    }
+
+    /** Nickname'i yerel dosyaya kaydeder. */
+    fun saveNickname(nickname: String) {
+        try { NICKNAME_FILE.writeText(nickname) } catch (_: Exception) {}
     }
 
     private fun loadProfile(): Pair<String, String> = try {
         val lines = PROFILE_FILE.readLines()
         (lines.getOrElse(0) { "" }) to (lines.drop(1).joinToString("\n"))
     } catch (_: Exception) { "" to "" }
+
+    private fun loadNickname(): String = try {
+        NICKNAME_FILE.takeIf { it.exists() }?.readText()?.trim() ?: ""
+    } catch (_: Exception) { "" }
 
     /** Yerel furcordId dosyası — yoksa üretir ve kaydeder. */
     fun getOrCreateFurcordId(uid: String): String {
