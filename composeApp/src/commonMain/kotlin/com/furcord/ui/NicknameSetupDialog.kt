@@ -142,10 +142,9 @@ fun NicknameSetupDialog(
                         savingNick = true
                         scope.launch {
                             runCatching {
-                                FirestoreClient.saveUserRecord(
-                                    uid = uid, displayName = email.substringBefore("@"),
-                                    photoURL = "", furcordId = "",
-                                    email = email, idToken = idToken, nickname = nicknameInput
+                                // Sadece nickname alanını güncelle — diğer alanları silme
+                                FirestoreClient.saveNicknameOnly(
+                                    uid = uid, nickname = nicknameInput, idToken = idToken
                                 )
                                 // Da FilebaseAuth'a da kaydet (lokal)
                                 com.furcord.auth.FirebaseAuth.saveNickname(nicknameInput)

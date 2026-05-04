@@ -573,7 +573,7 @@ object FirestoreClient {
                 val to    = docs.getOrNull(docs.indexOf(m) + 1)?.range?.first ?: text.length
                 val chunk = text.substring(from, to)
                 val fid   = Regex(""""furcordId"\s*:\s*\{"stringValue"\s*:\s*"([^"]+)"""").find(chunk)?.groupValues?.get(1)
-                if (fid == furcordId) {
+                if (fid != null && fid.equals(furcordId, ignoreCase = true)) {
                     val name  = Regex(""""displayName"\s*:\s*\{"stringValue"\s*:\s*"([^"]+)"""").find(chunk)?.groupValues?.get(1) ?: uid
                     return@withContext uid to name
                 }
@@ -600,7 +600,7 @@ object FirestoreClient {
                 val to    = docs.getOrNull(docs.indexOf(m) + 1)?.range?.first ?: text.length
                 val chunk = text.substring(from, to)
                 val nic   = Regex(""""nickname"\s*:\s*\{"stringValue"\s*:\s*"([^"]+)"""").find(chunk)?.groupValues?.get(1)
-                if (nic == nickname) {
+                if (nic != null && nic.equals(nickname, ignoreCase = true)) {
                     val name  = Regex(""""displayName"\s*:\s*\{"stringValue"\s*:\s*"([^"]+)"""").find(chunk)?.groupValues?.get(1) ?: uid
                     return@withContext uid to name
                 }
@@ -617,8 +617,18 @@ object FirestoreClient {
         }
 
     /**
-     * Kullan\u0131c\u0131 profilini Firestore'a kaydeder (displayName, photoURL, furcordId, email, nickname).
-     * Her login/kay\u0131t + profil g\u00fcncellemesi s\u0131ras\u0131nda \u00e7a\u011fr\u0131l\u0131r.
+     * Sadece nickname alanını günceller — diğer alanları (furcordId, photoURL vb.) silmez.
+     */
+    suspend fun saveNicknameOnly(uid: String, nickname: String, idToken: String) = withContext(Dispatchers.IO) {
+        val escNic = nickname.replace("\\", "\\\\").replace("\"", "\\\"")
+        val body   = """{"fields":{"nickname":{"stringValue":"$escNic"}}}"""
+        val url    = "$BASE/users/$uid?updateMask.fieldPaths=nickname"
+        runCatching { request("PATCH", url, idToken = idToken, body = body) }
+    }
+
+    /**
+     * Kullanıcı profilini Firestore'a kaydeder (displayName, photoURL, furcordId, email, nickname).
+     * Her login/kayıt + profil güncellemesi sırasında çağrılır.
      */
     suspend fun saveUserRecord(
         uid: String, displayName: String, photoURL: String,

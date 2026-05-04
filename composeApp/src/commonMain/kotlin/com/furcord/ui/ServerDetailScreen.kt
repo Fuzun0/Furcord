@@ -572,18 +572,16 @@ fun ServerDetailScreen(
             try {
                 val fetched = FirestoreClient.listMessages(serverId, currentUser.idToken)
                 val hasPending = messages.any { it.id.startsWith("pending-") }
-                // Boş fetch mesajları silmesin (ağ hatası / Firestore geçici boş dönüş)
-                // Yeni mesaj varsa VEYA sayı farklıysa güncelle (derin karşılaştırma yerine)
-                if (!hasPending && fetched.isNotEmpty() &&
-                    (fetched.size != messages.size || fetched.lastOrNull()?.id != messages.lastOrNull()?.id)
-                ) {
+                // Boş fetch gelirse (ağ hatası) mevcut mesajları silme
+                if (!hasPending && fetched.isNotEmpty()) {
                     val wasAtBottom = messages.size == 0 || listState.layoutInfo.let { info ->
                         val last = info.visibleItemsInfo.lastOrNull()?.index ?: -1
                         last >= messages.size - 2
                     }
+                    val sizeChanged = fetched.size != messages.size
                     messages = fetched
                     MessageStore.set(serverId, fetched)
-                    if (wasAtBottom) listState.animateScrollToItem(fetched.size - 1)
+                    if (wasAtBottom && sizeChanged) listState.animateScrollToItem(fetched.size - 1)
                 }
             } catch (_: Exception) {}
             delay(3_000)
