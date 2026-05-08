@@ -698,22 +698,30 @@ fun ServerDetailScreen(
         }
     }
 
-    // ── Poll chat messages every 3 s ─────────────────────────────────────────
+    // ── Poll chat messages — timestamp cursor (kota tasarrufu) ───────────────
     LaunchedEffect(serverId, "messages") {
         while (true) {
             try {
-                val fetched = FirestoreClient.listMessages(serverId, currentUser.idToken)
-                val hasPending = messages.any { it.id.startsWith("pending-") }
-                // Boş fetch gelirse (ağ hatası) mevcut mesajları silme
-                if (!hasPending && fetched.isNotEmpty()) {
-                    val wasAtBottom = messages.size == 0 || listState.layoutInfo.let { info ->
+                // Son bilinen timestamp'ten sonrasını çek; 0L ise ilk yükleme (full fetch)
+                val lastTs = messages.filter { !it.id.startsWith("pending-") && !it.id.startsWith("img-pending-") }
+                    .maxOfOrNull { it.timestamp } ?: 0L
+                val newMsgs = FirestoreClient.listMessagesSince(serverId, lastTs, currentUser.idToken)
+                if (newMsgs.isNotEmpty()) {
+                    val hasPending = messages.any { it.id.startsWith("pending-") || it.id.startsWith("img-pending-") }
+                    val wasAtBottom = messages.isEmpty() || listState.layoutInfo.let { info ->
                         val last = info.visibleItemsInfo.lastOrNull()?.index ?: -1
                         last >= messages.size - 2
                     }
-                    val sizeChanged = fetched.size != messages.size
-                    messages = fetched
-                    MessageStore.set(serverId, fetched)
-                    if (wasAtBottom && sizeChanged) listState.animateScrollToItem(fetched.size - 1)
+                    // Optimistic mesajları kaldır, gerçek mesajları birleştir
+                    val confirmed = (messages.filter { !it.id.startsWith("pending-") && !it.id.startsWith("img-pending-") } + newMsgs)
+                        .distinctBy { it.id }
+                        .sortedBy { it.timestamp }
+                    val withPending = if (hasPending)
+                        confirmed + messages.filter { it.id.startsWith("pending-") || it.id.startsWith("img-pending-") }
+                    else confirmed
+                    messages = withPending
+                    MessageStore.set(serverId, confirmed)
+                    if (wasAtBottom) listState.animateScrollToItem(withPending.size - 1)
                 }
             } catch (_: Exception) {}
             delay(3_000)

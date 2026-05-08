@@ -376,6 +376,41 @@ object FirestoreClient {
             parseMsgsFromJson(text)
         }
 
+    /**
+     * Belirli bir timestamp'ten sonraki mesajları getirir.
+     * Firestore Structured Query — sadece yeni dökümanlar okunur, kota tasarrufu yapılır.
+     * [afterTimestamp] == 0L ise tüm mesajları getirir (ilk yükleme).
+     */
+    suspend fun listMessagesSince(
+        serverId: String,
+        afterTimestamp: Long,
+        idToken: String,
+    ): List<ChatMessage> = withContext(Dispatchers.IO) {
+        if (afterTimestamp <= 0L) return@withContext listMessages(serverId, idToken)
+        val queryUrl = "https://firestore.googleapis.com/v1/projects/$PROJECT_ID/databases/(default)/documents/servers/$serverId:runQuery"
+        val body = """
+            {
+              "structuredQuery": {
+                "from": [{"collectionId": "messages"}],
+                "where": {
+                  "fieldFilter": {
+                    "field": {"fieldPath": "timestamp"},
+                    "op": "GREATER_THAN",
+                    "value": {"integerValue": "$afterTimestamp"}
+                  }
+                },
+                "orderBy": [{"field": {"fieldPath": "timestamp"}, "direction": "ASCENDING"}]
+              }
+            }
+        """.trimIndent()
+        val (code, text) = request("POST", queryUrl, body, idToken)
+        if (code !in 200..299) return@withContext emptyList()
+        runCatching { fsJson.decodeFromString<List<FsQueryItem>>(text) }
+            .getOrNull()
+            ?.mapNotNull { it.document?.let { doc -> parseMsgFromDoc(doc) } }
+            ?: emptyList()
+    }
+
     // ── User profile ──────────────────────────────────────────────────────────
 
     /** Saves / updates user profile in users/{uid} document. */
@@ -435,22 +470,25 @@ object FirestoreClient {
      * Parses a Firestore list response (GET /collection) into ChatMessage list.
      * Uses kotlinx.serialization — no regex.
      */
+    private fun parseMsgFromDoc(doc: FsDocument): ChatMessage? {
+        val f = doc.fields
+        // Hem text hem imageUrl boşsa mesaj değildir
+        if (f.str("text").isEmpty() && f.str("imageUrl").isEmpty()) return null
+        return ChatMessage(
+            id        = doc.name.substringAfterLast("/"),
+            uid       = f.str("uid"),
+            username  = f.str("username"),
+            photoURL  = f.str("photoURL"),
+            text      = f.str("text"),
+            timestamp = f.lng("timestamp"),
+            imageUrl  = f.str("imageUrl"),
+        )
+    }
+
     private fun parseMsgsFromJson(json: String): List<ChatMessage> {
         val resp = runCatching { fsJson.decodeFromString<FsListResponse>(json) }.getOrNull()
             ?: return emptyList()
-        return resp.documents.mapNotNull { doc ->
-            val f   = doc.fields
-            val msg = f.str("text").takeIf { it.isNotEmpty() } ?: return@mapNotNull null
-            ChatMessage(
-                id        = doc.name.substringAfterLast("/"),
-                uid       = f.str("uid"),
-                username  = f.str("username"),
-                photoURL  = f.str("photoURL"),
-                text      = msg,
-                timestamp = f.lng("timestamp"),
-                imageUrl  = f.str("imageUrl"),
-            )
-        }.sortedBy { it.timestamp }
+        return resp.documents.mapNotNull { parseMsgFromDoc(it) }.sortedBy { it.timestamp }
     }
 
     /**
@@ -549,6 +587,42 @@ object FirestoreClient {
             if (code !in 200..299) return@withContext emptyList()
             parseMsgsFromJson(text)
         }
+
+    /**
+     * Belirli bir timestamp'ten sonraki DM mesajlarını getirir.
+     * Firestore Structured Query — kota tasarrufu için only-new-docs.
+     */
+    suspend fun listDmsSince(
+        senderUid: String,
+        recipientUid: String,
+        afterTimestamp: Long,
+        idToken: String,
+    ): List<ChatMessage> = withContext(Dispatchers.IO) {
+        if (afterTimestamp <= 0L) return@withContext listDms(senderUid, recipientUid, idToken)
+        val dmId     = listOf(senderUid, recipientUid).sorted().joinToString("_")
+        val queryUrl = "https://firestore.googleapis.com/v1/projects/$PROJECT_ID/databases/(default)/documents/dm_threads/$dmId:runQuery"
+        val body = """
+            {
+              "structuredQuery": {
+                "from": [{"collectionId": "messages"}],
+                "where": {
+                  "fieldFilter": {
+                    "field": {"fieldPath": "timestamp"},
+                    "op": "GREATER_THAN",
+                    "value": {"integerValue": "$afterTimestamp"}
+                  }
+                },
+                "orderBy": [{"field": {"fieldPath": "timestamp"}, "direction": "ASCENDING"}]
+              }
+            }
+        """.trimIndent()
+        val (code, text) = request("POST", queryUrl, body, idToken)
+        if (code !in 200..299) return@withContext emptyList()
+        runCatching { fsJson.decodeFromString<List<FsQueryItem>>(text) }
+            .getOrNull()
+            ?.mapNotNull { it.document?.let { doc -> parseMsgFromDoc(doc) } }
+            ?: emptyList()
+    }
 
     /**
      * Kullanıcının arkadaş profilini uid'si ile getirir.
@@ -750,7 +824,9 @@ object FirestoreClient {
 
     // ── Firebase Storage REST API ─────────────────────────────────────────────
 
-    private const val STORAGE_BASE = "https://firebasestorage.googleapis.com/v0/b/$PROJECT_ID.appspot.com/o"
+    // Yeni Firebase projeleri (2024+) .firebasestorage.app formatı kullanır
+    private const val STORAGE_BUCKET = "$PROJECT_ID.firebasestorage.app"
+    private const val STORAGE_BASE   = "https://firebasestorage.googleapis.com/v0/b/$STORAGE_BUCKET/o"
 
     /**
      * Bir dosyayı Firebase Storage'a yükler.

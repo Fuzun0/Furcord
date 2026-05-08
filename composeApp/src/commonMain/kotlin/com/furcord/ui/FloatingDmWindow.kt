@@ -325,12 +325,15 @@ private fun DmChatPane(
     var sending       by remember { mutableStateOf(false) }
     var sendingImage  by remember { mutableStateOf(false) }
 
-    // Periyodik mesaj yoklama (3 sn)
+    // Periyodik mesaj yoklama — timestamp cursor (kota tasarrufu)
     LaunchedEffect(recipientUid) {
         while (isActive) {
             runCatching {
-                val fresh = FirestoreClient.listDms(currentUser.uid, recipientUid, currentUser.idToken)
-                if (fresh.isNotEmpty()) messages = fresh
+                val lastTs = messages.maxOfOrNull { it.timestamp } ?: 0L
+                val newMsgs = FirestoreClient.listDmsSince(currentUser.uid, recipientUid, lastTs, currentUser.idToken)
+                if (newMsgs.isNotEmpty()) {
+                    messages = (messages + newMsgs).distinctBy { it.id }.sortedBy { it.timestamp }
+                }
             }
             delay(3_000)
         }
