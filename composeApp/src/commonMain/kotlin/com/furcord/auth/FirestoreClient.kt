@@ -41,6 +41,8 @@ data class DmConversation(
     val otherName:     String,
     val lastText:      String,
     val lastTimestamp: Long,
+    /** Son mesajı gönderenin uid'si — okunmamış tespiti için kullanılır. */
+    val lastSenderUid: String = "",
 )
 
 /** Arkadaş listesi kaydı. */
@@ -695,6 +697,7 @@ object FirestoreClient {
                     otherName     = otherName,
                     lastText      = last.text,
                     lastTimestamp = last.timestamp,
+                    lastSenderUid = last.uid,
                 ))
             }
             found.sortedByDescending { it.lastTimestamp }

@@ -26,11 +26,13 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.furcord.auth.AuthUser
 import com.furcord.auth.DmConversation
+import com.furcord.auth.DmRepository
 import com.furcord.auth.FriendEntry
 import com.furcord.auth.FirestoreClient
 import com.furcord.auth.RecentServers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import androidx.compose.runtime.collectAsState
 
 
 // ─── Renk paleti ─────────────────────────────────────────────────────────────
@@ -72,7 +74,9 @@ fun ServerLobbyScreen(
 
     // Sol panel — arkadaş & DM sohbetleri
     var friends       by remember { mutableStateOf<List<FriendEntry>>(emptyList()) }
-    var conversations by remember { mutableStateOf<List<DmConversation>>(emptyList()) }
+    // DmRepository'den reaktif sohbet listesi
+    val conversations  by DmRepository.threads.collectAsState()
+    val unreadCount    by DmRepository.unreadCount.collectAsState()
     var friendsOpen   by remember { mutableStateOf(true) }
     var convOpen      by remember { mutableStateOf(true) }
     var showAddFriend by remember { mutableStateOf(false) }
@@ -84,9 +88,9 @@ fun ServerLobbyScreen(
             myServers.forEach { (id, name) -> RecentServers.addIfAbsent(id, name) }
             recentServers = RecentServers.load()
         } catch (_: Exception) {}
-        // Sol panel verilerini yükle
-        runCatching { friends       = FirestoreClient.listFriends(currentUser.uid, currentUser.idToken) }
-        runCatching { conversations = FirestoreClient.listDmConversations(currentUser.uid, currentUser.idToken) }
+        // Sol panelden sadece arkadaş listesini tek sefer çek
+        // (DM sohbetleri DmRepository tarafından otomatik güncellenir)
+        runCatching { friends = FirestoreClient.listFriends(currentUser.uid, currentUser.idToken) }
     }
 
     // Arkadaş ekleme diyalogu
@@ -361,20 +365,42 @@ fun ServerLobbyScreen(
                             }
                         } else {
                             items(conversations, key = { it.dmId }) { conv ->
+                                val isUnread = conv.lastSenderUid.isNotEmpty() &&
+                                    conv.lastSenderUid != currentUser.uid
                                 Row(
                                     Modifier
                                         .fillMaxWidth()
+                                        .background(if (isUnread) ACCENT.copy(alpha = 0.08f) else Color.Transparent)
                                         .clickable { onOpenDm?.invoke(conv.otherUid, conv.otherName) }
                                         .padding(horizontal = 16.dp, vertical = 6.dp),
                                     verticalAlignment = Alignment.CenterVertically,
                                     horizontalArrangement = Arrangement.spacedBy(10.dp),
                                 ) {
-                                    UserAvatar(displayName = conv.otherName, photoURL = "", size = 28)
+                                    Box {
+                                        UserAvatar(displayName = conv.otherName, photoURL = "", size = 28)
+                                        if (isUnread) {
+                                            Box(
+                                                Modifier
+                                                    .size(8.dp)
+                                                    .clip(CircleShape)
+                                                    .background(Color(0xFFED4245))
+                                                    .align(Alignment.TopEnd)
+                                            )
+                                        }
+                                    }
                                     Column(Modifier.weight(1f)) {
-                                        Text(conv.otherName, color = TEXT, fontSize = 13.sp,
-                                            maxLines = 1, overflow = TextOverflow.Ellipsis)
-                                        Text(conv.lastText, color = MUTED, fontSize = 11.sp,
-                                            maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                        Text(
+                                            conv.otherName,
+                                            color = if (isUnread) TEXT else TEXT2,
+                                            fontSize = 13.sp,
+                                            fontWeight = if (isUnread) FontWeight.SemiBold else FontWeight.Normal,
+                                            maxLines = 1, overflow = TextOverflow.Ellipsis,
+                                        )
+                                        Text(
+                                            conv.lastText, color = if (isUnread) TEXT2 else MUTED,
+                                            fontSize = 11.sp,
+                                            maxLines = 1, overflow = TextOverflow.Ellipsis,
+                                        )
                                     }
                                 }
                             }

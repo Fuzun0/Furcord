@@ -27,6 +27,7 @@ import com.furcord.auth.AppVersionInfo
 import com.furcord.auth.AuthUser
 import com.furcord.auth.FirebaseAuth
 import com.furcord.auth.FirestoreClient
+import com.furcord.auth.DmRepository
 import com.furcord.ui.AuthScreen
 import com.furcord.update.UpdateManager
 import kotlinx.coroutines.launch
@@ -194,10 +195,16 @@ fun App() {
                     while (true) {
                         val newToken = runCatching { FirebaseAuth.refreshToken() }.getOrNull()
                         if (newToken != null) {
+                            DmRepository.updateToken(newToken)
                             authState = AppAuthState.Authenticated(currentUser.copy(idToken = newToken))
                         }
                         delay(45 * 60 * 1000L)
                     }
+                }
+
+                // DM sohbet havuzu — giriş anından itibaren arka planda yoklar
+                LaunchedEffect(currentUser.uid, "dmRepo") {
+                    DmRepository.start(currentUser.uid, currentUser.idToken)
                 }
 
                 // Nickname setup dialog
@@ -317,6 +324,7 @@ fun App() {
                                 },
                                 onSignOut      = {
                                     FirebaseAuth.signOut()
+                                    DmRepository.stop()
                                     serverState = AppServerState.None
                                     authState   = AppAuthState.Unauthenticated
                                 },
@@ -326,7 +334,10 @@ fun App() {
                                     )
                                     FirebaseAuth.saveProfile(newName, newPhoto)
                                 },
-                                onOpenDm       = { uid, name -> dmTarget = DmTarget(uid, name) },
+                                onOpenDm       = { uid, name ->
+                                    DmRepository.markRead(listOf(currentUser.uid, uid).sorted().joinToString("_"))
+                                    dmTarget = DmTarget(uid, name)
+                                },
                             )
                         }
                         is AppServerState.InServer -> {
@@ -344,7 +355,10 @@ fun App() {
                                     )
                                     FirebaseAuth.saveProfile(newName, newPhoto)
                                 },
-                                onOpenDm = { uid, name -> dmTarget = DmTarget(uid, name) },
+                                onOpenDm = { uid, name ->
+                                    DmRepository.markRead(listOf(currentUser.uid, uid).sorted().joinToString("_"))
+                                    dmTarget = DmTarget(uid, name)
+                                },
                             )
                         }
                     }
@@ -352,8 +366,12 @@ fun App() {
                     // FloatingDmPanel — sağ alt köşede, her zaman görünür
                     FloatingDmPanel(
                         currentUser  = currentUser,
+                        myUid        = currentUser.uid,
                         bottomOffset = 0.dp,
-                        onOpenDm     = { uid, name -> dmTarget = DmTarget(uid, name) },
+                        onOpenDm     = { uid, name ->
+                            DmRepository.markRead(listOf(currentUser.uid, uid).sorted().joinToString("_"))
+                            dmTarget = DmTarget(uid, name)
+                        },
                     )
 
                     // ── Kayan DM penceresi overlay (ses bağlantısını kesmez) ───────────
