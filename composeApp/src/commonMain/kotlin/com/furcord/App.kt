@@ -14,6 +14,7 @@ import androidx.compose.material3.AlertDialog
 import kotlinx.coroutines.delay
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -151,8 +152,11 @@ fun App() {
                 var showNicknameSetup by remember { mutableStateOf(currentUser.nickname.isEmpty()) }
 
                 // Güncelleme durumu
-                var pendingUpdate   by remember { mutableStateOf<AppVersionInfo?>(null) }
-                var updateDismissed by remember { mutableStateOf(false) }
+                var pendingUpdate    by remember { mutableStateOf<AppVersionInfo?>(null) }
+                var updateDismissed  by remember { mutableStateOf(false) }
+                var updating         by remember { mutableStateOf(false) }
+                var updateProgress   by remember { mutableStateOf(0f) }
+                var updateError      by remember { mutableStateOf("") }
 
                 // Güncelleme kontrolü: başlangıçta hemen + her 30 dakikada bir
                 // GitHub Releases API — kimlik doğrulaması gerektirmez
@@ -204,42 +208,78 @@ fun App() {
                     return@MaterialTheme
                 }
 
-                // Güncelleme dialog'u — tarayıcı ile indir
+                // Güncelleme dialog'u — otomatik indir + kur
                 if (pendingUpdate != null && !updateDismissed) {
                     val info = pendingUpdate!!
+                    val scope = rememberCoroutineScope()
                     AlertDialog(
-                        onDismissRequest = { updateDismissed = true },
+                        onDismissRequest = { if (!updating) updateDismissed = true },
                         title = { Text("🆕 Güncelleme Mevcut") },
                         text = {
                             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                                 Text("v${UpdateManager.currentVersion}  →  v${info.latestVersion}")
                                 if (info.releaseNotes.isNotBlank()) {
                                     HorizontalDivider()
-                                    Text(
-                                        "Yenilikler:",
-                                        style = MaterialTheme.typography.labelMedium,
-                                    )
-                                    // Her satırı madde imi ile göster
+                                    Text("Yenilikler:", style = MaterialTheme.typography.labelMedium)
                                     info.releaseNotes.lines()
                                         .map { it.trimStart('-', '*', ' ') }
                                         .filter { it.isNotBlank() }
                                         .forEach { line ->
-                                            Text(
-                                                "• $line",
-                                                style = MaterialTheme.typography.bodySmall,
-                                            )
+                                            Text("• $line", style = MaterialTheme.typography.bodySmall)
                                         }
+                                }
+                                if (updating) {
+                                    Spacer(Modifier.height(4.dp))
+                                    if (updateProgress > 0f) {
+                                        LinearProgressIndicator(
+                                            progress = { updateProgress },
+                                            modifier = Modifier.fillMaxWidth(),
+                                        )
+                                        Text(
+                                            "İndiriliyor… %${(updateProgress * 100).toInt()}",
+                                            style = MaterialTheme.typography.bodySmall,
+                                        )
+                                    } else {
+                                        LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                                        Text("Hazırlanıyor…", style = MaterialTheme.typography.bodySmall)
+                                    }
+                                }
+                                if (updateError.isNotBlank()) {
+                                    Text(updateError, style = MaterialTheme.typography.bodySmall,
+                                        color = androidx.compose.ui.graphics.Color(0xFFFF5555))
                                 }
                             }
                         },
                         confirmButton = {
-                            TextButton(onClick = {
-                                UpdateManager.openDownloadPage(info.downloadUrl)
-                                updateDismissed = true
-                            }) { Text("İndir") }
+                            TextButton(
+                                enabled = !updating,
+                                onClick = {
+                                    updating = true; updateProgress = 0f; updateError = ""
+                                    scope.launch {
+                                        val file = UpdateManager.downloadInstaller(info.downloadUrl) {
+                                            updateProgress = it
+                                        }
+                                        if (file == null) {
+                                            updateError = "İndirme başarısız. Tekrar deneyin."
+                                            updating = false
+                                            return@launch
+                                        }
+                                        val ok = UpdateManager.installMsi(file)
+                                        if (!ok) {
+                                            updateError = "Kurulum başarısız. Manuel kurulum gerekebilir."
+                                            updating = false
+                                            return@launch
+                                        }
+                                        UpdateManager.restartApp()
+                                    }
+                                },
+                            ) { Text(if (updating) "Güncelleniyor…" else "Güncelle") }
                         },
                         dismissButton = {
-                            TextButton(onClick = { updateDismissed = true }) { Text("Sonra") }
+                            TextButton(
+                                enabled = !updating,
+                                onClick = { updateDismissed = true },
+                            ) { Text("Sonra") }
                         }
                     )
                 }
