@@ -82,8 +82,14 @@ object VoiceEngine {
 
         @Synchronized
         fun write(src: ByteArray, byteOffset: Int, byteLen: Int) {
-            val bb = ByteBuffer.wrap(src, byteOffset, byteLen).asShortBuffer()
-            repeat(byteLen / 2) {
+            // AudioFormat(16000, 16, 1, signed, little-endian) — PCM byte pair is LE.
+            // ByteBuffer.asShortBuffer() defaults to BIG-endian which corrupts samples.
+            // Must explicitly use LITTLE_ENDIAN to reconstruct shorts correctly.
+            val bb = ByteBuffer.wrap(src, byteOffset, byteLen)
+                .order(java.nio.ByteOrder.LITTLE_ENDIAN)
+                .asShortBuffer()
+            val frames = byteLen / 2
+            repeat(frames) {
                 if (count < ring.size) { ring[wPos] = bb.get(); wPos = (wPos + 1) % ring.size; count++ }
             }
         }
@@ -235,9 +241,9 @@ object VoiceEngine {
         val mixBuf  = IntArray(SAMPLES_FRAME)
         val tempBuf = IntArray(SAMPLES_FRAME)
         val outBuf  = ByteArray(FRAME_BYTES)
-        val outBB   = ByteBuffer.wrap(outBuf)
-        // outputFade: 1.0 = full audio, ramps smoothly to 0.0 when deafened.
-        // Prevents the audio click/pop caused by abruptly cutting the SourceDataLine feed.
+        // Wrap with LITTLE_ENDIAN once — matches AudioFormat(16000, 16, 1, signed, little-endian).
+        // Using default BE ByteBuffer + manual byte swap is error-prone; LE wrap is canonical.
+        val outBB   = ByteBuffer.wrap(outBuf).order(java.nio.ByteOrder.LITTLE_ENDIAN)
         var outputFade = 1f
         while (isActive) {
             Thread.sleep(20)
@@ -254,7 +260,14 @@ object VoiceEngine {
             }
 
             val activeEntries = peerBuffers.entries.filter { it.value.hasData() }
-            if (activeEntries.isEmpty()) continue
+            // Always write to SourceDataLine even when no peer data is available.
+            // Skipping the write causes buffer underrun — the hardware plays stale/garbage
+            // data from its internal buffer which manifests as crackling after ~1 second.
+            if (activeEntries.isEmpty()) {
+                outBuf.fill(0)
+                runCatching { speakerLine?.write(outBuf, 0, FRAME_BYTES) }
+                continue
+            }
             mixBuf.fill(0)
 
             for ((hash, buf) in activeEntries) {

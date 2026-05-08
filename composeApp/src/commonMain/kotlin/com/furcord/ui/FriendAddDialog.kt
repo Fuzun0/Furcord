@@ -142,16 +142,22 @@ fun FriendAddDialog(
                             loading = true; error = ""; successMsg = ""
                             scope.launch {
                                 val fromName = currentUser.nickname.ifBlank { currentUser.displayName.ifBlank { currentUser.email } }
-                                FirestoreClient.sendFriendRequest(
-                                    toUid     = user.first,
-                                    fromUid   = currentUser.uid,
-                                    fromName  = fromName,
-                                    furcordId = currentUser.furcordId,
-                                    idToken   = currentUser.idToken,
-                                )
-                                loading    = false
-                                successMsg = "Arkadaşlık isteği gönderildi!"
-                                foundUser  = null
+                                val result = runCatching {
+                                    FirestoreClient.sendFriendRequest(
+                                        toUid     = user.first,
+                                        fromUid   = currentUser.uid,
+                                        fromName  = fromName,
+                                        furcordId = currentUser.furcordId,
+                                        idToken   = currentUser.idToken,
+                                    )
+                                }
+                                loading = false
+                                if (result.isSuccess) {
+                                    successMsg = "Arkadaşlık isteği gönderildi!"
+                                    foundUser  = null
+                                } else {
+                                    error = "Gönderilemedi: ${result.exceptionOrNull()?.message}"
+                                }
                             }
                         },
                         enabled  = !loading,

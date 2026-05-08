@@ -723,7 +723,8 @@ object FirestoreClient {
             "furcordId":{"stringValue":"$escId"},
             "timestamp":{"integerValue":"${System.currentTimeMillis()}"}
         }}""".trimIndent()
-        runCatching { request("PATCH", "$BASE/users/$toUid/notifications/$fromUid", idToken = idToken, body = body) }
+        val (code, _) = request("PATCH", "$BASE/users/$toUid/notifications/$fromUid", idToken = idToken, body = body)
+        if (code !in 200..299) throw Exception("HTTP $code")
     }
 
     /** Gelen arkadaşlık isteklerini listeler. */
