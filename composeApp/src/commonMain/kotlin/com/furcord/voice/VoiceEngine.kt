@@ -11,9 +11,12 @@ import kotlinx.coroutines.withContext
 import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetAddress
+import java.net.SocketException
 import java.nio.ByteBuffer
 import java.security.SecureRandom
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 import javax.sound.sampled.AudioFormat
 import javax.sound.sampled.AudioSystem
@@ -60,11 +63,12 @@ object VoiceEngine {
     var localPublicIp: String = ""; private set
     var localPort: Int = 0;         private set
 
-    private var socket:       DatagramSocket? = null
-    private var micLine:      TargetDataLine? = null
-    private var speakerLine:  SourceDataLine? = null
-    private var engineScope:  CoroutineScope? = null
-    private var relayClient:  RelayClient?    = null
+    private var socket:        DatagramSocket? = null
+    private var micLine:       TargetDataLine? = null
+    private var speakerLine:   SourceDataLine? = null
+    private var engineScope:   CoroutineScope? = null
+    private var relayClient:   RelayClient?    = null
+    private var shutdownLatch: CountDownLatch? = null
     private var channelIdHash: Int = 0
 
     private val peers        = ConcurrentHashMap<String, VoicePeer>()
@@ -109,7 +113,9 @@ object VoiceEngine {
     // ── Start / Stop ──────────────────────────────────────────────────────────
 
     suspend fun start(selfUidHash: Int, channelId: String = ""): Boolean = withContext(Dispatchers.IO) {
-        if (isActive) return@withContext true
+        // Channel switching: fully tear down the previous session before re-opening hardware.
+        // Simply returning true when isActive would leave a zombie session when switching channels.
+        if (isActive) stop()
         channelIdHash = if (channelId.isNotBlank()) channelId.hashCode() else selfUidHash
         try {
             socket = DatagramSocket()
@@ -150,22 +156,51 @@ object VoiceEngine {
             speakerLine = (AudioSystem.getLine(spkInfo) as SourceDataLine).apply { open(FORMAT); start() }
 
             isActive    = true
+            val latch   = CountDownLatch(3)
+            shutdownLatch = latch
             engineScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
-            engineScope!!.launch { captureLoop(selfUidHash) }
-            engineScope!!.launch { receiveLoop() }
-            engineScope!!.launch { mixerLoop() }
+            engineScope!!.launch { try { captureLoop(selfUidHash) } finally { latch.countDown() } }
+            engineScope!!.launch { try { receiveLoop()            } finally { latch.countDown() } }
+            engineScope!!.launch { try { mixerLoop()              } finally { latch.countDown() } }
             true
         } catch (_: Exception) { stop(); false }
     }
 
     fun stop() {
         isActive = false
+
+        // ── Step 1: Close the DatagramSocket FIRST. ────────────────────────────
+        // This immediately throws SocketException inside receiveLoop's blocking
+        // socket.receive() call, allowing that thread to exit cleanly.
+        val sock = socket; socket = null
+        runCatching { sock?.close() }
+
+        // ── Step 2: Shut down SourceDataLine (speaker). ────────────────────────
+        // Order: stop() → flush() → close(). Do NOT call drain() — it blocks
+        // indefinitely when the mixerLoop has already stopped feeding data.
+        val sl = speakerLine; speakerLine = null
+        runCatching { sl?.stop(); sl?.flush(); sl?.close() }
+
+        // ── Step 3: Shut down TargetDataLine (microphone). ────────────────────
+        // close() forcefully unblocks captureLoop's blocking read() call,
+        // which then catches the exception and exits the while loop.
+        val ml = micLine; micLine = null
+        runCatching { ml?.stop(); ml?.flush(); ml?.close() }
+
+        // ── Step 4: Wait for all three loop coroutines to actually finish. ─────
+        // Hardware lines are now closed; loops will exit within one iteration.
+        // The 300 ms timeout is a safety net — in practice this completes in < 50 ms.
+        // This guarantees the OS has released the hardware before start() can
+        // re-open it (prevents the 'mic works on 2nd PC sometimes' resource leak).
+        runCatching { shutdownLatch?.await(300, TimeUnit.MILLISECONDS) }
+        shutdownLatch = null
+
+        // ── Step 5: Cancel the coroutine scope (loops are already done). ───────
         engineScope?.cancel(); engineScope = null
-        runCatching { micLine?.stop(); micLine?.close() }; micLine = null
-        runCatching { speakerLine?.drain(); speakerLine?.stop(); speakerLine?.close() }; speakerLine = null
-        runCatching { socket?.close() }; socket = null
+
         relayClient?.disconnect(); relayClient = null
         peers.clear(); peerBuffers.clear(); peerVolumes.clear(); prevPeerVols.clear()
+        seqCounter.set(0)
         localPort = 0; localPublicIp = ""
         isMuted = false; isDeafened = false; isRelayMode = false
     }
@@ -230,7 +265,15 @@ object VoiceEngine {
         val buf = ByteArray(PACKET_BYTES + 64)
         while (isActive) {
             val dp = DatagramPacket(buf, buf.size)
-            try { socket?.receive(dp) ?: break } catch (_: Exception) { if (!isActive) break; continue }
+            try {
+                socket?.receive(dp) ?: break
+            } catch (_: SocketException) {
+                // Socket was closed by stop() — normal, clean shutdown path.
+                break
+            } catch (_: Exception) {
+                if (!isActive) break
+                continue
+            }
             if (dp.length <= HEADER_BYTES || isDeafened) continue
             val uidHash = ByteBuffer.wrap(buf, 4, 4).int
             peerBuffers[uidHash]?.write(buf, HEADER_BYTES, dp.length - HEADER_BYTES)
@@ -246,7 +289,7 @@ object VoiceEngine {
         val outBB   = ByteBuffer.wrap(outBuf).order(java.nio.ByteOrder.LITTLE_ENDIAN)
         var outputFade = 1f
         while (isActive) {
-            Thread.sleep(20)
+            try { Thread.sleep(20) } catch (_: InterruptedException) { break }
 
             // ── Smooth deafen fade (≈40ms ramp at 50% per frame) ─────────────
             val targetFade = if (isDeafened) 0f else 1f
