@@ -442,6 +442,81 @@ private fun MessageRow(msg: ChatMessage, isSelf: Boolean) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Sunucu ayarları dialog (görsel URL güncelleme)
+// ─────────────────────────────────────────────────────────────────────────────
+@Composable
+private fun ServerSettingsDialog(
+    serverId: String,
+    serverName: String,
+    currentUser: AuthUser,
+    onDismiss: () -> Unit,
+) {
+    val scope = rememberCoroutineScope()
+    var imageUrl by remember { mutableStateOf("") }
+    var saving   by remember { mutableStateOf(false) }
+    var saved    by remember { mutableStateOf(false) }
+    var error    by remember { mutableStateOf("") }
+
+    AlertDialog(
+        onDismissRequest = { if (!saving) onDismiss() },
+        containerColor   = Color(0xFF2B2D31),
+        title = { Text("Sunucu Ayarları", fontWeight = FontWeight.Bold, color = Color(0xFFF2F3F5)) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text("Sunucu: $serverName", fontSize = 13.sp, color = Color(0xFF8E9297))
+                OutlinedTextField(
+                    value         = imageUrl,
+                    onValueChange = { imageUrl = it; saved = false; error = "" },
+                    label         = { Text("Sunucu Görseli URL", fontSize = 12.sp) },
+                    placeholder   = { Text("https://...", color = Color(0xFF8E9297), fontSize = 12.sp) },
+                    singleLine    = true,
+                    modifier      = Modifier.fillMaxWidth(),
+                    colors        = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor      = Color(0xFF5865F2),
+                        unfocusedBorderColor    = Color(0xFF3F4147),
+                        focusedContainerColor   = Color(0xFF383A40),
+                        unfocusedContainerColor = Color(0xFF383A40),
+                        focusedTextColor        = Color(0xFFDCDDDE),
+                        unfocusedTextColor      = Color(0xFFDCDDDE),
+                        cursorColor             = Color(0xFF5865F2),
+                    ),
+                )
+                if (saved) Text("Kaydedildi!", fontSize = 12.sp, color = Color(0xFF23A55A))
+                if (error.isNotEmpty()) Text(error, fontSize = 12.sp, color = Color(0xFFED4245))
+            }
+        },
+        confirmButton = {
+            TextButton(
+                enabled = !saving && imageUrl.isNotBlank(),
+                onClick = {
+                    saving = true; error = ""
+                    scope.launch {
+                        try {
+                            FirestoreClient.updateServerImage(serverId, imageUrl.trim(), currentUser.idToken)
+                            saved = true
+                        } catch (e: Exception) {
+                            error = "Hata: ${e.message}"
+                        }
+                        saving = false
+                    }
+                },
+            ) {
+                if (saving) {
+                    CircularProgressIndicator(Modifier.size(14.dp), color = Color(0xFF5865F2), strokeWidth = 2.dp)
+                } else {
+                    Text("Kaydet", color = Color(0xFF5865F2))
+                }
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = { if (!saving) onDismiss() }) {
+                Text("Kapat", color = Color(0xFF8E9297))
+            }
+        },
+    )
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Main screen
 // ─────────────────────────────────────────────────────────────────────────────
 @Composable
@@ -475,6 +550,8 @@ fun ServerDetailScreen(
     var showProfileDialog by remember { mutableStateOf(false) }
     // Invite dialog
     var showInviteDialog  by remember { mutableStateOf(false) }
+    // Sunucu ayarları dialog (sadece sahip görür)
+    var showServerSettingsDialog by remember { mutableStateOf(false) }
     // Birleşik sağ tık menüsü (ses grid + sidebar her ikisinden de tetiklenir)
     var contextMenuUser   by remember { mutableStateOf<ActiveUser?>(null) }
     // Per-user ses seviyeleri (uid → 0.0-2.0, default 1.0)
@@ -521,6 +598,16 @@ fun ServerDetailScreen(
         )
     }
 
+    // Sunucu ayarları dialog
+    if (showServerSettingsDialog) {
+        ServerSettingsDialog(
+            serverId    = serverId,
+            serverName  = serverName,
+            currentUser = currentUser,
+            onDismiss   = { showServerSettingsDialog = false },
+        )
+    }
+
     // Kicked dialog — sunucu sahibi tarafından atıldıysa
     if (wasKicked) {
         AlertDialog(
@@ -542,7 +629,7 @@ fun ServerDetailScreen(
         while (true) {
             try {
                 val fetched = FirestoreClient.listVoiceChannels(serverId, currentUser.idToken)
-                channels = fetched
+                if (fetched.isNotEmpty()) channels = fetched
                 val newUsers = mutableMapOf<String, List<ActiveUser>>()
                 for (ch in fetched) {
                     try {
@@ -844,6 +931,12 @@ fun ServerDetailScreen(
                 // Invite button
                 IconButton(onClick = { showInviteDialog = true }, modifier = Modifier.size(28.dp)) {
                     Text("🔗", fontSize = 14.sp)
+                }
+                // Server settings (only owner)
+                if (isOwner) {
+                    IconButton(onClick = { showServerSettingsDialog = true }, modifier = Modifier.size(28.dp)) {
+                        Text("⚙", fontSize = 14.sp, color = Color(0xFF8E9297))
+                    }
                 }
                 // Leave server button
                 IconButton(onClick = onLeaveServer, modifier = Modifier.size(28.dp)) {

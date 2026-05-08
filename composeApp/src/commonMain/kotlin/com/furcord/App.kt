@@ -56,6 +56,7 @@ fun App() {
         var authState   by remember { mutableStateOf<AppAuthState>(AppAuthState.Loading) }
         var serverState by remember { mutableStateOf<AppServerState>(AppServerState.None) }
         var dmTarget    by remember { mutableStateOf<DmTarget?>(null) }
+        var dmWindowOpen by remember { mutableStateOf(false) }
         // Giriş sonrası Firestore'dan profil yüklemek için bekleyen kullanıcı
         var pendingProfileLoad by remember { mutableStateOf<AuthUser?>(null) }
         val scope = rememberCoroutineScope()
@@ -337,6 +338,7 @@ fun App() {
                                 onOpenDm       = { uid, name ->
                                     DmRepository.markRead(listOf(currentUser.uid, uid).sorted().joinToString("_"))
                                     dmTarget = DmTarget(uid, name)
+                                    dmWindowOpen = true
                                 },
                             )
                         }
@@ -358,6 +360,7 @@ fun App() {
                                 onOpenDm = { uid, name ->
                                     DmRepository.markRead(listOf(currentUser.uid, uid).sorted().joinToString("_"))
                                     dmTarget = DmTarget(uid, name)
+                                    dmWindowOpen = true
                                 },
                             )
                         }
@@ -365,23 +368,19 @@ fun App() {
 
                     // FloatingDmPanel — sağ alt köşede, her zaman görünür
                     FloatingDmPanel(
-                        currentUser  = currentUser,
-                        myUid        = currentUser.uid,
-                        bottomOffset = 0.dp,
-                        onOpenDm     = { uid, name ->
-                            DmRepository.markRead(listOf(currentUser.uid, uid).sorted().joinToString("_"))
-                            dmTarget = DmTarget(uid, name)
-                        },
+                        currentUser    = currentUser,
+                        myUid          = currentUser.uid,
+                        bottomOffset   = 0.dp,
+                        onDmWindowOpen = { dmWindowOpen = true },
                     )
 
                     // ── Kayan DM penceresi overlay (ses bağlantısını kesmez) ───────────
-                    val activeDm = dmTarget
-                    if (activeDm != null) {
+                    if (dmWindowOpen) {
                         FloatingDmWindow(
-                            currentUser   = currentUser,
-                            recipientUid  = activeDm.uid,
-                            recipientName = activeDm.name,
-                            onClose       = { dmTarget = null },
+                            currentUser          = currentUser,
+                            initialRecipientUid  = dmTarget?.uid,
+                            initialRecipientName = dmTarget?.name,
+                            onClose              = { dmWindowOpen = false; dmTarget = null },
                         )
                     }
 

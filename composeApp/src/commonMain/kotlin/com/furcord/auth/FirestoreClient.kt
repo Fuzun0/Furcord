@@ -732,6 +732,21 @@ object FirestoreClient {
         runCatching { request("PATCH", "$BASE/friends/$friendUid/list/$myUid",  idToken = idToken, body = body) }
     }
 
+    /** Arkadaşlığı kaldır (iki taraflı silme). */
+    suspend fun removeFriend(myUid: String, friendUid: String, idToken: String) = withContext(Dispatchers.IO) {
+        runCatching { request("DELETE", "$BASE/friends/$myUid/list/$friendUid",  idToken = idToken) }
+        runCatching { request("DELETE", "$BASE/friends/$friendUid/list/$myUid",  idToken = idToken) }
+    }
+
+    /** Sunucu görsel URL'sini günceller (sadece imageUrl alanını değiştirir). */
+    suspend fun updateServerImage(serverId: String, imageUrl: String, idToken: String) = withContext(Dispatchers.IO) {
+        val escaped = imageUrl.replace("\\", "\\\\").replace("\"", "\\\"")
+        val body    = """{"fields":{"imageUrl":{"stringValue":"$escaped"}}}"""
+        val url     = "$BASE/servers/$serverId?updateMask.fieldPaths=imageUrl"
+        val (code, resp) = request("PATCH", url, body, idToken)
+        if (code !in 200..299) throw Exception("Görsel güncellenemedi ($code): $resp")
+    }
+
     // ── Friend request notifications ──────────────────────────────────────────
 
     /** Arkadaşlık isteği gönder — karşı tarafın bildirim koleksiyonuna yazar. */

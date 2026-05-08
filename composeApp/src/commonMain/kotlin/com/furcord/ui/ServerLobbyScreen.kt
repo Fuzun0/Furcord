@@ -20,6 +20,9 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onKeyEvent
+import androidx.compose.ui.input.pointer.PointerEventType
+import androidx.compose.ui.input.pointer.isSecondaryPressed
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -31,6 +34,7 @@ import com.furcord.auth.FriendEntry
 import com.furcord.auth.FirestoreClient
 import com.furcord.auth.RecentServers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import androidx.compose.runtime.collectAsState
 
@@ -88,9 +92,11 @@ fun ServerLobbyScreen(
             myServers.forEach { (id, name) -> RecentServers.addIfAbsent(id, name) }
             recentServers = RecentServers.load()
         } catch (_: Exception) {}
-        // Sol panelden sadece arkadaş listesini tek sefer çek
-        // (DM sohbetleri DmRepository tarafından otomatik güncellenir)
-        runCatching { friends = FirestoreClient.listFriends(currentUser.uid, currentUser.idToken) }
+        // Arkadaş listesini periyodik olarak yenile (8 sn)
+        while (isActive) {
+            runCatching { friends = FirestoreClient.listFriends(currentUser.uid, currentUser.idToken) }
+            delay(8_000)
+        }
     }
 
     // Arkadaş ekleme diyalogu
@@ -302,19 +308,62 @@ fun ServerLobbyScreen(
                             }
                         } else {
                             items(friends, key = { it.uid }) { friend ->
-                                Row(
-                                    Modifier
-                                        .fillMaxWidth()
-                                        .clickable { onOpenDm?.invoke(friend.uid, friend.displayName) }
-                                        .padding(horizontal = 16.dp, vertical = 6.dp),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(10.dp),
-                                ) {
-                                    UserAvatar(displayName = friend.displayName, photoURL = "", size = 28)
-                                    Column(Modifier.weight(1f)) {
-                                        Text(friend.displayName, color = TEXT, fontSize = 13.sp,
-                                            maxLines = 1, overflow = TextOverflow.Ellipsis)
-                                        Text(friend.furcordId, color = MUTED, fontSize = 10.sp)
+                                var showContextMenu by remember { mutableStateOf(false) }
+                                Box {
+                                    Row(
+                                        Modifier
+                                            .fillMaxWidth()
+                                            .clickable { onOpenDm?.invoke(friend.uid, friend.displayName) }
+                                            .pointerInput(friend.uid) {
+                                                awaitPointerEventScope {
+                                                    while (true) {
+                                                        val event = awaitPointerEvent()
+                                                        if (event.type == PointerEventType.Press &&
+                                                            event.buttons.isSecondaryPressed
+                                                        ) {
+                                                            showContextMenu = true
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                            .padding(horizontal = 16.dp, vertical = 6.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                                    ) {
+                                        UserAvatar(displayName = friend.displayName, photoURL = "", size = 28)
+                                        Column(Modifier.weight(1f)) {
+                                            Text(friend.displayName, color = TEXT, fontSize = 13.sp,
+                                                maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                            Text(friend.furcordId, color = MUTED, fontSize = 10.sp)
+                                        }
+                                    }
+                                    DropdownMenu(
+                                        expanded         = showContextMenu,
+                                        onDismissRequest = { showContextMenu = false },
+                                        containerColor   = Color(0xFF111214),
+                                    ) {
+                                        DropdownMenuItem(
+                                            text    = { Text("💬 Mesaj Gönder", color = Color(0xFFDCDDDE), fontSize = 13.sp) },
+                                            onClick = {
+                                                onOpenDm?.invoke(friend.uid, friend.displayName)
+                                                showContextMenu = false
+                                            },
+                                        )
+                                        HorizontalDivider(color = Color(0xFF2B2D31))
+                                        DropdownMenuItem(
+                                            text    = { Text("🗑 Arkadaşı Kaldır", color = Color(0xFFED4245), fontSize = 13.sp) },
+                                            onClick = {
+                                                showContextMenu = false
+                                                scope.launch {
+                                                    runCatching {
+                                                        FirestoreClient.removeFriend(
+                                                            currentUser.uid, friend.uid, currentUser.idToken
+                                                        )
+                                                    }
+                                                    friends = friends.filter { it.uid != friend.uid }
+                                                }
+                                            },
+                                        )
                                     }
                                 }
                             }

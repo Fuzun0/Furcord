@@ -59,6 +59,8 @@ object VoiceEngine {
     @Volatile var isRelayMode  = false; private set
     /** Mikrofon giriş kazanç: 0.0 = sessiz, 1.0 = normal, 2.0 = 2x. Disk'e kaydedilir. */
     @Volatile var micGain: Float = AppPrefs.micGain
+    /** Gürültü kapısı eşiği. RMS bu değerin altındaysa frame gönderilmez. 0 = devre dışı. */
+    @Volatile var noiseGateThreshold: Float = 500f
 
     var localPublicIp: String = ""; private set
     var localPort: Int = 0;         private set
@@ -243,6 +245,19 @@ object VoiceEngine {
                     val g = (s * gain).toInt().coerceIn(-32768, 32767)
                     bb.putShort(i * 2, g.toShort())
                 }
+            }
+
+            // Noise gate: RMS < threshold → frame'i sessizleştir
+            val ngThreshold = noiseGateThreshold
+            if (ngThreshold > 0f) {
+                var sumSq = 0.0
+                val bbNg = java.nio.ByteBuffer.wrap(pcmBuf).order(java.nio.ByteOrder.LITTLE_ENDIAN)
+                for (i in 0 until SAMPLES_FRAME) {
+                    val s = bbNg.getShort(i * 2).toDouble()
+                    sumSq += s * s
+                }
+                val rms = kotlin.math.sqrt(sumSq / SAMPLES_FRAME)
+                if (rms < ngThreshold) continue
             }
 
             val seq = seqCounter.incrementAndGet()
