@@ -166,14 +166,32 @@ fun FriendAddDialog(
                     ) {
                         Text("İstek Gönder", color = Color.White, fontSize = 13.sp)
                     }
-                    // Direkt mesaj aç
+                    // Direkt mesaj aç — thread yoksa oluştur, sonra navigate et
                     Button(
-                        onClick  = { onStartDm(user.first, user.second) },
+                        onClick = {
+                            loading = true; error = ""
+                            scope.launch {
+                                val result = runCatching {
+                                    FirestoreClient.initDmThread(
+                                        myUid    = currentUser.uid,
+                                        otherUid = user.first,
+                                        idToken  = currentUser.idToken,
+                                    )
+                                }
+                                loading = false
+                                if (result.isSuccess) {
+                                    onStartDm(user.first, user.second)
+                                } else {
+                                    error = "Sohbet başlatılamadı: ${result.exceptionOrNull()?.message}"
+                                }
+                            }
+                        },
                         enabled  = !loading,
                         modifier = Modifier.weight(1f),
                         colors   = ButtonDefaults.buttonColors(containerColor = AccentF),
                     ) {
-                        Text("Mesaj Gönder", color = Color.White, fontSize = 13.sp)
+                        if (loading) CircularProgressIndicator(Modifier.size(14.dp), color = Color.White, strokeWidth = 2.dp)
+                        else Text("Mesaj Gönder", color = Color.White, fontSize = 13.sp)
                     }
                 }
             }

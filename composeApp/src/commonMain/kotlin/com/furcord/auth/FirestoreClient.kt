@@ -518,6 +518,27 @@ object FirestoreClient {
         request("POST", "$BASE/dm_threads/$dmId/messages", idToken = idToken, body = body)
     }
 
+    /**
+     * DM thread belgesini oluşturur (eğer yoksa).
+     * dm_threads/{uid1_uid2} — her iki UID alfabetik sıralı.
+     * Zaten varsa PATCH idem-potent çalışır, var olan veriyi bozmaz.
+     */
+    suspend fun initDmThread(
+        myUid: String, otherUid: String, idToken: String,
+    ): String = withContext(Dispatchers.IO) {
+        val dmId = listOf(myUid, otherUid).sorted().joinToString("_")
+        val body = """{"fields":{
+            "participants":{"arrayValue":{"values":[
+                {"stringValue":"$myUid"},
+                {"stringValue":"$otherUid"}
+            ]}},
+            "createdAt":{"integerValue":"${System.currentTimeMillis()}"}
+        }}""".trimIndent()
+        val (code, _) = request("PATCH", "$BASE/dm_threads/$dmId", idToken = idToken, body = body)
+        if (code !in 200..299) throw Exception("DM thread oluşturulamadı: HTTP $code")
+        dmId
+    }
+
     suspend fun listDms(senderUid: String, recipientUid: String, idToken: String): List<ChatMessage> =
         withContext(Dispatchers.IO) {
             val dmId = listOf(senderUid, recipientUid).sorted().joinToString("_")
