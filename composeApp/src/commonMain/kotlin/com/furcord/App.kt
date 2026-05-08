@@ -11,10 +11,8 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.ui.graphics.Color
 import androidx.compose.material3.AlertDialog
-import java.io.File
 import kotlinx.coroutines.delay
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -22,6 +20,7 @@ import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.unit.dp
 import com.furcord.auth.AppVersionInfo
 import com.furcord.auth.AuthUser
@@ -53,6 +52,8 @@ private data class DmTarget(val uid: String, val name: String)
 @Composable
 fun App() {
     MaterialTheme(colorScheme = darkColorScheme()) {
+        // Pencere odak durumu — polling hızını kontrol eder
+        val windowFocused = LocalWindowInfo.current.isWindowFocused
         var authState   by remember { mutableStateOf<AppAuthState>(AppAuthState.Loading) }
         var serverState by remember { mutableStateOf<AppServerState>(AppServerState.None) }
         var dmTarget    by remember { mutableStateOf<DmTarget?>(null) }
@@ -149,44 +150,19 @@ fun App() {
                 var showNicknameSetup by remember { mutableStateOf(currentUser.nickname.isEmpty()) }
 
                 // Güncelleme durumu
-                var pendingUpdate     by remember { mutableStateOf<AppVersionInfo?>(null) }
-                var updateDismissed   by remember { mutableStateOf(false) }
-                var downloading       by remember { mutableStateOf(false) }
-                var downloadProgress  by remember { mutableStateOf(0f) }
-                var downloadError     by remember { mutableStateOf(false) }
-                var installerFile     by remember { mutableStateOf<File?>(null) }
-                var installing        by remember { mutableStateOf(false) }
-                var installStatus     by remember { mutableStateOf("") }
-                var installError      by remember { mutableStateOf(false) }
+                var pendingUpdate   by remember { mutableStateOf<AppVersionInfo?>(null) }
+                var updateDismissed by remember { mutableStateOf(false) }
 
-                // İndirme bitti → kurulum başlat
-                LaunchedEffect(installerFile) {
-                    val file = installerFile ?: return@LaunchedEffect
-                    installing = true
-                    installStatus = "Kuruluyor..."
-                    val ok = UpdateManager.installMsi(file)
-                    if (ok) {
-                        installStatus = "Yeniden başlatılıyor..."
-                        delay(800)
-                        UpdateManager.restartApp()  // VBScript ile yeni sürümü başlat
-                    } else {
-                        installStatus = "Kurulum başarısız!"
-                        installError = true
-                        installing = false
-                    }
-                }
-
-                // Güncelleme kontrolü: giriş anında + her 10 dakikada bir
+                // Güncelleme kontrolü: başlangıçta hemen + her 30 dakikada bir
+                // GitHub Releases API — kimlik doğrulaması gerektirmez
                 LaunchedEffect(currentUser.uid) {
                     while (true) {
-                        val info = runCatching {
-                            FirestoreClient.getLatestVersion(currentUser.idToken)
-                        }.getOrNull()
+                        val info = runCatching { UpdateManager.checkPublicVersion() }.getOrNull()
                         if (info != null && UpdateManager.isNewerVersion(info.latestVersion)) {
-                            if (pendingUpdate == null) updateDismissed = false  // yeni sürüm → dismiss sıfırla
+                            if (pendingUpdate == null) updateDismissed = false
                             pendingUpdate = info
                         }
-                        delay(10 * 60 * 1000L)  // 10 dakika
+                        delay(30 * 60_000L)  // 30 dakika
                     }
                 }
 
@@ -208,6 +184,11 @@ fun App() {
                     DmRepository.start(currentUser.uid, currentUser.idToken)
                 }
 
+                // Pencere odak değişikliğini DmRepository ve polling döngülerine ilet
+                LaunchedEffect(windowFocused) {
+                    DmRepository.setFocused(windowFocused)
+                }
+
                 // Nickname setup dialog
                 if (showNicknameSetup) {
                     NicknameSetupDialog(
@@ -222,94 +203,30 @@ fun App() {
                     return@MaterialTheme
                 }
 
-                // Kurulum tam ekran overlay
-                if (installing) {
-                    Box(
-                        Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Column(
-                            horizontalAlignment = Alignment.CenterHorizontally,
-                            verticalArrangement = Arrangement.Center
-                        ) {
-                            if (!installError) CircularProgressIndicator()
-                            Spacer(Modifier.height(20.dp))
-                            Text(installStatus, style = MaterialTheme.typography.titleMedium)
-                            if (installError) {
-                                Spacer(Modifier.height(12.dp))
-                                TextButton(onClick = { installing = false; installerFile = null; installError = false }) {
-                                    Text("Tamam")
-                                }
-                            }
-                        }
-                    }
-                    return@MaterialTheme
-                }
-
-                // Güncelleme dialog'u
-                if (pendingUpdate != null && !updateDismissed && installerFile == null) {
+                // Güncelleme dialog'u — tarayıcı ile indir
+                if (pendingUpdate != null && !updateDismissed) {
                     val info = pendingUpdate!!
                     AlertDialog(
-                        onDismissRequest = { if (!downloading) updateDismissed = true },
+                        onDismissRequest = { updateDismissed = true },
                         title = { Text("Güncelleme Mevcut") },
                         text = {
                             Column {
-                                Text("Yeni sürüm: ${info.latestVersion}  (Şu an: ${UpdateManager.currentVersion})")
-                                if (info.releaseNotes.isNotEmpty()) {
-                                    Spacer(Modifier.height(8.dp))
-                                    Text(info.releaseNotes, style = MaterialTheme.typography.bodySmall)
-                                }
-                                if (downloading) {
-                                    Spacer(Modifier.height(12.dp))
-                                    if (downloadProgress > 0f) {
-                                        LinearProgressIndicator(
-                                            progress = { downloadProgress },
-                                            modifier = Modifier.fillMaxWidth()
-                                        )
-                                        Text(
-                                            "%${(downloadProgress * 100).toInt()} indiriliyor…",
-                                            style = MaterialTheme.typography.labelSmall,
-                                            modifier = Modifier.padding(top = 4.dp)
-                                        )
-                                    } else {
-                                        LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
-                                        Text("İndiriliyor…", style = MaterialTheme.typography.labelSmall,
-                                            modifier = Modifier.padding(top = 4.dp))
-                                    }
-                                }
-                                if (downloadError) {
-                                    Spacer(Modifier.height(8.dp))
-                                    Text("İndirme başarısız. İnternet bağlantınızı kontrol edin.",
-                                        color = MaterialTheme.colorScheme.error,
-                                        style = MaterialTheme.typography.bodySmall)
-                                }
+                                Text("Yeni sürüm: v${info.latestVersion}  (Şu an: v${UpdateManager.currentVersion})")
+                                Spacer(Modifier.height(8.dp))
+                                Text(
+                                    "İndir butonuna tıklayarak kurulum dosyasını indirebilirsiniz.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                )
                             }
                         },
                         confirmButton = {
-                            TextButton(
-                                enabled = !downloading,
-                                onClick = {
-                                    downloading = true
-                                    downloadError = false
-                                    scope.launch {
-                                        val file = UpdateManager.downloadInstaller(info.downloadUrl) { p ->
-                                            downloadProgress = p
-                                        }
-                                        if (file != null) {
-                                            installerFile = file
-                                        } else {
-                                            downloadError = true
-                                            downloading = false
-                                        }
-                                    }
-                                }
-                            ) { Text("Güncelle") }
+                            TextButton(onClick = {
+                                UpdateManager.openDownloadPage(info.downloadUrl)
+                                updateDismissed = true
+                            }) { Text("İndir") }
                         },
                         dismissButton = {
-                            TextButton(
-                                enabled = !downloading,
-                                onClick = { updateDismissed = true }
-                            ) { Text("Sonra") }
+                            TextButton(onClick = { updateDismissed = true }) { Text("Sonra") }
                         }
                     )
                 }
@@ -318,9 +235,10 @@ fun App() {
                     when (val ss = serverState) {
                         is AppServerState.None -> {
                             ServerLobbyScreen(
-                                currentUser    = currentUser,
-                                hasUpdate      = pendingUpdate != null && !updateDismissed,
-                                onJoinServer   = { id, name ->
+                                currentUser     = currentUser,
+                                hasUpdate       = pendingUpdate != null && !updateDismissed,
+                                isWindowFocused = windowFocused,
+                                onJoinServer    = { id, name ->
                                     serverState = AppServerState.InServer(id, name)
                                 },
                                 onSignOut      = {

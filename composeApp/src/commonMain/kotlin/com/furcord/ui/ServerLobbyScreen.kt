@@ -54,12 +54,15 @@ private val GREEN        = Color(0xFF23A55A)
 fun ServerLobbyScreen(
     currentUser: AuthUser,
     hasUpdate: Boolean = false,
+    isWindowFocused: Boolean = true,
     onJoinServer: (serverId: String, serverName: String) -> Unit,
     onSignOut: () -> Unit,
     onUserUpdated: (newDisplayName: String, newPhotoURL: String) -> Unit = { _, _ -> },
     onOpenDm: ((uid: String, name: String) -> Unit)? = null,
 ) {
     val scope = rememberCoroutineScope()
+    // rememberUpdatedState: coroutine içinden her iterásyonda güncel değeri okur
+    val latestFocused by rememberUpdatedState(isWindowFocused)
 
     var searchQuery   by remember { mutableStateOf("") }
     var searchLoading by remember { mutableStateOf(false) }
@@ -92,10 +95,10 @@ fun ServerLobbyScreen(
             myServers.forEach { (id, name) -> RecentServers.addIfAbsent(id, name) }
             recentServers = RecentServers.load()
         } catch (_: Exception) {}
-        // Arkadaş listesini periyodik olarak yenile (8 sn)
+        // Arkadaş listesini odağa göre yenile: odakta 30s, arka planda 3 dakika
         while (isActive) {
             runCatching { friends = FirestoreClient.listFriends(currentUser.uid, currentUser.idToken) }
-            delay(8_000)
+            delay(if (latestFocused) 30_000L else 3 * 60_000L)
         }
     }
 

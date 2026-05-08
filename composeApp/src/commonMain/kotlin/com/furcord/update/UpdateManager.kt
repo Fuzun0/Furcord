@@ -1,7 +1,9 @@
 package com.furcord.update
 
+import com.furcord.auth.AppVersionInfo
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import java.awt.Desktop
 import java.io.File
 import java.net.URI
 import java.net.http.HttpClient
@@ -15,6 +17,48 @@ object UpdateManager {
     /** Şu an çalışan sürüm. jpackage tarafından sistem property olarak set edilir. */
     val currentVersion: String
         get() = System.getProperty("jpackage.app-version") ?: "1.0.0"
+
+    private val publicHttpClient = HttpClient.newBuilder()
+        .followRedirects(HttpClient.Redirect.ALWAYS)
+        .connectTimeout(Duration.ofSeconds(10))
+        .build()
+
+    /**
+     * GitHub Releases API'sinden en son sürüm bilgisini getirir.
+     * Kimlik doğrulaması gerektirmez — uygulama ilk açıldığında çalışır.
+     */
+    suspend fun checkPublicVersion(): AppVersionInfo? = withContext(Dispatchers.IO) {
+        try {
+            val req = HttpRequest.newBuilder()
+                .uri(URI.create("https://api.github.com/repos/Fuzun0/Furcord/releases/latest"))
+                .header("Accept", "application/vnd.github+json")
+                .header("User-Agent", "Furcord-Desktop/$currentVersion")
+                .GET()
+                .timeout(Duration.ofSeconds(10))
+                .build()
+            val resp = publicHttpClient.send(req, HttpResponse.BodyHandlers.ofString(Charsets.UTF_8))
+            if (resp.statusCode() !in 200..299) return@withContext null
+            val body = resp.body()
+            // tag_name: "v1.0.35" → "1.0.35"
+            val tag = Regex(""""tag_name"\s*:\s*"v?([^"]+)"""").find(body)
+                ?.groupValues?.get(1) ?: return@withContext null
+            // İlk .msi asset'in download URL'si
+            val dlUrl = Regex(""""browser_download_url"\s*:\s*"([^"]+\.msi)"""").find(body)
+                ?.groupValues?.get(1) ?: return@withContext null
+            AppVersionInfo(latestVersion = tag, downloadUrl = dlUrl, releaseNotes = "")
+        } catch (_: Exception) { null }
+    }
+
+    /**
+     * Kullanıcının varsayılan tarayıcısında indirme sayfasını açar.
+     */
+    fun openDownloadPage(url: String) {
+        try {
+            if (Desktop.isDesktopSupported() && Desktop.getDesktop().isSupported(Desktop.Action.BROWSE)) {
+                Desktop.getDesktop().browse(URI.create(url))
+            }
+        } catch (_: Exception) {}
+    }
 
     private fun resolveAppExecutablePath(): String {
         val jpackagePath = System.getProperty("jpackage.app-path")

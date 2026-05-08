@@ -42,6 +42,9 @@ object DmRepository {
     @Volatile private var idToken_: String = ""
     private var pollJob:  Job?   = null
 
+    /** true = pencere odakta (30s polling), false = arka plan (3 dakika polling) */
+    @Volatile private var focused: Boolean = true
+
     /**
      * Okunmamış sohbet sayısı: son mesajı başkası tarafından gönderilmiş ve
      * bu oturumda henüz açılmamış thread'lerin sayısı.
@@ -83,7 +86,8 @@ object DmRepository {
                     val fresh = FirestoreClient.listDmConversations(uid, idToken_)
                     _threads.value = fresh
                 }
-                delay(8_000)
+                // Odaktayken 30 sn, arka planda 3 dakika
+                delay(if (focused) 30_000L else 3 * 60_000L)
             }
         }
     }
@@ -94,6 +98,14 @@ object DmRepository {
      */
     fun updateToken(idToken: String) {
         idToken_ = idToken
+    }
+
+    /**
+     * Pencere odak durumu değiştiğinde App.kt'den çağrılır.
+     * Polling aralığını ayarlar: odakta=30s, arka plan=3 dakika.
+     */
+    fun setFocused(focused: Boolean) {
+        this.focused = focused
     }
 
     /**
