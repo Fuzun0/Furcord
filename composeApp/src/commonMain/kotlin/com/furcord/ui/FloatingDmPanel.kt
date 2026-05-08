@@ -25,6 +25,8 @@ import androidx.compose.ui.unit.sp
 import com.furcord.auth.AuthUser
 import com.furcord.auth.DmConversation
 import com.furcord.auth.FirestoreClient
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 
 private val AccentP   = Color(0xFF5865F2)
 private val BgPanelP  = Color(0xFF2B2D31)
@@ -50,7 +52,18 @@ fun FloatingDmPanel(
     var conversations    by remember { mutableStateOf<List<DmConversation>>(emptyList()) }
     var loading          by remember { mutableStateOf(false) }
 
-    // Panel açıldığında sohbetleri yükle
+    // MESAJLAR listesini her 10 sn'de bir otomatik güncelle
+    LaunchedEffect(currentUser.uid) {
+        while (isActive) {
+            runCatching {
+                val fresh = FirestoreClient.listDmConversations(currentUser.uid, currentUser.idToken)
+                conversations = fresh
+            }
+            delay(10_000)
+        }
+    }
+
+    // Panel açıldığında anlık yükleme
     LaunchedEffect(expanded) {
         if (!expanded) return@LaunchedEffect
         loading = true

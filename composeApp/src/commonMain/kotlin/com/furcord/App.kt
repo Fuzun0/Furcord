@@ -32,8 +32,8 @@ import com.furcord.update.UpdateManager
 import kotlinx.coroutines.launch
 import com.furcord.ui.ServerLobbyScreen
 import com.furcord.ui.ServerDetailScreen
-import com.furcord.ui.DmChatScreen
 import com.furcord.ui.FloatingDmPanel
+import com.furcord.ui.FloatingDmWindow
 import com.furcord.ui.NicknameSetupDialog
 
 private sealed class AppAuthState {
@@ -306,28 +306,6 @@ fun App() {
                     )
                 }
 
-                // DM ekranı tüm navigasyonun üstüne geliyor
-                if (dmTarget != null) {
-                    val dm = dmTarget!!
-                    Box(Modifier.fillMaxSize()) {
-                        DmChatScreen(
-                            currentUser   = currentUser,
-                            recipientUid  = dm.uid,
-                            recipientName = dm.name,
-                            onBack        = { dmTarget = null },
-                        )
-                        Text(
-                            text = "v${UpdateManager.currentVersion}",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = Color.White.copy(alpha = 0.6f),
-                            modifier = Modifier
-                                .align(Alignment.BottomStart)
-                                .padding(start = 8.dp, bottom = 8.dp)
-                        )
-                    }
-                    return@MaterialTheme
-                }
-
                 Box(Modifier.fillMaxSize()) {
                     when (val ss = serverState) {
                         is AppServerState.None -> {
@@ -371,12 +349,21 @@ fun App() {
                         }
                     }
 
-                    // FloatingDmPanel — sağ alt köşede, sadece sunucu detay ekranında göster
-                    if (serverState is AppServerState.InServer) {
-                        FloatingDmPanel(
-                            currentUser = currentUser,
-                            bottomOffset = 64.dp,
-                            onOpenDm    = { uid, name -> dmTarget = DmTarget(uid, name) },
+                    // FloatingDmPanel — sağ alt köşede, her zaman görünür
+                    FloatingDmPanel(
+                        currentUser  = currentUser,
+                        bottomOffset = 0.dp,
+                        onOpenDm     = { uid, name -> dmTarget = DmTarget(uid, name) },
+                    )
+
+                    // ── Kayan DM penceresi overlay (ses bağlantısını kesmez) ───────────
+                    val activeDm = dmTarget
+                    if (activeDm != null) {
+                        FloatingDmWindow(
+                            currentUser   = currentUser,
+                            recipientUid  = activeDm.uid,
+                            recipientName = activeDm.name,
+                            onClose       = { dmTarget = null },
                         )
                     }
 
