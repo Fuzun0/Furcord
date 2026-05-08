@@ -45,7 +45,12 @@ object UpdateManager {
             // İlk .msi asset'in download URL'si
             val dlUrl = Regex(""""browser_download_url"\s*:\s*"([^"]+\.msi)"""").find(body)
                 ?.groupValues?.get(1) ?: return@withContext null
-            AppVersionInfo(latestVersion = tag, downloadUrl = dlUrl, releaseNotes = "")
+            // GitHub release body → patch notes (her satır bir madde)
+            val releaseBody = Regex(""""body"\s*:\s*"((?:[^"\\]|\\.)*)"""").find(body)
+                ?.groupValues?.get(1)
+                ?.replace("\\r\\n", "\n")?.replace("\\n", "\n")?.replace("\\\"", "\"")
+                ?: ""
+            AppVersionInfo(latestVersion = tag, downloadUrl = dlUrl, releaseNotes = releaseBody)
         } catch (_: Exception) { null }
     }
 

@@ -29,9 +29,13 @@ import com.furcord.auth.ChatMessage
 import com.furcord.auth.DmRepository
 import com.furcord.auth.FriendEntry
 import com.furcord.auth.FirestoreClient
+import java.awt.FileDialog
+import java.awt.Frame
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 private val FwBg      = Color(0xFF2B2D31)
 private val FwSidebar = Color(0xFF232428)
@@ -316,9 +320,10 @@ private fun DmChatPane(
 ) {
     val scope     = rememberCoroutineScope()
     val listState = rememberLazyListState()
-    var messages  by remember(recipientUid) { mutableStateOf(listOf<ChatMessage>()) }
-    var inputText by remember(recipientUid) { mutableStateOf("") }
-    var sending   by remember { mutableStateOf(false) }
+    var messages      by remember(recipientUid) { mutableStateOf(listOf<ChatMessage>()) }
+    var inputText     by remember(recipientUid) { mutableStateOf("") }
+    var sending       by remember { mutableStateOf(false) }
+    var sendingImage  by remember { mutableStateOf(false) }
 
     // Periyodik mesaj yoklama (3 sn)
     LaunchedEffect(recipientUid) {
@@ -357,6 +362,43 @@ private fun DmChatPane(
                 if (fresh.isNotEmpty()) messages = fresh
             }
             sending = false
+        }
+    }
+
+    fun sendImage() {
+        if (sendingImage) return
+        scope.launch(Dispatchers.IO) {
+            val dialog = FileDialog(null as Frame?, "Resim Seç", FileDialog.LOAD)
+            dialog.file = "*.jpg;*.jpeg;*.png;*.webp;*.gif"
+            dialog.isVisible = true
+            val selectedFile = dialog.directory?.let { dir ->
+                dialog.file?.let { name -> java.io.File(dir, name) }
+            } ?: return@launch
+            if (!selectedFile.exists()) return@launch
+            withContext(Dispatchers.Main) { sendingImage = true }
+            try {
+                val ext  = selectedFile.extension.lowercase().ifEmpty { "jpg" }
+                val mime = when (ext) { "png" -> "image/png"; "gif" -> "image/gif"; else -> "image/jpeg" }
+                val senderNick = currentUser.nickname.ifBlank { currentUser.displayName.ifBlank { currentUser.email } }
+                val result = FirestoreClient.uploadToStorage(
+                    storagePath = "chat_images/dm_${currentUser.uid}_${System.currentTimeMillis()}.$ext",
+                    fileBytes   = selectedFile.readBytes(),
+                    mimeType    = mime,
+                    idToken     = currentUser.idToken,
+                )
+                FirestoreClient.sendDm(
+                    senderUid    = currentUser.uid,
+                    senderName   = senderNick,
+                    senderPhoto  = currentUser.photoURL,
+                    recipientUid = recipientUid,
+                    text         = "",
+                    idToken      = currentUser.idToken,
+                    imageUrl     = result.downloadUrl,
+                )
+                val fresh = FirestoreClient.listDms(currentUser.uid, recipientUid, currentUser.idToken)
+                withContext(Dispatchers.Main) { if (fresh.isNotEmpty()) messages = fresh }
+            } catch (_: Exception) {}
+            withContext(Dispatchers.Main) { sendingImage = false }
         }
     }
 
@@ -417,7 +459,31 @@ private fun DmChatPane(
                             .padding(horizontal = 10.dp, vertical = 6.dp)
                             .widthIn(max = 240.dp),
                     ) {
-                        Text(msg.text, color = FwText, fontSize = 13.sp)
+                        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            if (msg.text.isNotBlank()) Text(msg.text, color = FwText, fontSize = 13.sp)
+                            if (msg.imageUrl.isNotBlank()) {
+                                var bmp by remember(msg.imageUrl) { mutableStateOf<androidx.compose.ui.graphics.ImageBitmap?>(null) }
+                                LaunchedEffect(msg.imageUrl) {
+                                    withContext(Dispatchers.IO) {
+                                        try {
+                                            val bytes = java.net.URI.create(msg.imageUrl).toURL().readBytes()
+                                            bmp = androidx.compose.ui.res.loadImageBitmap(bytes.inputStream())
+                                        } catch (_: Exception) {}
+                                    }
+                                }
+                                if (bmp != null) {
+                                    androidx.compose.foundation.Image(
+                                        bitmap             = bmp!!,
+                                        contentDescription = "Görsel",
+                                        modifier           = Modifier.widthIn(max = 200.dp).heightIn(max = 150.dp)
+                                            .clip(RoundedCornerShape(6.dp)),
+                                        contentScale       = androidx.compose.ui.layout.ContentScale.Fit,
+                                    )
+                                } else {
+                                    CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp, color = FwAccent)
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -458,6 +524,17 @@ private fun DmChatPane(
                     cursorColor             = FwAccent,
                 ),
             )
+            IconButton(
+                    onClick  = ::sendImage,
+                    enabled  = !sendingImage,
+                    modifier = Modifier.size(30.dp),
+                ) {
+                    if (sendingImage) {
+                        CircularProgressIndicator(Modifier.size(14.dp), strokeWidth = 2.dp, color = FwAccent)
+                    } else {
+                        Text("🖼️", fontSize = 15.sp)
+                    }
+                }
             IconButton(
                 onClick  = ::sendMessage,
                 enabled  = inputText.isNotBlank() && !sending,

@@ -29,6 +29,7 @@ data class ChatMessage(
     val photoURL:  String,
     val text:      String,
     val timestamp: Long,
+    val imageUrl:  String = "",  // Firebase Storage görsel URL'şi (opsiyonel)
 )
 
 /** Ses kanalına bağlı bir eşin bağlantı bilgileri. */
@@ -47,6 +48,9 @@ data class DmConversation(
 
 /** Arkadaş listesi kaydı. */
 data class FriendEntry(val uid: String, val displayName: String, val furcordId: String)
+
+/** Firebase Storage REST API upload sonucu. */
+data class StorageUploadResult(val downloadUrl: String)
 
 /** Gelen arkadaşlık isteği. */
 data class FriendRequest(
@@ -353,13 +357,13 @@ object FirestoreClient {
         photoURL: String,
         text: String,
         idToken: String,
+        imageUrl: String = "",
     ) = withContext(Dispatchers.IO) {
-        val escapedUsername = username.replace("\\", "\\\\").replace("\"", "\\\"")
-        val escapedText     = text.replace("\\", "\\\\").replace("\"", "\\\"")
-        val escapedPhoto    = photoURL.replace("\\", "\\\\").replace("\"", "\\\"")
-        val escapedUid      = uid.replace("\\", "\\\\").replace("\"", "\\\"")
+        fun String.esc() = replace("\\", "\\\\").replace("\"", "\\\"")
         val ts = System.currentTimeMillis()
-        val body = """{"fields":{"uid":{"stringValue":"$escapedUid"},"username":{"stringValue":"$escapedUsername"},"photoURL":{"stringValue":"$escapedPhoto"},"text":{"stringValue":"$escapedText"},"timestamp":{"integerValue":"$ts"}}}"""
+        val imgField = if (imageUrl.isNotBlank())
+            ",\"imageUrl\":{\"stringValue\":\"${imageUrl.esc()}\"}" else ""
+        val body = """{"fields":{"uid":{"stringValue":"${uid.esc()}"},"username":{"stringValue":"${username.esc()}"},"photoURL":{"stringValue":"${photoURL.esc()}"},"text":{"stringValue":"${text.esc()}"},"timestamp":{"integerValue":"$ts"}$imgField}}"""
         val (code, resp) = request("POST", "$BASE/servers/$serverId/messages", body, idToken)
         if (code !in 200..299) throw Exception("Mesaj gönderilemedi ($code): $resp")
     }
@@ -444,6 +448,7 @@ object FirestoreClient {
                 photoURL  = f.str("photoURL"),
                 text      = msg,
                 timestamp = f.lng("timestamp"),
+                imageUrl  = f.str("imageUrl"),
             )
         }.sortedBy { it.timestamp }
     }
@@ -506,17 +511,13 @@ object FirestoreClient {
     suspend fun sendDm(
         senderUid: String, senderName: String, senderPhoto: String,
         recipientUid: String, text: String, idToken: String,
+        imageUrl: String = "",
     ) = withContext(Dispatchers.IO) {
-        val dmId  = listOf(senderUid, recipientUid).sorted().joinToString("_")
-        val esc   = text.replace("\\", "\\\\").replace("\"", "\\\"")
-        val escN  = senderName.replace("\\", "\\\\").replace("\"", "\\\"")
-        val body  = """{"fields":{
-            "uid":{"stringValue":"$senderUid"},
-            "username":{"stringValue":"$escN"},
-            "photoURL":{"stringValue":"$senderPhoto"},
-            "text":{"stringValue":"$esc"},
-            "timestamp":{"integerValue":"${System.currentTimeMillis()}"}
-        }}""".trimIndent()
+        fun String.esc() = replace("\\", "\\\\").replace("\"", "\\\"")
+        val dmId = listOf(senderUid, recipientUid).sorted().joinToString("_")
+        val imgField = if (imageUrl.isNotBlank())
+            ",\"imageUrl\":{\"stringValue\":\"${imageUrl.esc()}\"}" else ""
+        val body = """{"fields":{"uid":{"stringValue":"$senderUid"},"username":{"stringValue":"${senderName.esc()}"},"photoURL":{"stringValue":"${senderPhoto.esc()}"},"text":{"stringValue":"${text.esc()}"},"timestamp":{"integerValue":"${System.currentTimeMillis()}"}$imgField}}"""
         request("POST", "$BASE/dm_threads/$dmId/messages", idToken = idToken, body = body)
     }
 
@@ -719,7 +720,7 @@ object FirestoreClient {
                 val (uc, ut) = request("GET", "$BASE/users/$uid", idToken = idToken)
                 if (uc !in 200..299) continue
                 val udoc = runCatching { fsJson.decodeFromString<FsDocument>(ut) }.getOrNull() ?: continue
-                entries.add(FriendEntry(uid, udoc.fields.str("displayName"), udoc.fields.str("furcordId")))
+                entries.add(FriendEntry(uid, udoc.fields.str("nickname").ifEmpty { udoc.fields.str("displayName") }, udoc.fields.str("furcordId")))
             }
             entries
         }
@@ -745,6 +746,46 @@ object FirestoreClient {
         val url     = "$BASE/servers/$serverId?updateMask.fieldPaths=imageUrl"
         val (code, resp) = request("PATCH", url, body, idToken)
         if (code !in 200..299) throw Exception("Görsel güncellenemedi ($code): $resp")
+    }
+
+    // ── Firebase Storage REST API ─────────────────────────────────────────────
+
+    private const val STORAGE_BASE = "https://firebasestorage.googleapis.com/v0/b/$PROJECT_ID.appspot.com/o"
+
+    /**
+     * Bir dosyayı Firebase Storage'a yükler.
+     * @param storagePath "chat_images/img123.jpg" veya "server_icons/srv456.jpg" gibi
+     * @param fileBytes   Yüklenecek ham byte dizisi
+     * @param mimeType    "image/jpeg", "image/png" gibi
+     * @param idToken     Firebase Auth token
+     * @return Public download URL (token dahil)
+     */
+    suspend fun uploadToStorage(
+        storagePath: String,
+        fileBytes:   ByteArray,
+        mimeType:    String,
+        idToken:     String,
+    ): StorageUploadResult = withContext(Dispatchers.IO) {
+        val encodedPath = java.net.URLEncoder.encode(storagePath, "UTF-8")
+        val uploadUrl   = "$STORAGE_BASE?name=$encodedPath"
+        val req = HttpRequest.newBuilder()
+            .uri(URI.create(uploadUrl))
+            .header("Authorization", "Bearer $idToken")
+            .header("Content-Type", mimeType)
+            .timeout(Duration.ofSeconds(60))
+            .POST(HttpRequest.BodyPublishers.ofByteArray(fileBytes))
+            .build()
+        val resp = httpClient.send(req, HttpResponse.BodyHandlers.ofString(Charsets.UTF_8))
+        if (resp.statusCode() !in 200..299)
+            throw Exception("Storage yükleme başarısız (${resp.statusCode()}): ${resp.body()}")
+        val body  = resp.body()
+        val token = Regex(""""downloadTokens"\s*:\s*"([^"]+)"""").find(body)
+            ?.groupValues?.get(1) ?: throw Exception("downloadTokens bulunamadı")
+        val name  = Regex(""""name"\s*:\s*"([^"]+)"""").find(body)
+            ?.groupValues?.get(1) ?: storagePath
+        val encodedName = java.net.URLEncoder.encode(name, "UTF-8")
+        val downloadUrl = "$STORAGE_BASE/$encodedName?alt=media&token=$token"
+        StorageUploadResult(downloadUrl)
     }
 
     // ── Friend request notifications ──────────────────────────────────────────

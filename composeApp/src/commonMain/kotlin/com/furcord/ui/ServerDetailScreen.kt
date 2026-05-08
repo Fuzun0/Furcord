@@ -34,11 +34,16 @@ import com.furcord.auth.MessageStore
 import com.furcord.auth.VoicePeer
 import com.furcord.auth.VoiceChannel
 import com.furcord.voice.VoiceEngine
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.GlobalScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.awt.FileDialog
+import java.awt.Frame
 import java.awt.Toolkit
 import java.awt.datatransfer.StringSelection
+import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -437,7 +442,39 @@ private fun MessageRow(msg: ChatMessage, isSelf: Boolean) {
                 fontSize = 14.sp,
                 color = Color(0xFFDCDDE1),
             )
+            // Resim varsa göster
+            if (msg.imageUrl.isNotBlank()) {
+                Spacer(Modifier.height(4.dp))
+                AsyncChatImage(msg.imageUrl)
+            }
         }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Asenkron resim yükleyici (chat mesajlarında kullanılır)
+// ─────────────────────────────────────────────────────────────────────────────
+@Composable
+private fun AsyncChatImage(url: String) {
+    var bmp by remember(url) { mutableStateOf<androidx.compose.ui.graphics.ImageBitmap?>(null) }
+    LaunchedEffect(url) {
+        withContext(Dispatchers.IO) {
+            try {
+                val bytes = java.net.URI.create(url).toURL().readBytes()
+                bmp = androidx.compose.ui.res.loadImageBitmap(bytes.inputStream())
+            } catch (_: Exception) {}
+        }
+    }
+    if (bmp != null) {
+        androidx.compose.foundation.Image(
+            bitmap             = bmp!!,
+            contentDescription = "Görsel",
+            modifier           = Modifier.widthIn(max = 300.dp).heightIn(max = 250.dp)
+                .clip(androidx.compose.foundation.shape.RoundedCornerShape(8.dp)),
+            contentScale       = androidx.compose.ui.layout.ContentScale.Fit,
+        )
+    } else {
+        CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp, color = Color(0xFF5865F2))
     }
 }
 
@@ -452,10 +489,10 @@ private fun ServerSettingsDialog(
     onDismiss: () -> Unit,
 ) {
     val scope = rememberCoroutineScope()
-    var imageUrl by remember { mutableStateOf("") }
     var saving   by remember { mutableStateOf(false) }
     var saved    by remember { mutableStateOf(false) }
     var error    by remember { mutableStateOf("") }
+    var status   by remember { mutableStateOf("") }
 
     AlertDialog(
         onDismissRequest = { if (!saving) onDismiss() },
@@ -464,50 +501,57 @@ private fun ServerSettingsDialog(
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Text("Sunucu: $serverName", fontSize = 13.sp, color = Color(0xFF8E9297))
-                OutlinedTextField(
-                    value         = imageUrl,
-                    onValueChange = { imageUrl = it; saved = false; error = "" },
-                    label         = { Text("Sunucu Görseli URL", fontSize = 12.sp) },
-                    placeholder   = { Text("https://...", color = Color(0xFF8E9297), fontSize = 12.sp) },
-                    singleLine    = true,
-                    modifier      = Modifier.fillMaxWidth(),
-                    colors        = OutlinedTextFieldDefaults.colors(
-                        focusedBorderColor      = Color(0xFF5865F2),
-                        unfocusedBorderColor    = Color(0xFF3F4147),
-                        focusedContainerColor   = Color(0xFF383A40),
-                        unfocusedContainerColor = Color(0xFF383A40),
-                        focusedTextColor        = Color(0xFFDCDDDE),
-                        unfocusedTextColor      = Color(0xFFDCDDDE),
-                        cursorColor             = Color(0xFF5865F2),
-                    ),
-                )
-                if (saved) Text("Kaydedildi!", fontSize = 12.sp, color = Color(0xFF23A55A))
+                // Dosya seç butonu
+                Button(
+                    enabled = !saving,
+                    onClick = {
+                        scope.launch(kotlinx.coroutines.Dispatchers.IO) {
+                            val dialog = FileDialog(null as Frame?, "Sunucu Görseli Seç", FileDialog.LOAD)
+                            dialog.file = "*.jpg;*.jpeg;*.png;*.webp"
+                            dialog.isVisible = true
+                            val selectedFile = dialog.directory?.let { dir ->
+                                dialog.file?.let { name -> File(dir, name) }
+                            } ?: return@launch
+                            if (!selectedFile.exists()) return@launch
+                            withContext(kotlinx.coroutines.Dispatchers.Main) {
+                                saving = true; error = ""; saved = false
+                                status = "Yükleniyor..."
+                            }
+                            try {
+                                val ext   = selectedFile.extension.lowercase().ifEmpty { "jpg" }
+                                val mime  = if (ext == "png") "image/png" else "image/jpeg"
+                                val path  = "server_icons/${serverId}_${System.currentTimeMillis()}.$ext"
+                                val result = FirestoreClient.uploadToStorage(
+                                    storagePath = path,
+                                    fileBytes   = selectedFile.readBytes(),
+                                    mimeType    = mime,
+                                    idToken     = currentUser.idToken,
+                                )
+                                FirestoreClient.updateServerImage(serverId, result.downloadUrl, currentUser.idToken)
+                                withContext(kotlinx.coroutines.Dispatchers.Main) { saved = true; status = "" }
+                            } catch (e: Exception) {
+                                withContext(kotlinx.coroutines.Dispatchers.Main) { error = "Hata: ${e.message}"; status = "" }
+                            } finally {
+                                withContext(kotlinx.coroutines.Dispatchers.Main) { saving = false }
+                            }
+                        }
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF5865F2)),
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    if (saving) {
+                        CircularProgressIndicator(Modifier.size(14.dp), color = Color.White, strokeWidth = 2.dp)
+                        Spacer(Modifier.width(8.dp))
+                        Text(status.ifEmpty { "Yükleniyor..." }, color = Color.White)
+                    } else {
+                        Text("📁 Görsel Seç ve Yükle", color = Color.White)
+                    }
+                }
+                if (saved) Text("✅ Görsel güncellendi!", fontSize = 12.sp, color = Color(0xFF23A55A))
                 if (error.isNotEmpty()) Text(error, fontSize = 12.sp, color = Color(0xFFED4245))
             }
         },
-        confirmButton = {
-            TextButton(
-                enabled = !saving && imageUrl.isNotBlank(),
-                onClick = {
-                    saving = true; error = ""
-                    scope.launch {
-                        try {
-                            FirestoreClient.updateServerImage(serverId, imageUrl.trim(), currentUser.idToken)
-                            saved = true
-                        } catch (e: Exception) {
-                            error = "Hata: ${e.message}"
-                        }
-                        saving = false
-                    }
-                },
-            ) {
-                if (saving) {
-                    CircularProgressIndicator(Modifier.size(14.dp), color = Color(0xFF5865F2), strokeWidth = 2.dp)
-                } else {
-                    Text("Kaydet", color = Color(0xFF5865F2))
-                }
-            }
-        },
+        confirmButton = {},
         dismissButton = {
             TextButton(onClick = { if (!saving) onDismiss() }) {
                 Text("Kapat", color = Color(0xFF8E9297))
@@ -544,6 +588,7 @@ fun ServerDetailScreen(
     var messages      by remember { mutableStateOf(MessageStore.get(serverId)) }
     var messageText   by remember { mutableStateOf("") }
     var sendingMsg    by remember { mutableStateOf(false) }
+    var sendingImage  by remember { mutableStateOf(false) }
     val listState     = rememberLazyListState()
 
     // Profile dialog
@@ -841,6 +886,51 @@ fun ServerDetailScreen(
             runCatching { FirestoreClient.removeVoicePeer(serverId, currentUser.uid, currentUser.idToken) }
             VoiceEngine.stop()
             connectedChannelId = null
+        }
+    }
+
+    // ── Send image ────────────────────────────────────────────────────────────
+    fun sendImage() {
+        if (sendingImage) return
+        scope.launch(Dispatchers.IO) {
+            val dialog = FileDialog(null as Frame?, "Resim Seç", FileDialog.LOAD)
+            dialog.file = "*.jpg;*.jpeg;*.png;*.webp;*.gif"
+            dialog.isVisible = true
+            val selectedFile = dialog.directory?.let { dir ->
+                dialog.file?.let { name -> java.io.File(dir, name) }
+            } ?: return@launch
+            if (!selectedFile.exists()) return@launch
+            withContext(Dispatchers.Main) { sendingImage = true }
+            try {
+                val ext  = selectedFile.extension.lowercase().ifEmpty { "jpg" }
+                val mime = when (ext) { "png" -> "image/png"; "gif" -> "image/gif"; else -> "image/jpeg" }
+                val path = "chat_images/${serverId}_${System.currentTimeMillis()}.$ext"
+                val result = FirestoreClient.uploadToStorage(
+                    storagePath = path,
+                    fileBytes   = selectedFile.readBytes(),
+                    mimeType    = mime,
+                    idToken     = currentUser.idToken,
+                )
+                val now = System.currentTimeMillis()
+                val optimistic = ChatMessage(
+                    id = "img-pending-$now",
+                    uid = currentUser.uid, username = displayNickname,
+                    photoURL = currentUser.photoURL, text = "",
+                    timestamp = now, imageUrl = result.downloadUrl,
+                )
+                withContext(Dispatchers.Main) { messages = messages + optimistic }
+                FirestoreClient.sendMessage(
+                    serverId = serverId, uid = currentUser.uid,
+                    username = displayNickname, photoURL = currentUser.photoURL,
+                    text = "", idToken = currentUser.idToken,
+                    imageUrl = result.downloadUrl,
+                )
+                val fetched = FirestoreClient.listMessages(serverId, currentUser.idToken)
+                withContext(Dispatchers.Main) {
+                    if (fetched.isNotEmpty()) { messages = fetched; MessageStore.set(serverId, fetched) }
+                }
+            } catch (_: Exception) {}
+            withContext(Dispatchers.Main) { sendingImage = false }
         }
     }
 
@@ -1208,14 +1298,16 @@ fun ServerDetailScreen(
                 }
                 HorizontalDivider(color = Color(0xFF1E1F22))
                 ChatPanel(
-                    serverId     = serverId,
-                    messages     = messages,
-                    currentUser  = currentUser,
-                    listState    = listState,
-                    messageText  = messageText,
-                    onTextChange = { messageText = it },
-                    onSend       = { sendMessage() },
-                    modifier     = Modifier.weight(1f).fillMaxWidth(),
+                    serverId        = serverId,
+                    messages        = messages,
+                    currentUser     = currentUser,
+                    listState       = listState,
+                    messageText     = messageText,
+                    onTextChange    = { messageText = it },
+                    onSend          = { sendMessage() },
+                    onSendImage     = { sendImage() },
+                    sendingImage    = sendingImage,
+                    modifier        = Modifier.weight(1f).fillMaxWidth(),
                 )
             }
         } else {
@@ -1385,6 +1477,8 @@ private fun ChatPanel(
     messageText: String,
     onTextChange: (String) -> Unit,
     onSend: () -> Unit,
+    onSendImage: () -> Unit = {},
+    sendingImage: Boolean = false,
     modifier: Modifier = Modifier,
 ) {
     Column(modifier = modifier) {
@@ -1452,6 +1546,28 @@ private fun ChatPanel(
                     unfocusedTextColor   = Color(0xFFF2F3F5),
                 ),
             )
+            IconButton(
+                onClick  = onSendImage,
+                enabled  = !sendingImage,
+                modifier = Modifier.size(40.dp),
+            ) {
+                if (sendingImage) {
+                    CircularProgressIndicator(Modifier.size(16.dp), color = Color(0xFF5865F2), strokeWidth = 2.dp)
+                } else {
+                    Text("🖼️", fontSize = 18.sp)
+                }
+            }
+            IconButton(
+                onClick  = onSendImage,
+                enabled  = !sendingImage,
+                modifier = Modifier.size(40.dp),
+            ) {
+                if (sendingImage) {
+                    CircularProgressIndicator(Modifier.size(16.dp), color = Color(0xFF5865F2), strokeWidth = 2.dp)
+                } else {
+                    Text("🖼️", fontSize = 18.sp)
+                }
+            }
             IconButton(
                 onClick  = onSend,
                 modifier = Modifier

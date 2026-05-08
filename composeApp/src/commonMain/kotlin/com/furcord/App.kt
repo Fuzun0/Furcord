@@ -13,6 +13,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.material3.AlertDialog
 import kotlinx.coroutines.delay
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -208,15 +209,27 @@ fun App() {
                     val info = pendingUpdate!!
                     AlertDialog(
                         onDismissRequest = { updateDismissed = true },
-                        title = { Text("Güncelleme Mevcut") },
+                        title = { Text("🆕 Güncelleme Mevcut") },
                         text = {
-                            Column {
-                                Text("Yeni sürüm: v${info.latestVersion}  (Şu an: v${UpdateManager.currentVersion})")
-                                Spacer(Modifier.height(8.dp))
-                                Text(
-                                    "İndir butonuna tıklayarak kurulum dosyasını indirebilirsiniz.",
-                                    style = MaterialTheme.typography.bodySmall,
-                                )
+                            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Text("v${UpdateManager.currentVersion}  →  v${info.latestVersion}")
+                                if (info.releaseNotes.isNotBlank()) {
+                                    HorizontalDivider()
+                                    Text(
+                                        "Yenilikler:",
+                                        style = MaterialTheme.typography.labelMedium,
+                                    )
+                                    // Her satırı madde imi ile göster
+                                    info.releaseNotes.lines()
+                                        .map { it.trimStart('-', '*', ' ') }
+                                        .filter { it.isNotBlank() }
+                                        .forEach { line ->
+                                            Text(
+                                                "• $line",
+                                                style = MaterialTheme.typography.bodySmall,
+                                            )
+                                        }
+                                }
                             }
                         },
                         confirmButton = {
