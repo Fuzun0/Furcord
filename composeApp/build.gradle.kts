@@ -65,7 +65,7 @@ compose.desktop {
             .orElse(providers.environmentVariable("FURCORD_GOOGLE_CLIENT_SECRET"))
             .orNull?.trim()
 
-        val appJvmArgs = mutableListOf("-Xmx512m")
+        val appJvmArgs = mutableListOf("-Xmx512m", "-Dskiko.renderApi=SOFTWARE")
         if (!relayHost.isNullOrEmpty() && relayPort != null) {
             appJvmArgs += "-Dfurcord.relay.host=$relayHost"
             appJvmArgs += "-Dfurcord.relay.port=$relayPort"
