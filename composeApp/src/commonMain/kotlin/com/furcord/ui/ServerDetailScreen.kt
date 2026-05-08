@@ -2,15 +2,20 @@
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.hoverable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsHoveredAsState
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -269,12 +274,23 @@ private fun ChannelRow(
     onClick: () -> Unit,
     onUserRightClick: ((ActiveUser) -> Unit)? = null,
 ) {
+    val rowInteraction = remember { MutableInteractionSource() }
+    val hovered by rowInteraction.collectIsHoveredAsState()
+
     Column {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
                 .clip(RoundedCornerShape(4.dp))
-                .background(if (isSelected && !isConnected) Color(0xFF404249) else Color.Transparent)
+                .hoverable(rowInteraction)
+                .background(
+                    when {
+                        isSelected && !isConnected -> AppColors.BgActive
+                        isConnected               -> AppColors.Online.copy(alpha = 0.15f)
+                        hovered                   -> AppColors.BgElevated
+                        else                      -> Color.Transparent
+                    }
+                )
                 .clickable(onClick = onClick)
                 .padding(horizontal = 8.dp, vertical = 6.dp),
             verticalAlignment = Alignment.CenterVertically,
@@ -283,15 +299,16 @@ private fun ChannelRow(
             Text(
                 text = if (isConnected) "🔊" else "🔈",
                 fontSize = 16.sp,
-                color = if (isConnected) Color(0xFF23A55A) else Color(0xFF8E9297),
+                color = if (isConnected) AppColors.Online else AppColors.TextMuted,
             )
             Text(
                 text = channel.name,
                 fontSize = 15.sp,
                 color = when {
-                    isConnected -> Color(0xFF23A55A)
-                    isSelected  -> Color(0xFFF2F3F5)
-                    else        -> Color(0xFF8E9297)
+                    isConnected -> AppColors.Online
+                    isSelected  -> AppColors.TextPrimary
+                    hovered     -> AppColors.TextSecondary
+                    else        -> AppColors.TextMuted
                 },
                 fontWeight = if (isConnected || isSelected) FontWeight.SemiBold else FontWeight.Normal,
                 modifier = Modifier.weight(1f),
@@ -302,7 +319,7 @@ private fun ChannelRow(
                 Text(
                     text = "${activeUsers.size}",
                     fontSize = 11.sp,
-                    color = Color(0xFF6D6F78),
+                    color = AppColors.TextSubtle,
                 )
             }
         }
@@ -401,52 +418,95 @@ private fun VoiceConnectedBar(channelName: String, onDisconnect: () -> Unit) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Chat message row
+// Chat message row — Discord-style grouping
 // ─────────────────────────────────────────────────────────────────────────────
 @Composable
-private fun MessageRow(msg: ChatMessage, isSelf: Boolean) {
+private fun MessageRow(
+    msg: ChatMessage,
+    isSelf: Boolean,
+    isGrouped: Boolean = false,  // true → aynı kullanıcı'nın önceki mesajı var (5 dk içinde)
+) {
     val timeStr = remember(msg.timestamp) {
         SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(msg.timestamp))
     }
+    val interactionSource = remember { MutableInteractionSource() }
+    val hovered by interactionSource.collectIsHoveredAsState()
+
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 4.dp),
+            .hoverable(interactionSource)
+            .background(if (hovered) AppColors.BgElevated.copy(alpha = 0.45f) else Color.Transparent)
+            .padding(
+                start  = 16.dp,
+                end    = 16.dp,
+                top    = if (isGrouped) 1.dp else 8.dp,
+                bottom = 1.dp,
+            ),
         horizontalArrangement = Arrangement.spacedBy(12.dp),
         verticalAlignment = Alignment.Top,
     ) {
-        Box(
-            modifier = Modifier.size(36.dp),
-        ) {
-            UserAvatar(
-                displayName = msg.username,
-                photoURL    = msg.photoURL,
-                size        = 36,
-            )
-        }
-        Column(verticalArrangement = Arrangement.spacedBy(2.dp), modifier = Modifier.weight(1f)) {
-            Row(
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text(
-                    text = msg.username,
-                    fontSize = 14.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    color = if (isSelf) Color(0xFF23A55A) else Color(0xFFF2F3F5),
+        // Avatar alanı — gruplu mesajda boş bırak (indent)
+        if (isGrouped) {
+            Spacer(Modifier.width(36.dp))
+        } else {
+            Box(modifier = Modifier.size(36.dp).padding(top = 2.dp)) {
+                UserAvatar(
+                    displayName = msg.username,
+                    photoURL    = msg.photoURL,
+                    size        = 36,
                 )
-                Text(text = timeStr, fontSize = 11.sp, color = Color(0xFF6D6F78))
             }
-            Text(
-                text = msg.text,
-                fontSize = 14.sp,
-                color = Color(0xFFDCDDE1),
-            )
+        }
+
+        Column(
+            modifier             = Modifier.weight(1f),
+            verticalArrangement  = Arrangement.spacedBy(2.dp),
+        ) {
+            // Kullanıcı adı + zaman — sadece grubun ilk mesajında
+            if (!isGrouped) {
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalAlignment     = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        text       = msg.username,
+                        fontSize   = 14.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color      = if (isSelf) AppColors.SelfName else AppColors.TextPrimary,
+                    )
+                    Text(
+                        text     = timeStr,
+                        fontSize = 11.sp,
+                        color    = AppColors.TextTimestamp,
+                    )
+                }
+            }
+
+            // Mesaj metni
+            if (msg.text.isNotBlank()) {
+                Text(
+                    text     = msg.text,
+                    fontSize = 14.sp,
+                    color    = AppColors.TextSecondary,
+                )
+            }
+
             // Resim varsa göster
             if (msg.imageUrl.isNotBlank()) {
-                Spacer(Modifier.height(4.dp))
+                Spacer(Modifier.height(2.dp))
                 AsyncChatImage(msg.imageUrl)
             }
+        }
+
+        // Zaman — sadece gruplu mesajlarda hover'da solda görünecek (Discord sitili)
+        if (isGrouped && hovered) {
+            Text(
+                text     = timeStr,
+                fontSize = 10.sp,
+                color    = AppColors.TextTimestamp,
+                modifier = Modifier.align(Alignment.CenterVertically),
+            )
         }
     }
 }
@@ -1061,12 +1121,21 @@ fun ServerDetailScreen(
             }
 
             // # genel satırı
+            val textChInteraction = remember { MutableInteractionSource() }
+            val textChHovered by textChInteraction.collectIsHoveredAsState()
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 8.dp)
                     .clip(RoundedCornerShape(4.dp))
-                    .background(if (showTextChannel) Color(0xFF404249) else Color.Transparent)
+                    .hoverable(textChInteraction)
+                    .background(
+                        when {
+                            showTextChannel -> AppColors.BgActive
+                            textChHovered   -> AppColors.BgElevated
+                            else            -> Color.Transparent
+                        }
+                    )
                     .clickable { showTextChannel = true }
                     .padding(horizontal = 8.dp, vertical = 6.dp),
                 verticalAlignment = Alignment.CenterVertically,
@@ -1076,12 +1145,12 @@ fun ServerDetailScreen(
                     text = "#",
                     fontSize = 16.sp,
                     fontWeight = FontWeight.Bold,
-                    color = if (showTextChannel) Color(0xFFF2F3F5) else Color(0xFF8E9297),
+                    color = if (showTextChannel) AppColors.TextPrimary else AppColors.TextMuted,
                 )
                 Text(
                     text = "genel",
                     fontSize = 15.sp,
-                    color = if (showTextChannel) Color(0xFFF2F3F5) else Color(0xFF8E9297),
+                    color = if (showTextChannel) AppColors.TextPrimary else AppColors.TextMuted,
                     fontWeight = if (showTextChannel) FontWeight.SemiBold else FontWeight.Normal,
                     modifier = Modifier.weight(1f),
                     maxLines = 1,
@@ -1494,7 +1563,7 @@ private fun ChatPanel(
         LazyColumn(
             state   = listState,
             modifier = Modifier.weight(1f),
-            verticalArrangement = Arrangement.spacedBy(2.dp),
+            verticalArrangement = Arrangement.spacedBy(0.dp),
             contentPadding = PaddingValues(vertical = 8.dp),
         ) {
             if (messages.isEmpty()) {
@@ -1506,84 +1575,105 @@ private fun ChatPanel(
                         Text(
                             text = "Henüz mesaj yok. İlk mesajı sen gönder!",
                             fontSize = 14.sp,
-                            color = Color(0xFF8E9297),
+                            color = AppColors.TextMuted,
                             textAlign = TextAlign.Center,
                         )
                     }
                 }
             }
-            items(messages) { msg ->
-                MessageRow(msg = msg, isSelf = msg.uid == currentUser.uid)
+            itemsIndexed(messages) { index, msg ->
+                val prev = messages.getOrNull(index - 1)
+                val isGrouped = prev != null &&
+                    prev.uid == msg.uid &&
+                    (msg.timestamp - prev.timestamp) < 5 * 60_000L
+                MessageRow(msg = msg, isSelf = msg.uid == currentUser.uid, isGrouped = isGrouped)
             }
         }
 
-        HorizontalDivider(color = Color(0xFF1E1F22))
+        HorizontalDivider(color = AppColors.Outline)
 
-        // Input row
+        // ── Modern pill input ──────────────────────────────────────────────────────────────
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .background(Color(0xFF383A40))
-                .padding(horizontal = 12.dp, vertical = 8.dp),
+                .background(AppColors.BgMain)
+                .padding(horizontal = 16.dp, vertical = 12.dp),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            OutlinedTextField(
-                value         = messageText,
-                onValueChange = onTextChange,
-                placeholder   = { Text("Mesaj gönder…", color = Color(0xFF6D6F78)) },
-                modifier      = Modifier
-                    .weight(1f)
-                    .onPreviewKeyEvent { event ->
-                        if (event.type == KeyEventType.KeyDown &&
-                            event.key == Key.Enter &&
-                            !event.isShiftPressed
-                        ) {
-                            onSend()
-                            true
-                        } else false
-                    },
-                maxLines = 4,
-                shape    = RoundedCornerShape(8.dp),
-                colors   = OutlinedTextFieldDefaults.colors(
-                    focusedBorderColor   = Color(0xFF5865F2),
-                    unfocusedBorderColor = Color.Transparent,
-                    focusedContainerColor   = Color(0xFF40444B),
-                    unfocusedContainerColor = Color(0xFF40444B),
-                    focusedTextColor     = Color(0xFFF2F3F5),
-                    unfocusedTextColor   = Color(0xFFF2F3F5),
-                ),
-            )
-            IconButton(
-                onClick  = onSendImage,
-                enabled  = !sendingImage,
-                modifier = Modifier.size(40.dp),
-            ) {
-                if (sendingImage) {
-                    CircularProgressIndicator(Modifier.size(16.dp), color = Color(0xFF5865F2), strokeWidth = 2.dp)
-                } else {
-                    Text("🖼️", fontSize = 18.sp)
-                }
-            }
-            IconButton(
-                onClick  = onSendImage,
-                enabled  = !sendingImage,
-                modifier = Modifier.size(40.dp),
-            ) {
-                if (sendingImage) {
-                    CircularProgressIndicator(Modifier.size(16.dp), color = Color(0xFF5865F2), strokeWidth = 2.dp)
-                } else {
-                    Text("🖼️", fontSize = 18.sp)
-                }
-            }
-            IconButton(
-                onClick  = onSend,
+            // Pill-shaped input container
+            Row(
                 modifier = Modifier
-                    .size(40.dp)
-                    .clip(CircleShape)
-                    .background(Color(0xFF5865F2)),
+                    .weight(1f)
+                    .clip(RoundedCornerShape(24.dp))
+                    .background(AppColors.BgInput)
+                    .padding(horizontal = 6.dp, vertical = 2.dp),
+                verticalAlignment = Alignment.CenterVertically,
             ) {
-                Text("➤", fontSize = 16.sp, color = Color.White)
+                // Resim ekleme butonu (input içinde solda)
+                IconButton(
+                    onClick  = onSendImage,
+                    enabled  = !sendingImage,
+                    modifier = Modifier.size(36.dp),
+                ) {
+                    if (sendingImage) {
+                        CircularProgressIndicator(Modifier.size(14.dp), color = AppColors.Accent, strokeWidth = 2.dp)
+                    } else {
+                        Text("🖼️", fontSize = 16.sp)
+                    }
+                }
+
+                BasicTextField(
+                    value         = messageText,
+                    onValueChange = onTextChange,
+                    modifier      = Modifier
+                        .weight(1f)
+                        .padding(vertical = 8.dp)
+                        .onPreviewKeyEvent { event ->
+                            if (event.type == KeyEventType.KeyDown &&
+                                event.key == Key.Enter &&
+                                !event.isShiftPressed
+                            ) {
+                                onSend(); true
+                            } else false
+                        },
+                    maxLines      = 4,
+                    textStyle     = androidx.compose.ui.text.TextStyle(
+                        color    = AppColors.TextPrimary,
+                        fontSize = 14.sp,
+                    ),
+                    cursorBrush = androidx.compose.ui.graphics.SolidColor(AppColors.Accent),
+                    decorationBox = { inner ->
+                        Box {
+                            if (messageText.isEmpty()) {
+                                Text(
+                                    text     = "#genel kanalına mesaj gönder",
+                                    fontSize = 14.sp,
+                                    color    = AppColors.TextSubtle,
+                                )
+                            }
+                            inner()
+                        }
+                    },
+                )
+
+                // Gönder butonu (input içinde sağda)
+                IconButton(
+                    onClick  = onSend,
+                    enabled  = messageText.isNotBlank(),
+                    modifier = Modifier
+                        .size(32.dp)
+                        .clip(CircleShape)
+                        .background(
+                            if (messageText.isNotBlank()) AppColors.Accent
+                            else AppColors.BgElevated
+                        ),
+                ) {
+                    Text(
+                        text     = "➤",
+                        fontSize = 14.sp,
+                        color    = if (messageText.isNotBlank()) Color.White else AppColors.TextMuted,
+                    )
+                }
             }
         }
     }
