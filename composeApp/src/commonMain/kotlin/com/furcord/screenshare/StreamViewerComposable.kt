@@ -20,5 +20,7 @@ expect fun StreamViewerComposable(
     peerVolume:     Float,
     onVolumeChange: (Float) -> Unit,
     onStop:         () -> Unit,
+    isPiPMode:      Boolean = false,
+    onTogglePiP:    (() -> Unit)? = null,
     modifier:       Modifier = Modifier,
 )

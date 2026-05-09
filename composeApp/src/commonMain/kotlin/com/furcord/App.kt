@@ -60,6 +60,8 @@ fun App() {
         var serverState by remember { mutableStateOf<AppServerState>(AppServerState.None) }
         var dmTarget    by remember { mutableStateOf<DmTarget?>(null) }
         var dmWindowOpen by remember { mutableStateOf(false) }
+        // Sunucu tam ekran stream modu (FAB'ı gizlemek için)
+        var serverFullscreen by remember { mutableStateOf(false) }
         // Giriş sonrası Firestore'dan profil yüklemek için bekleyen kullanıcı
         var pendingProfileLoad by remember { mutableStateOf<AuthUser?>(null) }
         val scope = rememberCoroutineScope()
@@ -333,17 +335,22 @@ fun App() {
                                     dmTarget = DmTarget(uid, name)
                                     dmWindowOpen = true
                                 },
+                                onStreamFullscreenChange = { isFullscreen ->
+                                    serverFullscreen = isFullscreen
+                                },
                             )
                         }
                     }
 
-                    // FloatingDmPanel — sağ alt köşede, her zaman görünür
+                    // FloatingDmPanel — tam ekran stream yoksa göster
+                    if (!serverFullscreen) {
                     FloatingDmPanel(
                         currentUser    = currentUser,
                         myUid          = currentUser.uid,
                         bottomOffset   = 0.dp,
                         onDmWindowOpen = { dmWindowOpen = true },
                     )
+                    }
 
                     // ── Kayan DM penceresi overlay (ses bağlantısını kesmez) ───────────
                     if (dmWindowOpen) {

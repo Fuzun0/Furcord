@@ -10,6 +10,10 @@ import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsHoveredAsState
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Fullscreen
+import androidx.compose.material.icons.filled.Minimize
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -46,6 +50,8 @@ fun StreamViewer(
     onVolumeChange: (Float) -> Unit = {},
     onStop:         () -> Unit,
     isSelfView:     Boolean  = false,
+    isPiPMode:      Boolean  = false,
+    onTogglePiP:    (() -> Unit)? = null,
     modifier:       Modifier = Modifier,
 ) {
     val frame by frameFlow.collectAsState()
@@ -129,6 +135,21 @@ fun StreamViewer(
                         )
                     } else {
                         Spacer(Modifier.weight(1f))
+                    }
+
+                    // PiP toggle button (küçült / genişlet)
+                    if (onTogglePiP != null) {
+                        IconButton(
+                            onClick  = onTogglePiP,
+                            modifier = Modifier.size(28.dp),
+                        ) {
+                            Icon(
+                                imageVector        = Icons.Default.Minimize,
+                                contentDescription = "Küçült (PiP)",
+                                tint               = Color(0xFFB5BAC1),
+                                modifier           = Modifier.size(16.dp),
+                            )
+                        }
                     }
 
                     // Stop-watching button

@@ -9,6 +9,8 @@ actual fun StreamViewerComposable(
     peerVolume:     Float,
     onVolumeChange: (Float) -> Unit,
     onStop:         () -> Unit,
+    isPiPMode:      Boolean,
+    onTogglePiP:    (() -> Unit)?,
     modifier:       Modifier,
 ) {
     StreamViewer(
@@ -18,6 +20,8 @@ actual fun StreamViewerComposable(
         onVolumeChange = onVolumeChange,
         onStop         = onStop,
         isSelfView     = isSelfView,
+        isPiPMode      = isPiPMode,
+        onTogglePiP    = onTogglePiP,
         modifier       = modifier,
     )
 }

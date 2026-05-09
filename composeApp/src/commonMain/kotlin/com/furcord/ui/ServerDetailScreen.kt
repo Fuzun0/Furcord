@@ -41,8 +41,17 @@ import com.furcord.auth.VoiceChannel
 import com.furcord.voice.VoiceEngine
 import com.furcord.screenshare.ScreenShareManager
 import com.furcord.screenshare.StreamViewerComposable
+import androidx.compose.foundation.Image
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Cast
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Fullscreen
+import androidx.compose.material.icons.filled.Minimize
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.draw.shadow
+import androidx.compose.foundation.border
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.zIndex
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.GlobalScope
 import kotlinx.coroutines.delay
@@ -744,6 +753,7 @@ fun ServerDetailScreen(
     onLeaveServer: () -> Unit,
     onUserUpdated: (newDisplayName: String, newPhotoURL: String) -> Unit = { _, _ -> },
     onOpenDm: ((uid: String, name: String) -> Unit)? = null,
+    onStreamFullscreenChange: ((Boolean) -> Unit)? = null,
 ) {
     val scope = rememberCoroutineScope()
 
@@ -757,6 +767,8 @@ fun ServerDetailScreen(
     var isBroadcasting     by remember { mutableStateOf(false) }
     // Ekran izleyici: null = chat göster, uid = o kullanıcının stream'ini göster
     var activeStreamUid    by remember { mutableStateOf<String?>(null) }
+    // PiP modu: true ise stream küçük pencerede gösterilir, chat görünür kalır
+    var isPiPMode          by remember { mutableStateOf(false) }
     // Yayın yapan peer uid'leri (Firestore'dan poll edilir)
     val broadcastingUids   = remember { mutableStateOf<Set<String>>(emptySet()) }
     var loading            by remember { mutableStateOf(true) }
@@ -991,6 +1003,34 @@ fun ServerDetailScreen(
     LaunchedEffect(isMuted)    { VoiceEngine.isMuted    = isMuted    }
     LaunchedEffect(isDeafened) { VoiceEngine.isDeafened = isDeafened }
 
+    // ── isBroadcasting → ScreenShareManager start/stop ───────────────────────
+    LaunchedEffect(isBroadcasting) {
+        if (isBroadcasting) ScreenShareManager.start() else ScreenShareManager.stop()
+        // Kendi yayınını durdurduğunda PiP önizlemesini de kapat
+        if (!isBroadcasting && activeStreamUid == currentUser.uid) {
+            activeStreamUid = null
+            isPiPMode = false
+        }
+    }
+
+    // ── isBroadcasting → Firestore PATCH (sadece kanal bağlıyken) ────────────
+    LaunchedEffect(isBroadcasting, connectedChannelId) {
+        val cid = connectedChannelId ?: return@LaunchedEffect
+        runCatching {
+            FirestoreClient.setBroadcastingStatus(
+                serverId       = serverId,
+                uid            = currentUser.uid,
+                isBroadcasting = isBroadcasting,
+                idToken        = currentUser.idToken,
+            )
+        }
+    }
+
+    // ── Tam ekran / PiP değişikliğini üst katmana bildir ─────────────────────
+    LaunchedEffect(activeStreamUid, isPiPMode) {
+        onStreamFullscreenChange?.invoke(activeStreamUid != null && !isPiPMode)
+    }
+
     // ── Sunucu sahipliğini yükle ──────────────────────────────────────────────
     LaunchedEffect(serverId) {
         runCatching {
@@ -1192,6 +1232,7 @@ fun ServerDetailScreen(
     val displayName      = displayNickname
     val initial          = displayName.firstOrNull()?.uppercaseChar() ?: '?'
 
+    Box(modifier = Modifier.fillMaxSize()) {
     Row(modifier = Modifier.fillMaxSize()) {
 
         // ── Left sidebar ──────────────────────────────────────────────────────
@@ -1343,15 +1384,17 @@ fun ServerDetailScreen(
                         onUserRightClick = { u -> contextMenuUser = u; showVolumeSlider = false },
                         onWatchStream    = { uid ->
                             if (uid == currentUser.uid) {
-                                // Self-view — broadcast ön izleme
+                                // Kendi yayını — Droste etkisini önlemek için otomatik PiP
                                 activeStreamUid = uid
+                                isPiPMode = true
                             } else {
-                                // Başka biri izleniyor
+                                // Başka birinin yayını — tam ekran
                                 ScreenShareManager.stopReceiver()
                                 ScreenShareManager.startReceiver()
                                 activeStreamUid = uid
+                                isPiPMode = false
                             }
-                        },
+                        }
                     )
                 }
                 if (channels.isEmpty() && !loading) {
@@ -1456,11 +1499,7 @@ fun ServerDetailScreen(
                     onClick = { isDeafened = !isDeafened },
                 )
                 IconButton(
-                    onClick = {
-                        isBroadcasting = !isBroadcasting
-                        if (isBroadcasting) ScreenShareManager.start()
-                        else ScreenShareManager.stop()
-                    },
+                    onClick = { isBroadcasting = !isBroadcasting },
                     modifier = Modifier.size(28.dp),
                 ) {
                     Icon(
@@ -1522,9 +1561,9 @@ fun ServerDetailScreen(
         }   // end sidebar Box
 
         // ── Main content area ─────────────────────────────────────────────────
-        // ── StreamViewer: yayın izleniyorsa chat'in yerine geçer ─────────────
+        // ── StreamViewer: tam ekranda chat yerine göster (PiP değilse) ────────
         val watchingUid = activeStreamUid
-        if (watchingUid != null) {
+        if (watchingUid != null && !isPiPMode) {
             val isSelf = watchingUid == currentUser.uid
             StreamViewerComposable(
                 isSelfView     = isSelf,
@@ -1538,8 +1577,11 @@ fun ServerDetailScreen(
                 onStop = {
                     if (!isSelf) ScreenShareManager.stopReceiver()
                     activeStreamUid = null
+                    isPiPMode = false
                 },
-                modifier   = Modifier.weight(1f).fillMaxHeight(),
+                isPiPMode   = false,
+                onTogglePiP = { isPiPMode = true },
+                modifier    = Modifier.weight(1f).fillMaxHeight(),
             )
         } else if (showTextChannel) {
             // ── # genel metin kanalı ─────────────────────────────────────────
@@ -1731,11 +1773,97 @@ fun ServerDetailScreen(
                 }
             }
         }
+    }   // end Row
+
+    // ── PiP overlay — aktif yayın varken ve isPiPMode=true iken ──────────────
+    val pipUid = if (isPiPMode) activeStreamUid else null
+    if (pipUid != null) {
+        val isSelfPiP   = pipUid == currentUser.uid
+        val pipLocalFrame by ScreenShareManager.localFrame.collectAsState()
+        val pipRemFrame   by ScreenShareManager.receiverFrame.collectAsState()
+        val pipFrame      = if (isSelfPiP) pipLocalFrame else pipRemFrame
+
+        Box(
+            modifier = Modifier
+                .align(Alignment.BottomEnd)
+                .padding(end = 16.dp, bottom = 80.dp)
+                .size(width = 350.dp, height = 200.dp)
+                .zIndex(10f)
+                .shadow(12.dp, RoundedCornerShape(10.dp))
+                .clip(RoundedCornerShape(10.dp))
+                .border(1.dp, Color(0x33FFFFFF), RoundedCornerShape(10.dp))
+                .background(Color(0xFF111214)),
+        ) {
+            // Video frame or spinner
+            if (pipFrame != null) {
+                Image(
+                    bitmap             = pipFrame,
+                    contentDescription = null,
+                    modifier           = Modifier.fillMaxSize(),
+                    contentScale       = ContentScale.Fit,
+                )
+            } else {
+                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    CircularProgressIndicator(
+                        color       = Color(0xFF5865F2),
+                        strokeWidth = 2.dp,
+                        modifier    = Modifier.size(24.dp),
+                    )
+                }
+            }
+
+            // Top bar with controls
+            Row(
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .fillMaxWidth()
+                    .background(Color(0xCC111214))
+                    .padding(horizontal = 10.dp, vertical = 5.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment     = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text       = if (isSelfPiP) "📡 Ön İzleme" else "📺 İzleniyor",
+                    color      = Color(0xFFB5BAC1),
+                    fontSize   = 11.sp,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+                    // Tam ekrana geç
+                    IconButton(
+                        onClick  = { isPiPMode = false },
+                        modifier = Modifier.size(20.dp),
+                    ) {
+                        Icon(
+                            imageVector        = Icons.Default.Fullscreen,
+                            contentDescription = "Tam ekran",
+                            tint               = Color(0xFFB5BAC1),
+                            modifier           = Modifier.size(14.dp),
+                        )
+                    }
+                    // PiP'i kapat
+                    IconButton(
+                        onClick = {
+                            if (!isSelfPiP) ScreenShareManager.stopReceiver()
+                            activeStreamUid = null
+                            isPiPMode       = false
+                        },
+                        modifier = Modifier.size(20.dp),
+                    ) {
+                        Icon(
+                            imageVector        = Icons.Default.Close,
+                            contentDescription = "Kapat",
+                            tint               = Color(0xFFB5BAC1),
+                            modifier           = Modifier.size(14.dp),
+                        )
+                    }
+                }
+            }
+        }
     }
+    }   // end Box(fillMaxSize)
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Reusable chat panel
 // ─────────────────────────────────────────────────────────────────────────────
 @Composable
 private fun ChatPanel(
