@@ -1,101 +1,60 @@
 package com.furcord.screenshare
 
 import androidx.compose.ui.graphics.ImageBitmap
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.flow.MutableStateFlow
+import com.furcord.livekit.LiveKitRoom
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.launch
-import java.net.InetSocketAddress
 
 /**
- * Desktop implementation: wraps [ScreenBroadcaster] and [ScreenReceiver] on a
- * dedicated UDP port (SCREENSHARE_PORT = 55100).
+ * Desktop ScreenShareManager — tüm iş LiveKitRoom'a delege edilir.
  *
- * A single DatagramSocket is shared for both sending (broadcaster) and receiving
- * (receiver). Only one role is active at a time per machine.
- *
- * Port convention: voicePeer.port + 100 → screenshare port.
+ * Çağıran kod (ViewModel veya UI), start() / startReceiver() çağrısından ÖNCE
+ * [currentRoomName] ve [currentIdentity] değerlerini ayarlamalıdır.
  */
 actual object ScreenShareManager {
 
-    const val SCREENSHARE_PORT = 55100
+    /** Kanala özgü oda adı — örn. "server-$serverId-ch-$channelId" */
+    var currentRoomName : String = ""
 
-    private val managerScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+    /** Mevcut kullanıcının Firebase UID'si */
+    var currentIdentity : String = ""
 
-    private var broadcaster: ScreenBroadcaster? = null
-    private var receiver: ScreenReceiver?       = null
-    private var currentPeers: List<InetSocketAddress> = emptyList()
+    /** Görünen ad (opsiyonel, varsayılan olarak identity kullanılır) */
+    var currentDisplayName: String = ""
 
-    private var localFrameJob: Job?    = null
-    private var receiverFrameJob: Job? = null
+    // ── Peer listesi — LiveKit SFU ile anlamsız, backward-compat için tutuldu ─
+    actual fun setPeers(peers: List<Pair<String, Int>>) { /* SFU kendi yönlendirmeyi yapar */ }
 
-    // ── Local preview (self-view) ────────────────────────────────────────────
-
-    private val _localFrame = MutableStateFlow<ImageBitmap?>(null)
-    actual val localFrame: StateFlow<ImageBitmap?> = _localFrame.asStateFlow()
-
-    // ── Remote stream ────────────────────────────────────────────────────────
-
-    private val _receiverFrame = MutableStateFlow<ImageBitmap?>(null)
-    actual val receiverFrame: StateFlow<ImageBitmap?> = _receiverFrame.asStateFlow()
-
-    // ── Peer management ──────────────────────────────────────────────────────
-
-    actual fun setPeers(peers: List<Pair<String, Int>>) {
-        currentPeers = peers.map { (ip, port) -> InetSocketAddress(ip, port) }
-    }
-
-    // ── Broadcaster ──────────────────────────────────────────────────────────
+    // ── Yayın ────────────────────────────────────────────────────────────────
 
     actual fun start() {
-        if (broadcaster != null) return
-        stopReceiver()
-        val b = ScreenBroadcaster { currentPeers }
-        broadcaster = b
-        b.start()
-        // Forward local preview frames
-        localFrameJob = managerScope.launch {
-            b.localFrame.collect { _localFrame.value = it }
-        }
+        if (currentRoomName.isBlank() || currentIdentity.isBlank()) return
+        LiveKitRoom.joinAndPublish(
+            roomName    = currentRoomName,
+            identity    = currentIdentity,
+            displayName = currentDisplayName.ifBlank { currentIdentity }
+        )
     }
 
-    actual fun stop() {
-        localFrameJob?.cancel()
-        localFrameJob = null
-        broadcaster?.stop()
-        broadcaster = null
-        _localFrame.value = null
-    }
+    actual fun stop() = LiveKitRoom.stopPublisher()
 
-    actual val isActive: Boolean get() = broadcaster != null
+    actual val isActive: Boolean get() = LiveKitRoom.isPublishing
 
-    // ── Receiver ─────────────────────────────────────────────────────────────
+    actual val localFrame: StateFlow<ImageBitmap?> get() = LiveKitRoom.localFrame
+
+    // ── Alma ─────────────────────────────────────────────────────────────────
 
     actual fun startReceiver() {
-        if (receiver != null) return
-        val r = ScreenReceiver(SCREENSHARE_PORT)
-        receiver = r
-        r.start()
-        receiverFrameJob = managerScope.launch {
-            r.frame.collect { _receiverFrame.value = it }
-        }
+        if (currentRoomName.isBlank() || currentIdentity.isBlank()) return
+        LiveKitRoom.joinAndSubscribe(
+            roomName    = currentRoomName,
+            identity    = currentIdentity,
+            displayName = currentDisplayName.ifBlank { currentIdentity }
+        )
     }
 
-    actual fun stopReceiver() {
-        receiverFrameJob?.cancel()
-        receiverFrameJob = null
-        val r = receiver
-        receiver = null
-        _receiverFrame.value = null
-        // stop() blocks waiting for the native FFmpeg call to return (up to 5 s).
-        // Run it on the manager's IO scope to avoid blocking the caller's thread.
-        if (r != null) {
-            managerScope.launch(Dispatchers.IO) { r.stop() }
-        }
-    }
+    actual fun stopReceiver() = LiveKitRoom.stopSubscriber()
+
+    actual val receiverFrame: StateFlow<ImageBitmap?> get() = LiveKitRoom.remoteFrame
 }
+
 

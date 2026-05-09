@@ -1,0 +1,79 @@
+// Minimal LiveKit RTC signaling messages — screen sharing subset
+syntax = "proto3";
+
+package livekit;
+
+import "livekit_models.proto";
+
+option java_package = "livekit";
+option java_outer_classname = "LivekitRtc";
+option java_multiple_files = false;
+
+enum SignalTarget {
+  PUBLISHER  = 0;
+  SUBSCRIBER = 1;
+}
+
+message SessionDescription {
+  string type = 1; // "offer" | "answer"
+  string sdp  = 2;
+}
+
+message TrickleRequest {
+  string       candidateInit = 1;
+  SignalTarget target        = 2;
+}
+
+message AddTrackRequest {
+  string      cid    = 1;
+  string      name   = 2;
+  TrackType   type   = 3;
+  uint32      width  = 4;
+  uint32      height = 5;
+  TrackSource source = 8;
+}
+
+message JoinResponse {
+  Room                    room               = 1;
+  ParticipantInfo         participant        = 2;
+  repeated ParticipantInfo other_participants = 3;
+  repeated ICEServer      ice_servers        = 5;
+  bool                    subscriber_primary = 6;
+}
+
+message TrackPublishedResponse {
+  string    cid   = 1;
+  TrackInfo track = 2;
+}
+
+message ParticipantUpdate {
+  repeated ParticipantInfo participants = 1;
+}
+
+message LeaveRequest {
+  bool can_reconnect = 1;
+}
+
+// Client → Server
+message SignalRequest {
+  oneof message {
+    SessionDescription  offer      = 1;
+    SessionDescription  answer     = 2;
+    TrickleRequest      trickle    = 3;
+    AddTrackRequest     add_track  = 4;
+    LeaveRequest        leave      = 8;
+  }
+}
+
+// Server → Client
+message SignalResponse {
+  oneof message {
+    JoinResponse            join             = 1;
+    SessionDescription      answer           = 2;
+    SessionDescription      offer            = 3;
+    TrickleRequest          trickle          = 4;
+    ParticipantUpdate       update           = 5;
+    TrackPublishedResponse  track_published  = 6;
+    LeaveRequest            leave            = 8;
+  }
+}

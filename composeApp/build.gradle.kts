@@ -44,9 +44,19 @@ kotlin {
         desktopMain.dependencies {
             implementation(compose.desktop.currentOs)
             implementation(libs.kotlinx.coroutines.swing)
-            // JavaCV — screen capture + H264 encoding/decoding via FFmpeg
-            implementation(libs.javacv)
-            implementation(libs.ffmpeg.platform)
+
+            // ── WebRTC (Google libwebrtc via JNI) ─────────────────────────
+            implementation(libs.webrtc.java)
+            runtimeOnly("dev.onvoid.webrtc:webrtc-java:0.8.0:windows-x86_64")
+
+            // ── LiveKit Access Token (JWT) ─────────────────────────────────
+            implementation(libs.jjwt.api)
+            runtimeOnly(libs.jjwt.impl)
+            runtimeOnly(libs.jjwt.jackson)
+
+            // ── LiveKit Signaling (WebSocket) ─────────────────────────────
+            implementation(libs.okhttp)
+            // NOT: protobuf-java kaldırıldı — LiveKitProto.kt kendi hand-crafted codec'ini kullanıyor
         }
     }
 }
@@ -74,6 +84,13 @@ compose.desktop {
             .orElse(providers.environmentVariable("FURCORD_GOOGLE_CLIENT_SECRET"))
             .orNull?.trim()
 
+        val livekitUrl = providers.gradleProperty("livekitUrl")
+            .orElse(providers.environmentVariable("LIVEKIT_URL")).orNull?.trim()
+        val livekitApiKey = providers.gradleProperty("livekitApiKey")
+            .orElse(providers.environmentVariable("LIVEKIT_API_KEY")).orNull?.trim()
+        val livekitApiSecret = providers.gradleProperty("livekitApiSecret")
+            .orElse(providers.environmentVariable("LIVEKIT_API_SECRET")).orNull?.trim()
+
         val appJvmArgs = mutableListOf("-Xmx512m", "-Dskiko.renderApi=SOFTWARE")
         if (!relayHost.isNullOrEmpty() && relayPort != null) {
             appJvmArgs += "-Dfurcord.relay.host=$relayHost"
@@ -84,6 +101,15 @@ compose.desktop {
         }
         if (!googleClientSecret.isNullOrEmpty()) {
             appJvmArgs += "-Dfurcord.google.clientSecret=$googleClientSecret"
+        }
+        if (!livekitUrl.isNullOrEmpty()) {
+            appJvmArgs += "-Dfurcord.livekit.url=$livekitUrl"
+        }
+        if (!livekitApiKey.isNullOrEmpty()) {
+            appJvmArgs += "-Dfurcord.livekit.apiKey=$livekitApiKey"
+        }
+        if (!livekitApiSecret.isNullOrEmpty()) {
+            appJvmArgs += "-Dfurcord.livekit.apiSecret=$livekitApiSecret"
         }
 
         jvmArgs(*appJvmArgs.toTypedArray())
@@ -126,3 +152,4 @@ compose.desktop {
         }
     }
 }
+

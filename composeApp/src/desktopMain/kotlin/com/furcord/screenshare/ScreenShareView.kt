@@ -254,22 +254,6 @@ fun StreamViewer(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// ScreenShareView (legacy) — kept for backwards compatibility, wraps StreamViewer
-// ─────────────────────────────────────────────────────────────────────────────
-
-@Composable
-fun ScreenShareView(
-    receiver: ScreenReceiver,
-    modifier: Modifier = Modifier,
-) {
-    StreamViewer(
-        frameFlow  = receiver.frame,
-        onStop     = {},
-        modifier   = modifier,
-    )
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
 // Broadcaster control bar — shown to the person sharing their screen
 // ─────────────────────────────────────────────────────────────────────────────
 

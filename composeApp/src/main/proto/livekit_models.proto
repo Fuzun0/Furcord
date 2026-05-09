@@ -1,0 +1,48 @@
+// Minimal LiveKit models — only messages needed for screen sharing
+syntax = "proto3";
+
+package livekit;
+
+option java_package = "livekit";
+option java_outer_classname = "LivekitModels";
+option java_multiple_files = false;
+
+enum TrackType {
+  AUDIO = 0;
+  VIDEO = 1;
+  DATA  = 2;
+}
+
+enum TrackSource {
+  UNKNOWN           = 0;
+  CAMERA            = 1;
+  MICROPHONE        = 2;
+  SCREEN_SHARE      = 3;
+  SCREEN_SHARE_AUDIO = 4;
+}
+
+message Room {
+  string sid  = 1;
+  string name = 2;
+}
+
+message ParticipantInfo {
+  string sid      = 1;
+  string identity = 2;
+  string name     = 9;
+}
+
+message TrackInfo {
+  string      sid    = 1;
+  TrackType   type   = 2;
+  string      name   = 3;
+  uint32      width  = 5;
+  uint32      height = 6;
+  TrackSource source = 9;
+}
+
+message ICEServer {
+  repeated string urls       = 1;
+  string          username   = 2;
+  string          credential = 3;
+}

@@ -4,17 +4,21 @@ compose-multiplatform   = "1.7.0"
 lifecycle               = "2.8.3"
 coroutines              = "1.9.0"
 kotlinx-serialization   = "1.7.3"
-javacv                  = "1.5.13"
-ffmpeg-jcv              = "8.0.1-1.5.13"
+webrtc-java             = "0.8.0"
+jjwt                    = "0.12.5"
+okhttp                  = "4.12.0"
 
 [libraries]
-kotlinx-serialization-json         = { module = "org.jetbrains.kotlinx:kotlinx-serialization-json", version.ref = "kotlinx-serialization" }
+kotlinx-serialization-json          = { module = "org.jetbrains.kotlinx:kotlinx-serialization-json",            version.ref = "kotlinx-serialization" }
 androidx-lifecycle-viewmodel        = { module = "org.jetbrains.androidx.lifecycle:lifecycle-viewmodel",         version.ref = "lifecycle" }
 androidx-lifecycle-viewmodel-compose= { module = "org.jetbrains.androidx.lifecycle:lifecycle-viewmodel-compose", version.ref = "lifecycle" }
 androidx-lifecycle-runtime-compose  = { module = "org.jetbrains.androidx.lifecycle:lifecycle-runtime-compose",   version.ref = "lifecycle" }
-kotlinx-coroutines-swing            = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-swing", version.ref = "coroutines" }
-javacv                              = { module = "org.bytedeco:javacv",           version.ref = "javacv"     }
-ffmpeg-platform                     = { module = "org.bytedeco:ffmpeg-platform",  version.ref = "ffmpeg-jcv" }
+kotlinx-coroutines-swing            = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-swing",              version.ref = "coroutines" }
+webrtc-java                         = { module = "dev.onvoid.webrtc:webrtc-java",                               version.ref = "webrtc-java" }
+jjwt-api                            = { module = "io.jsonwebtoken:jjwt-api",                                    version.ref = "jjwt" }
+jjwt-impl                           = { module = "io.jsonwebtoken:jjwt-impl",                                   version.ref = "jjwt" }
+jjwt-jackson                        = { module = "io.jsonwebtoken:jjwt-jackson",                                version.ref = "jjwt" }
+okhttp                              = { module = "com.squareup.okhttp3:okhttp",                                  version.ref = "okhttp" }
 
 [plugins]
 kotlinMultiplatform  = { id = "org.jetbrains.kotlin.multiplatform",        version.ref = "kotlin" }
