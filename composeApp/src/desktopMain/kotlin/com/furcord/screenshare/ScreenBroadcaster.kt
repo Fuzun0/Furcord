@@ -1,4 +1,4 @@
-package com.furcord.screenshare
+﻿package com.furcord.screenshare
 
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.toComposeImageBitmap
@@ -10,81 +10,63 @@ import org.bytedeco.ffmpeg.global.avcodec
 import org.bytedeco.javacv.FFmpegFrameGrabber
 import org.bytedeco.javacv.FFmpegFrameRecorder
 import org.bytedeco.javacv.Java2DFrameConverter
-import java.io.ByteArrayOutputStream
-import java.net.DatagramPacket
-import java.net.DatagramSocket
 import java.net.InetSocketAddress
-import java.nio.ByteBuffer
-import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.ConcurrentHashMap
 
 /**
- * Captures the primary monitor, encodes to H264 inside an MPEG-TS container,
- * and streams the compressed data over UDP using a simple chunked packet protocol.
+ * Captures the primary monitor, encodes to H264/MPEG-TS, and transmits to
+ * each peer via FFmpeg''s native UDP output (`udp://ip:port?pkt_size=1316`).
  *
- * ── Packet layout (HEADER_BYTES = 10 bytes) ───────────────────────────────────
- *  Offset  Size  Field
- *  0       4B    segId       – monotonically increasing segment counter
- *  4       2B    totalChunks – how many chunks this segment was split into
- *  6       2B    chunkIndex  – 0-based index of this chunk
- *  8       2B    flags       – reserved (always 0x0000)
- *  10      ≤1400B payload    – raw mpegts bytes for this chunk
+ * No manual chunking or DatagramSocket is used — FFmpeg handles all network I/O.
  *
- * ── Why MPEG-TS? ──────────────────────────────────────────────────────────────
- * MPEG-TS is a streaming container designed for packet-switched networks.
- * Unlike MP4/MKV, it does not require seeking during write, making it
- * compatible with an OutputStream and suitable for live transmission.
- *
- * ── Cross-platform capture backend ───────────────────────────────────────────
- *  Windows  → gdigrab   ("desktop")
- *  macOS    → avfoundation ("1:none")
- *  Linux    → x11grab   (":0.0+0,0")
+ * Peers are dynamically managed: every [PEER_SYNC_FRAMES] frames the broadcaster
+ * reconciles the live peer list, starting recorders for new peers and stopping
+ * recorders for peers that left.
  */
 class ScreenBroadcaster(
-    /** DatagramSocket already bound (shared with VoiceEngine on a separate port). */
-    private val socket: DatagramSocket,
-    /** Returns the current list of peers to send to. Called per-segment. */
-    private val peers: () -> List<InetSocketAddress>,
+    /** Returns the current list of peers to send to. Polled periodically. */
+    private val getPeers: () -> List<InetSocketAddress>,
 ) {
     companion object {
-        /** Max payload bytes per UDP packet — safely under 1500-byte Ethernet MTU. */
-        const val CHUNK_SIZE   = 1400
-        const val HEADER_BYTES = 10
-
         const val WIDTH   = 1280
         const val HEIGHT  = 720
         const val FPS     = 30.0
-        /** 2 Mbps is sufficient for 720p H264 ultrafast. */
         const val BITRATE = 2_000_000
+
+        /** Sync the peer/recorder map every N frames (~1 s at 30 fps). */
+        private const val PEER_SYNC_FRAMES = 30
     }
 
-    // ── FFmpeg objects ────────────────────────────────────────────────────────
+    // ── Desktop screen grabber ────────────────────────────────────────────────
 
     private val grabber: FFmpegFrameGrabber
-    /** Per-frame ring buffer — recorder writes here, we drain it after each record(). */
-    private val baos     = ByteArrayOutputStream(256 * 1024)
-    private val recorder: FFmpegFrameRecorder
+
+    // ── Per-peer UDP recorders ────────────────────────────────────────────────
+
+    /** peer address → active FFmpegFrameRecorder */
+    private val recorderMap = ConcurrentHashMap<InetSocketAddress, FFmpegFrameRecorder>()
 
     // ── State ─────────────────────────────────────────────────────────────────
 
-    private val segId   = AtomicInteger(0)
-    private val scope   = CoroutineScope(Dispatchers.IO + SupervisorJob())
+    private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
     @Volatile var isRunning  = false; private set
-    @Volatile var bytesSent  = 0L;    private set // diagnostic counter
-    /** Local preview — the broadcaster can see their own stream quality. */
+    @Volatile var framesSent = 0L;    private set
+
+    /** Local preview — broadcaster can monitor their own stream. */
     private val _localFrame = MutableStateFlow<ImageBitmap?>(null)
     val localFrame: StateFlow<ImageBitmap?> = _localFrame.asStateFlow()
     private val localConverter = Java2DFrameConverter()
-    // ── Initialisation ────────────────────────────────────────────────────────
+
+    // ── Init ──────────────────────────────────────────────────────────────────
 
     init {
         val osName = System.getProperty("os.name").lowercase()
         val (fmt, input) = when {
-            "win"  in osName -> "gdigrab"      to "desktop"
-            "mac"  in osName -> "avfoundation" to "1:none"
-            else             -> "x11grab"      to ":0.0+0,0"
+            "win" in osName -> "gdigrab"      to "desktop"
+            "mac" in osName -> "avfoundation" to "1:none"
+            else            -> "x11grab"      to ":0.0+0,0"
         }
-
         grabber = FFmpegFrameGrabber(input).apply {
             format      = fmt
             imageWidth  = WIDTH
@@ -98,100 +80,125 @@ class ScreenBroadcaster(
                 setOption("draw_mouse", "1")
             }
         }
-
-        recorder = FFmpegFrameRecorder(baos as java.io.OutputStream, WIDTH, HEIGHT).apply {
-            videoCodec   = avcodec.AV_CODEC_ID_H264
-            format       = "mpegts"
-            frameRate    = FPS
-            videoBitrate = BITRATE
-            // One keyframe per second so receivers can join mid-stream
-            gopSize      = FPS.toInt()
-            // H264 options — minimise encoder latency
-            setVideoOption("tune",   "zerolatency")
-            setVideoOption("preset", "ultrafast")
-            setVideoOption("crf",    "30")          // quality vs size trade-off
-            // MPEG-TS muxer options — flush every packet immediately
-            setOption("fflags",   "flush_packets")
-            setOption("muxdelay", "0")
-        }
     }
 
     // ── Public API ────────────────────────────────────────────────────────────
 
-    /**
-     * Opens the screen grabber and H264 recorder, then begins the capture loop.
-     * Runs non-blocking — returns immediately after launching the coroutine.
-     */
     fun start() {
-        grabber.start()
-        recorder.start()
-        isRunning = true
-
-        scope.launch {
-            while (isRunning) {
-                try {
-                    // 1. Grab the next video frame from the screen
-                    val frame = grabber.grabImage() ?: continue
-
-                    // 1b. Publish a local preview frame (self-view)
-                    runCatching {
-                        localConverter.getBufferedImage(frame)?.toComposeImageBitmap()
-                            ?.let { _localFrame.value = it }
-                    }
-
-                    // 2. Encode to H264/mpegts — writes TS packets into baos
-                    recorder.record(frame)
-
-                    // 3. Drain baos atomically — everything written since last drain
-                    val data = baos.toByteArray()
-                    baos.reset()
-
-                    // 4. Packetise and send over UDP
-                    if (data.isNotEmpty()) {
-                        sendChunked(segId.incrementAndGet(), data)
-                        bytesSent += data.size
-                    }
-                } catch (e: Exception) {
-                    if (isRunning) delay(16L) // ~1 frame period before retry
-                }
-            }
+        if (isRunning) return
+        println("[ScreenBroadcaster] start() — launching grabber + capture loop")
+        try {
+            grabber.start()
+            println("[ScreenBroadcaster] grabber started (${grabber.format})")
+        } catch (e: Exception) {
+            println("[ScreenBroadcaster] grabber.start() FAILED: ${e.message}")
+            return
         }
+        isRunning = true
+        scope.launch { captureLoop() }
     }
 
-    /** Stops capture, releases FFmpeg resources, and cancels the coroutine scope. */
     fun stop() {
+        println("[ScreenBroadcaster] stop() — framesSent=$framesSent")
         isRunning = false
         scope.cancel()
-        runCatching { recorder.stop(); recorder.release() }
-        runCatching { grabber.stop();  grabber.release() }
+        stopAllRecorders()
+        runCatching { grabber.stop(); grabber.release() }
     }
 
-    // ── UDP chunking ──────────────────────────────────────────────────────────
+    // ── Capture loop ──────────────────────────────────────────────────────────
 
-    private fun sendChunked(id: Int, data: ByteArray) {
-        val total   = (data.size + CHUNK_SIZE - 1) / CHUNK_SIZE
-        val targets = peers()
-        if (targets.isEmpty()) return
+    private suspend fun captureLoop() = withContext(Dispatchers.IO) {
+        var frameN = 0
+        while (isRunning) {
+            // Sync recorders with current peer list every second
+            if (frameN % PEER_SYNC_FRAMES == 0) {
+                syncRecorders(getPeers())
+            }
+            frameN++
 
-        for (i in 0 until total) {
-            val start   = i * CHUNK_SIZE
-            val end     = minOf(start + CHUNK_SIZE, data.size)
-            val payload = data.sliceArray(start until end)
+            try {
+                val frame = grabber.grabImage() ?: continue
 
-            // Build packet: header + payload
-            val pkt = ByteBuffer.allocate(HEADER_BYTES + payload.size).apply {
-                putInt(id)               // 4B segId
-                putShort(total.toShort())  // 2B totalChunks
-                putShort(i.toShort())      // 2B chunkIndex
-                putShort(0.toShort())      // 2B flags (reserved)
-                put(payload)
-            }.array()
-
-            for (peer in targets) {
+                // Local preview (self-view)
                 runCatching {
-                    socket.send(DatagramPacket(pkt, pkt.size, peer.address, peer.port))
+                    localConverter.getBufferedImage(frame)?.toComposeImageBitmap()
+                        ?.let { _localFrame.value = it }
+                }
+
+                // Encode + send to all active peers
+                val snapshot = recorderMap.values.toList()
+                for (rec in snapshot) {
+                    runCatching { rec.record(frame) }
+                }
+                if (snapshot.isNotEmpty()) framesSent++
+
+            } catch (e: Exception) {
+                if (isRunning) {
+                    println("[ScreenBroadcaster] capture error: ${e::class.simpleName}: ${e.message}")
+                    delay(16L)
                 }
             }
         }
+        println("[ScreenBroadcaster] captureLoop ended")
+    }
+
+    // ── Recorder management ───────────────────────────────────────────────────
+
+    /** Starts a recorder targeting `udp://ip:port?pkt_size=1316`. */
+    private fun makeRecorder(addr: InetSocketAddress): FFmpegFrameRecorder? {
+        val url = "udp://${addr.hostString}:${addr.port}?pkt_size=1316"
+        return runCatching {
+            FFmpegFrameRecorder(url, WIDTH, HEIGHT).apply {
+                videoCodec   = avcodec.AV_CODEC_ID_H264
+                format       = "mpegts"
+                frameRate    = FPS
+                videoBitrate = BITRATE
+                gopSize      = 30
+                setVideoOption("preset", "ultrafast")
+                setVideoOption("tune",   "zerolatency")
+                setVideoOption("crf",    "30")
+                setOption("fflags",   "flush_packets")
+                setOption("muxdelay", "0")
+            }.also {
+                it.start()
+                println("[ScreenBroadcaster] recorder started -> $url")
+            }
+        }.onFailure { e ->
+            println("[ScreenBroadcaster] recorder.start() FAILED for $url: ${e.message}")
+        }.getOrNull()
+    }
+
+    /** Adds recorders for new peers, removes recorders for departed peers. */
+    private fun syncRecorders(currentPeers: List<InetSocketAddress>) {
+        val currentSet = currentPeers.toSet()
+
+        // Remove departed peers
+        val toRemove = recorderMap.keys.filter { it !in currentSet }
+        for (addr in toRemove) {
+            recorderMap.remove(addr)?.let { rec ->
+                runCatching { rec.stop(); rec.release() }
+                println("[ScreenBroadcaster] recorder stopped for $addr")
+            }
+        }
+
+        // Add new peers
+        for (addr in currentSet) {
+            if (!recorderMap.containsKey(addr)) {
+                makeRecorder(addr)?.let { recorderMap[addr] = it }
+            }
+        }
+
+        if (recorderMap.isNotEmpty() || toRemove.isNotEmpty()) {
+            println("[ScreenBroadcaster] syncRecorders: active=${recorderMap.size} peers=${currentSet.size}")
+        }
+    }
+
+    private fun stopAllRecorders() {
+        for ((addr, rec) in recorderMap) {
+            runCatching { rec.stop(); rec.release() }
+            println("[ScreenBroadcaster] recorder released for $addr")
+        }
+        recorderMap.clear()
     }
 }

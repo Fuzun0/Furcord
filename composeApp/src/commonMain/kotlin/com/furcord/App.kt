@@ -8,7 +8,10 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.ui.graphics.Color
 import androidx.compose.material3.AlertDialog
 import kotlinx.coroutines.delay
@@ -223,12 +226,22 @@ fun App() {
                                 if (info.releaseNotes.isNotBlank()) {
                                     HorizontalDivider()
                                     Text("Yenilikler:", style = MaterialTheme.typography.labelMedium)
-                                    info.releaseNotes.lines()
-                                        .map { it.trimStart('-', '*', ' ') }
-                                        .filter { it.isNotBlank() }
-                                        .forEach { line ->
-                                            Text("• $line", style = MaterialTheme.typography.bodySmall)
+                                    // Scrollable release notes box
+                                    Box(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .heightIn(max = 220.dp)
+                                            .verticalScroll(rememberScrollState()),
+                                    ) {
+                                        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                            info.releaseNotes.lines()
+                                                .map { it.trimStart('-', '*', ' ') }
+                                                .filter { it.isNotBlank() }
+                                                .forEach { line ->
+                                                    Text("• $line", style = MaterialTheme.typography.bodySmall)
+                                                }
                                         }
+                                    }
                                 }
                                 if (updating) {
                                     Spacer(Modifier.height(4.dp))

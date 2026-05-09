@@ -9,7 +9,6 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
-import java.net.DatagramSocket
 import java.net.InetSocketAddress
 
 /**
@@ -25,7 +24,6 @@ actual object ScreenShareManager {
 
     const val SCREENSHARE_PORT = 55100
 
-    private val socket: DatagramSocket by lazy { DatagramSocket(SCREENSHARE_PORT) }
     private val managerScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
     private var broadcaster: ScreenBroadcaster? = null
@@ -55,8 +53,8 @@ actual object ScreenShareManager {
 
     actual fun start() {
         if (broadcaster != null) return
-        stopReceiver() // can't send and receive on the same socket simultaneously
-        val b = ScreenBroadcaster(socket) { currentPeers }
+        stopReceiver()
+        val b = ScreenBroadcaster { currentPeers }
         broadcaster = b
         b.start()
         // Forward local preview frames
@@ -79,7 +77,7 @@ actual object ScreenShareManager {
 
     actual fun startReceiver() {
         if (receiver != null) return
-        val r = ScreenReceiver(socket)
+        val r = ScreenReceiver(SCREENSHARE_PORT)
         receiver = r
         r.start()
         receiverFrameJob = managerScope.launch {
