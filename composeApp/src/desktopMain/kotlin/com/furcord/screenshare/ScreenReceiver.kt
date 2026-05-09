@@ -13,23 +13,28 @@ import org.bytedeco.javacv.Java2DFrameConverter
 /**
  * Receives an MPEG-TS/H264 stream directly via FFmpeg''s native UDP input.
  *
- * `FFmpegFrameGrabber` opens `udp://0.0.0.0:<port>?fifo_size=500000&overrun_nonfatal=1`
- * and calls `grabImage()` in a loop, converting each decoded frame to a Compose
- * [ImageBitmap] emitted via [frame].
- *
- * No manual DatagramSocket, no chunk reassembly, no StreamBuffer — FFmpeg handles
- * all UDP receiving, MPEG-TS demuxing, and H264 decoding internally.
+ * Key safety measures:
+ *  - `timeout` / `rw_timeout` (3 s) prevent infinite blocking inside native code.
+ *  - `CancellationException` is re-thrown so coroutine cooperative cancellation works.
+ *  - `finally` block always calls `grabber.stop()/release()` — prevents JVM crashes
+ *    from orphaned native memory when the coroutine scope is cancelled externally.
+ *  - null `grabImage()` return (stream end / timeout) breaks the loop gracefully.
  */
 class ScreenReceiver(private val port: Int) {
 
     // ── FFmpeg grabber ────────────────────────────────────────────────────────
 
-    private val grabber = FFmpegFrameGrabber("udp://0.0.0.0:$port?fifo_size=500000&overrun_nonfatal=1").apply {
+    private val grabber = FFmpegFrameGrabber(
+        "udp://0.0.0.0:$port?fifo_size=500000&overrun_nonfatal=1"
+    ).apply {
         format = "mpegts"
+        // Prevent probe from blocking forever when no data arrives
+        setOption("timeout",         "3000000")  // 3 s open timeout (µs)
+        setOption("rw_timeout",      "3000000")  // 3 s read/write timeout (µs)
         setOption("fflags",          "nobuffer+discardcorrupt")
         setOption("flags",           "low_delay")
-        setOption("analyzeduration", "500000")  // 500 ms probe
-        setOption("probesize",       "65536")   // 64 KB
+        setOption("analyzeduration", "500000")   // 500 ms probe
+        setOption("probesize",       "65536")    // 64 KB probe size
     }
 
     private val converter = Java2DFrameConverter()
@@ -45,47 +50,92 @@ class ScreenReceiver(private val port: Int) {
     // ── Lifecycle ────────────────────────────────────────────────────────────
 
     @Volatile var isRunning = false; private set
+
+    /**
+     * Dedicated IO scope — NEVER cancelled externally.
+     * We drive shutdown via [isRunning] + [grabber] native timeout so the
+     * JVM thread completes its native call before the scope ends.
+     */
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
     fun start() {
+        if (isRunning) return
         isRunning = true
-        println("[ScreenReceiver] start() — will listen on UDP port $port")
+        println("[ScreenReceiver] start() — UDP port $port")
         scope.launch { decodeLoop() }
     }
 
-    fun stop() {
-        println("[ScreenReceiver] stop()")
+    /**
+     * Signals the decode loop to stop, then waits up to [timeoutMs] for
+     * the native thread to exit cleanly before force-cancelling the scope.
+     */
+    fun stop(timeoutMs: Long = 5_000) {
+        println("[ScreenReceiver] stop() requested")
         isRunning = false
+        // Give the native FFmpeg call up to timeoutMs to return on its own
+        // (it will, because rw_timeout = 3 s). Then cancel scope.
+        kotlinx.coroutines.runBlocking {
+            withTimeoutOrNull(timeoutMs) { scope.coroutineContext[Job]?.join() }
+        }
         scope.cancel()
-        runCatching { grabber.stop(); grabber.release() }
+        println("[ScreenReceiver] stop() complete")
     }
 
     // ── Decode loop ───────────────────────────────────────────────────────────
 
     private suspend fun decodeLoop() = withContext(Dispatchers.IO) {
-        println("[ScreenReceiver] Opening FFmpegFrameGrabber on udp://0.0.0.0:$port ...")
-        try {
+        println("[ScreenReceiver] Opening grabber on udp://0.0.0.0:$port ...")
+
+        // grabber.start() MUST be called before the try-finally so that
+        // grabber.stop() is only called when start() actually succeeded.
+        val started: Boolean = try {
             grabber.start()
-            println("[ScreenReceiver] grabber.start() succeeded — format=${grabber.format}")
+            println("[ScreenReceiver] grabber.start() OK — format=${grabber.format}")
+            true
+        } catch (e: CancellationException) {
+            println("[ScreenReceiver] cancelled during grabber.start()")
+            throw e   // propagate — coroutine machinery needs this
         } catch (e: FrameGrabber.Exception) {
             println("[ScreenReceiver] grabber.start() FAILED (FrameGrabber.Exception): ${e.message}")
-            return@withContext
+            false
         } catch (e: Exception) {
             println("[ScreenReceiver] grabber.start() FAILED (${e::class.simpleName}): ${e.message}")
-            return@withContext
+            false
         }
+
+        if (!started) return@withContext
 
         var frameCount  = 0
         var totalFrames = 0
         var fpsWindowMs = System.currentTimeMillis()
+        println("[ScreenReceiver] decode loop running...")
 
-        println("[ScreenReceiver] decode loop running — waiting for frames...")
-        while (isRunning) {
-            try {
-                val javacvFrame = grabber.grabImage()
-                if (javacvFrame == null) {
-                    delay(2)
+        try {
+            while (isRunning) {
+                val javacvFrame: org.bytedeco.javacv.Frame?
+                try {
+                    javacvFrame = grabber.grabImage()
+                } catch (e: CancellationException) {
+                    // Coroutine was cancelled — exit cleanly
+                    println("[ScreenReceiver] CancellationException inside grabImage(), exiting loop")
+                    break
+                } catch (e: FrameGrabber.Exception) {
+                    // Timeout or network error — could be transient
+                    if (!isRunning) break
+                    println("[ScreenReceiver] grabImage FrameGrabber.Exception: ${e.message}")
+                    delay(200)
                     continue
+                } catch (e: Exception) {
+                    if (!isRunning) break
+                    println("[ScreenReceiver] grabImage exception (${e::class.simpleName}): ${e.message}")
+                    delay(100)
+                    continue
+                }
+
+                if (javacvFrame == null) {
+                    // null = stream ended or timeout fired — don't loop forever
+                    println("[ScreenReceiver] grabImage() returned null — stream ended or timed out")
+                    break
                 }
 
                 val bi = converter.getBufferedImage(javacvFrame)
@@ -106,15 +156,14 @@ class ScreenReceiver(private val port: Int) {
                     frameCount  = 0
                     fpsWindowMs = now
                 }
-
-            } catch (e: FrameGrabber.Exception) {
-                println("[ScreenReceiver] grabImage FrameGrabber.Exception: ${e.message}")
-                delay(10)
-            } catch (e: Exception) {
-                println("[ScreenReceiver] grabImage exception (${e::class.simpleName}): ${e.message}")
-                delay(5)
             }
+        } finally {
+            // Always release native resources — prevents JVM crash on scope cancel
+            println("[ScreenReceiver] finally: releasing grabber (totalFrames=$totalFrames)")
+            runCatching { grabber.stop()    }.onFailure { println("[ScreenReceiver] grabber.stop() error: ${it.message}") }
+            runCatching { grabber.release() }.onFailure { println("[ScreenReceiver] grabber.release() error: ${it.message}") }
+            _frame.value = null
+            println("[ScreenReceiver] decodeLoop ended — totalFrames=$totalFrames")
         }
-        println("[ScreenReceiver] decodeLoop ended — totalFrames=$totalFrames")
     }
 }

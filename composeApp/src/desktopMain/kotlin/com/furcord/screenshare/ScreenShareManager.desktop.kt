@@ -88,9 +88,14 @@ actual object ScreenShareManager {
     actual fun stopReceiver() {
         receiverFrameJob?.cancel()
         receiverFrameJob = null
-        receiver?.stop()
+        val r = receiver
         receiver = null
         _receiverFrame.value = null
+        // stop() blocks waiting for the native FFmpeg call to return (up to 5 s).
+        // Run it on the manager's IO scope to avoid blocking the caller's thread.
+        if (r != null) {
+            managerScope.launch(Dispatchers.IO) { r.stop() }
+        }
     }
 }
 

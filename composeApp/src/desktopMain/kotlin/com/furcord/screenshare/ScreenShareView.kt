@@ -33,7 +33,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Popup
 import kotlinx.coroutines.flow.StateFlow
-
 // ─────────────────────────────────────────────────────────────────────────────
 // StreamViewer — universal video player (remote receiver OR local self-view)
 // ─────────────────────────────────────────────────────────────────────────────
@@ -63,6 +62,18 @@ fun StreamViewer(
     modifier:       Modifier = Modifier,
 ) {
     val frame by frameFlow.collectAsState()
+
+    // When this composable leaves the composition (e.g. activeStreamUid → null),
+    // stop the receiver so the native FFmpeg thread exits cleanly. This prevents
+    // the JVM crash that occurs when the coroutine scope is cancelled while
+    // FFmpeg is blocked inside a native grabImage() call.
+    DisposableEffect(frameFlow) {
+        onDispose {
+            if (!isSelfView) {
+                ScreenShareManager.stopReceiver()
+            }
+        }
+    }
 
     val controlsInteraction = remember { MutableInteractionSource() }
     val controlsHovered     by controlsInteraction.collectIsHoveredAsState()
