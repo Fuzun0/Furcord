@@ -5,6 +5,7 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.hoverable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsHoveredAsState
@@ -14,16 +15,23 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Fullscreen
 import androidx.compose.material.icons.filled.Minimize
+import androidx.compose.material.icons.filled.VolumeDown
+import androidx.compose.material.icons.filled.VolumeMute
+import androidx.compose.material.icons.filled.VolumeOff
+import androidx.compose.material.icons.filled.VolumeUp
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Popup
 import kotlinx.coroutines.flow.StateFlow
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -113,29 +121,71 @@ fun StreamViewer(
                     verticalAlignment   = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(16.dp),
                 ) {
-                    // Volume slider (hidden for self-view — no remote audio)
+                    // ── Ses kontrolü (sadece remote view) — Discord-stili speaker icon + popup ──
                     if (!isSelfView) {
-                        Text("🔊", fontSize = 14.sp)
-                        Slider(
-                            value          = peerVolume,
-                            onValueChange  = onVolumeChange,
-                            valueRange     = 0f..2f,
-                            modifier       = Modifier.weight(1f).height(28.dp),
-                            colors         = SliderDefaults.colors(
-                                thumbColor         = Color(0xFF5865F2),
-                                activeTrackColor   = Color(0xFF5865F2),
-                                inactiveTrackColor = Color(0xFF4E5058),
-                            ),
-                        )
-                        Text(
-                            text     = "${(peerVolume * 100).toInt()}%",
-                            color    = Color(0xFFB5BAC1),
-                            fontSize = 11.sp,
-                            modifier = Modifier.width(36.dp),
-                        )
-                    } else {
-                        Spacer(Modifier.weight(1f))
+                        var showVolumeFlyout by remember { mutableStateOf(false) }
+                        Box {
+                            IconButton(
+                                onClick  = { showVolumeFlyout = !showVolumeFlyout },
+                                modifier = Modifier.size(32.dp),
+                            ) {
+                                Icon(
+                                    imageVector = when {
+                                        peerVolume == 0f    -> Icons.Default.VolumeOff
+                                        peerVolume < 0.5f  -> Icons.Default.VolumeDown
+                                        else               -> Icons.Default.VolumeUp
+                                    },
+                                    contentDescription = "Ses",
+                                    tint     = if (showVolumeFlyout) Color(0xFF5865F2) else Color(0xFFB5BAC1),
+                                    modifier = Modifier.size(18.dp),
+                                )
+                            }
+                            // Popup flyout — dikey slider
+                            if (showVolumeFlyout) {
+                                Popup(
+                                    alignment       = Alignment.TopCenter,
+                                    offset          = IntOffset(0, -185),
+                                    onDismissRequest = { showVolumeFlyout = false },
+                                ) {
+                                    Box(
+                                        modifier = Modifier
+                                            .width(40.dp)
+                                            .height(160.dp)
+                                            .clip(RoundedCornerShape(8.dp))
+                                            .background(Color(0xFF2B2D31))
+                                            .border(1.dp, Color(0xFF3A3C43), RoundedCornerShape(8.dp))
+                                            .padding(vertical = 8.dp, horizontal = 4.dp),
+                                        contentAlignment = Alignment.Center,
+                                    ) {
+                                        Column(
+                                            horizontalAlignment = Alignment.CenterHorizontally,
+                                            verticalArrangement = Arrangement.spacedBy(4.dp),
+                                        ) {
+                                            Text(
+                                                text     = "${(peerVolume * 100).toInt()}%",
+                                                color    = Color(0xFFB5BAC1),
+                                                fontSize = 9.sp,
+                                            )
+                                            Slider(
+                                                value         = peerVolume,
+                                                onValueChange = onVolumeChange,
+                                                valueRange    = 0f..2f,
+                                                modifier      = Modifier
+                                                    .height(120.dp)
+                                                    .graphicsLayer { rotationZ = -90f },
+                                                colors = SliderDefaults.colors(
+                                                    thumbColor         = Color(0xFF5865F2),
+                                                    activeTrackColor   = Color(0xFF5865F2),
+                                                    inactiveTrackColor = Color(0xFF4E5058),
+                                                ),
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     }
+                    Spacer(Modifier.weight(1f))
 
                     // PiP toggle button (küçült / genişlet)
                     if (onTogglePiP != null) {

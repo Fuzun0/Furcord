@@ -91,6 +91,7 @@ class ScreenReceiver(
 
     fun start() {
         isRunning = true
+        println("[ScreenReceiver] start() called — launching receive+decode loops")
         scope.launch { receiveLoop() }
         scope.launch { decodeLoop()  }
     }
@@ -106,11 +107,20 @@ class ScreenReceiver(
 
     private suspend fun receiveLoop() = withContext(Dispatchers.IO) {
         val buf = ByteArray(MAX_PKT_SIZE)
+        var totalPkts = 0
+        println("[ScreenReceiver] receiveLoop started — socket: ${socket.localPort}, isBound=${socket.isBound}")
         while (isRunning) {
             try {
                 val dp = DatagramPacket(buf, buf.size)
                 socket.receive(dp)
-                if (dp.length < HEADER_BYTES) continue
+                totalPkts++
+                if (totalPkts % 50 == 0) {
+                    println("[ScreenReceiver] UDP packets received so far: $totalPkts, latest seg: ${latestSeg.get()}")
+                }
+                if (dp.length < HEADER_BYTES) {
+                    println("[ScreenReceiver] WARN: short packet ${dp.length} bytes, skipping")
+                    continue
+                }
 
                 val bb = ByteBuffer.wrap(buf, 0, dp.length)
 
@@ -141,6 +151,7 @@ class ScreenReceiver(
                     .incrementAndGet()
 
                 if (received == totalChunks) {
+                    println("[ScreenReceiver] Segment $segId reassembled: $totalChunks chunks")
                     reassembleAndFeed(segId, arr)
                 }
 
@@ -154,12 +165,17 @@ class ScreenReceiver(
                         chunkTotal.remove(k)
                     }
 
-            } catch (_: java.net.SocketException) {
+            } catch (e: java.net.SocketException) {
+                println("[ScreenReceiver] receiveLoop SocketException (socket closed?): ${e.message}")
                 break // socket closed by stop()
             } catch (e: Exception) {
-                if (isRunning) delay(1)
+                if (isRunning) {
+                    println("[ScreenReceiver] receiveLoop exception: ${e::class.simpleName}: ${e.message}")
+                    delay(1)
+                }
             }
         }
+        println("[ScreenReceiver] receiveLoop ended — total packets: $totalPkts")
     }
 
     private fun reassembleAndFeed(segId: Int, arr: Array<ByteArray?>) {
@@ -169,7 +185,10 @@ class ScreenReceiver(
 
         // Calculate total size and copy chunks in order
         val totalBytes = arr.sumOf { it?.size ?: 0 }
-        if (totalBytes == 0) return
+        if (totalBytes == 0) {
+            println("[ScreenReceiver] reassembleAndFeed: segId=$segId zero bytes, skipping")
+            return
+        }
 
         val assembled = ByteArray(totalBytes)
         var pos = 0
@@ -179,7 +198,7 @@ class ScreenReceiver(
                 pos += chunk.size
             }
         }
-
+        println("[ScreenReceiver] Feeding $totalBytes bytes to StreamBuffer")
         streamBuf.offer(assembled)
     }
 
@@ -187,43 +206,73 @@ class ScreenReceiver(
 
     private suspend fun decodeLoop() = withContext(Dispatchers.IO) {
         // Wait for enough mpegts data so FFmpeg's format probe succeeds.
-        // The first data in the stream contains PAT + PMT + first keyframe.
+        var waitMs = 0
+        println("[ScreenReceiver] decodeLoop waiting for PROBE_BYTES=${PROBE_BYTES}...")
         while (isRunning && streamBuf.bufferedBytes() < PROBE_BYTES) {
             delay(50)
+            waitMs += 50
+            if (waitMs % 2000 == 0) {
+                println("[ScreenReceiver] still waiting for probe data: buffered=${streamBuf.bufferedBytes()} / $PROBE_BYTES bytes")
+            }
         }
-        if (!isRunning) return@withContext
+        if (!isRunning) {
+            println("[ScreenReceiver] decodeLoop: stopped before probe complete")
+            return@withContext
+        }
+        println("[ScreenReceiver] Probe data ready (${streamBuf.bufferedBytes()} bytes), starting FFmpegFrameGrabber...")
 
         try {
             decoder.start()
+            println("[ScreenReceiver] FFmpegFrameGrabber.start() succeeded")
+        } catch (e: org.bytedeco.javacv.FrameGrabber.Exception) {
+            println("[ScreenReceiver] FFmpegFrameGrabber.start() FAILED: ${e.message}")
+            return@withContext
         } catch (e: Exception) {
-            // Format detection failed — usually means no data arrived yet.
-            // The caller can call start() again after checking isRunning.
+            println("[ScreenReceiver] FFmpegFrameGrabber.start() unexpected error: ${e::class.simpleName}: ${e.message}")
             return@withContext
         }
 
         // FPS counter
         var frameCount  = 0
+        var totalFrames = 0
         var fpsWindowMs = System.currentTimeMillis()
 
+        println("[ScreenReceiver] decode loop running...")
         while (isRunning) {
             try {
-                val javacvFrame  = decoder.grabImage() ?: continue
-                val bufferedImage = converter.getBufferedImage(javacvFrame) ?: continue
+                val javacvFrame  = decoder.grabImage()
+                if (javacvFrame == null) {
+                    delay(2)
+                    continue
+                }
+                val bufferedImage = converter.getBufferedImage(javacvFrame)
+                if (bufferedImage == null) {
+                    println("[ScreenReceiver] WARN: converter returned null for frame")
+                    continue
+                }
 
                 // Convert java.awt.image.BufferedImage → Compose ImageBitmap
                 _frame.value = bufferedImage.toComposeImageBitmap()
+                totalFrames++
+                if (totalFrames == 1) println("[ScreenReceiver] 🎬 First frame decoded!")
 
                 // Update FPS counter every second
                 frameCount++
                 val now = System.currentTimeMillis()
                 if (now - fpsWindowMs >= 1_000L) {
                     _fps.value = frameCount * 1_000f / (now - fpsWindowMs)
+                    if (frameCount > 0) println("[ScreenReceiver] FPS=${_fps.value} totalFrames=$totalFrames")
                     frameCount  = 0
                     fpsWindowMs = now
                 }
-            } catch (_: Exception) {
+            } catch (e: org.bytedeco.javacv.FrameGrabber.Exception) {
+                println("[ScreenReceiver] grabImage FrameGrabber.Exception: ${e.message}")
+                delay(10)
+            } catch (e: Exception) {
+                println("[ScreenReceiver] grabImage exception: ${e::class.simpleName}: ${e.message}")
                 delay(5)
             }
         }
+        println("[ScreenReceiver] decodeLoop ended — total frames decoded: $totalFrames")
     }
 }

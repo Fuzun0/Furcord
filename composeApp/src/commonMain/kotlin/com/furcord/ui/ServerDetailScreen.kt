@@ -39,6 +39,7 @@ import com.furcord.auth.MessageStore
 import com.furcord.auth.VoicePeer
 import com.furcord.auth.VoiceChannel
 import com.furcord.voice.VoiceEngine
+import com.furcord.screenshare.PiPStreamWindow
 import com.furcord.screenshare.ScreenShareManager
 import com.furcord.screenshare.StreamViewerComposable
 import androidx.compose.foundation.Image
@@ -770,7 +771,8 @@ fun ServerDetailScreen(
     // PiP modu: true ise stream küçük pencerede gösterilir, chat görünür kalır
     var isPiPMode          by remember { mutableStateOf(false) }
     // Yayın yapan peer uid'leri (Firestore'dan poll edilir)
-    val broadcastingUids   = remember { mutableStateOf<Set<String>>(emptySet()) }
+    // mutableStateOf kullanılınca Compose her değişiklikte otomatik recompose yapar
+    var broadcastingUids   by remember { mutableStateOf<Set<String>>(emptySet()) }
     var loading            by remember { mutableStateOf(true) }
 
     // Chat state — önbellekten başla, re-entry'de mesajlar kaybolmasın
@@ -986,10 +988,13 @@ fun ServerDetailScreen(
                 ScreenShareManager.setPeers(peers.map { it.ip to (it.port + 100) })
                 // Track who is broadcasting
                 val liveUids = peers.filter { it.isBroadcasting }.map { it.uid }.toSet()
-                broadcastingUids.value = liveUids
+                // Yeni Set örneği atanınca Compose recomposition'ı garantilenir
+                if (broadcastingUids != liveUids) {
+                    broadcastingUids = liveUids
+                }
                 // Auto-stop receiver if the broadcaster left
                 if (activeStreamUid != null && activeStreamUid != currentUser.uid &&
-                    activeStreamUid !in liveUids
+                    activeStreamUid !in broadcastingUids
                 ) {
                     ScreenShareManager.stopReceiver()
                     activeStreamUid = null
@@ -1378,7 +1383,7 @@ fun ServerDetailScreen(
                         isSelected       = selectedChannelId == ch.id,
                         activeUsers      = channelUsers[ch.id] ?: emptyList(),
                         currentUid       = currentUser.uid,
-                        broadcastingUids = broadcastingUids.value +
+                        broadcastingUids = broadcastingUids +
                             if (isBroadcasting) setOf(currentUser.uid) else emptySet(),
                         onClick          = { joinChannel(ch) },
                         onUserRightClick = { u -> contextMenuUser = u; showVolumeSlider = false },
@@ -1775,91 +1780,29 @@ fun ServerDetailScreen(
         }
     }   // end Row
 
-    // ── PiP overlay — aktif yayın varken ve isPiPMode=true iken ──────────────
+    // ── PiP — OS-level always-on-top Window (aktif yayın varken ve isPiPMode=true) ──
     val pipUid = if (isPiPMode) activeStreamUid else null
     if (pipUid != null) {
-        val isSelfPiP   = pipUid == currentUser.uid
-        val pipLocalFrame by ScreenShareManager.localFrame.collectAsState()
-        val pipRemFrame   by ScreenShareManager.receiverFrame.collectAsState()
-        val pipFrame      = if (isSelfPiP) pipLocalFrame else pipRemFrame
-
-        Box(
-            modifier = Modifier
-                .align(Alignment.BottomEnd)
-                .padding(end = 16.dp, bottom = 80.dp)
-                .size(width = 350.dp, height = 200.dp)
-                .zIndex(10f)
-                .shadow(12.dp, RoundedCornerShape(10.dp))
-                .clip(RoundedCornerShape(10.dp))
-                .border(1.dp, Color(0x33FFFFFF), RoundedCornerShape(10.dp))
-                .background(Color(0xFF111214)),
-        ) {
-            // Video frame or spinner
-            if (pipFrame != null) {
-                Image(
-                    bitmap             = pipFrame,
-                    contentDescription = null,
-                    modifier           = Modifier.fillMaxSize(),
-                    contentScale       = ContentScale.Fit,
-                )
-            } else {
-                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    CircularProgressIndicator(
-                        color       = Color(0xFF5865F2),
-                        strokeWidth = 2.dp,
-                        modifier    = Modifier.size(24.dp),
-                    )
+        val isSelfPiP = pipUid == currentUser.uid
+        PiPStreamWindow(
+            isSelfView     = isSelfPiP,
+            peerVolume     = if (isSelfPiP) 1f else (peerVolumes[pipUid] ?: 1f),
+            onVolumeChange = { vol ->
+                if (!isSelfPiP) {
+                    peerVolumes[pipUid] = vol
+                    VoiceEngine.setPeerVolume(pipUid, vol)
                 }
-            }
-
-            // Top bar with controls
-            Row(
-                modifier = Modifier
-                    .align(Alignment.TopCenter)
-                    .fillMaxWidth()
-                    .background(Color(0xCC111214))
-                    .padding(horizontal = 10.dp, vertical = 5.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment     = Alignment.CenterVertically,
-            ) {
-                Text(
-                    text       = if (isSelfPiP) "📡 Ön İzleme" else "📺 İzleniyor",
-                    color      = Color(0xFFB5BAC1),
-                    fontSize   = 11.sp,
-                    fontWeight = FontWeight.SemiBold,
-                )
-                Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
-                    // Tam ekrana geç
-                    IconButton(
-                        onClick  = { isPiPMode = false },
-                        modifier = Modifier.size(20.dp),
-                    ) {
-                        Icon(
-                            imageVector        = Icons.Default.Fullscreen,
-                            contentDescription = "Tam ekran",
-                            tint               = Color(0xFFB5BAC1),
-                            modifier           = Modifier.size(14.dp),
-                        )
-                    }
-                    // PiP'i kapat
-                    IconButton(
-                        onClick = {
-                            if (!isSelfPiP) ScreenShareManager.stopReceiver()
-                            activeStreamUid = null
-                            isPiPMode       = false
-                        },
-                        modifier = Modifier.size(20.dp),
-                    ) {
-                        Icon(
-                            imageVector        = Icons.Default.Close,
-                            contentDescription = "Kapat",
-                            tint               = Color(0xFFB5BAC1),
-                            modifier           = Modifier.size(14.dp),
-                        )
-                    }
-                }
-            }
-        }
+            },
+            onExpand = {
+                // PiP'i kapat, tam ekran StreamViewer'a geç
+                isPiPMode = false
+            },
+            onClose  = {
+                if (!isSelfPiP) ScreenShareManager.stopReceiver()
+                activeStreamUid = null
+                isPiPMode       = false
+            },
+        )
     }
     }   // end Box(fillMaxSize)
 }
