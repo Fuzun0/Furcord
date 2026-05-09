@@ -39,6 +39,9 @@ import com.furcord.auth.MessageStore
 import com.furcord.auth.VoicePeer
 import com.furcord.auth.VoiceChannel
 import com.furcord.voice.VoiceEngine
+import com.furcord.screenshare.ScreenShareManager
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Cast
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.GlobalScope
 import kotlinx.coroutines.delay
@@ -538,6 +541,64 @@ private fun AsyncChatImage(url: String) {
     }
 }
 
+/**
+ * Sunucu ikonu — imageUrl doluysa ağdan yükler (CircleShape), boşsa harf+renk fallback.
+ */
+@Composable
+private fun AsyncServerIcon(imageUrl: String, name: String, size: androidx.compose.ui.unit.Dp) {
+    if (imageUrl.isNotEmpty()) {
+        var bmp by remember(imageUrl) { mutableStateOf<androidx.compose.ui.graphics.ImageBitmap?>(null) }
+        LaunchedEffect(imageUrl) {
+            withContext(Dispatchers.IO) {
+                runCatching {
+                    val bytes = java.net.URI.create(imageUrl).toURL().readBytes()
+                    bmp = androidx.compose.ui.res.loadImageBitmap(bytes.inputStream())
+                }
+            }
+        }
+        Box(
+            modifier = Modifier.size(size).clip(CircleShape),
+            contentAlignment = Alignment.Center,
+        ) {
+            if (bmp != null) {
+                androidx.compose.foundation.Image(
+                    bitmap             = bmp!!,
+                    contentDescription = name,
+                    modifier           = Modifier.fillMaxSize(),
+                    contentScale       = androidx.compose.ui.layout.ContentScale.Crop,
+                )
+            } else {
+                Box(
+                    modifier = Modifier.fillMaxSize().background(AppColors.Accent),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        text       = name.firstOrNull()?.uppercaseChar()?.toString() ?: "?",
+                        fontSize   = (size.value * 0.4f).sp,
+                        fontWeight = FontWeight.Bold,
+                        color      = Color.White,
+                    )
+                }
+            }
+        }
+    } else {
+        Box(
+            modifier = Modifier
+                .size(size)
+                .clip(CircleShape)
+                .background(AppColors.Accent),
+            contentAlignment = Alignment.Center,
+        ) {
+            Text(
+                text       = name.firstOrNull()?.uppercaseChar()?.toString() ?: "?",
+                fontSize   = (size.value * 0.4f).sp,
+                fontWeight = FontWeight.Bold,
+                color      = Color.White,
+            )
+        }
+    }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Sunucu ayarları dialog (görsel URL güncelleme)
 // ─────────────────────────────────────────────────────────────────────────────
@@ -642,6 +703,7 @@ fun ServerDetailScreen(
     var showTextChannel    by remember { mutableStateOf(true) }   // true = # genel seçili
     var isMuted            by remember { mutableStateOf(false) }
     var isDeafened         by remember { mutableStateOf(false) }
+    var isBroadcasting     by remember { mutableStateOf(false) }
     var loading            by remember { mutableStateOf(true) }
 
     // Chat state — önbellekten başla, re-entry'de mesajlar kaybolmasın
@@ -669,6 +731,8 @@ fun ServerDetailScreen(
     var wasKicked         by remember { mutableStateOf(false) }
     // Çevrimiçi üyeler (presence)
     var presenceUsers     by remember { mutableStateOf<List<ActiveUser>>(emptyList()) }
+    // Sunucu kapak görseli URL'si
+    var serverImageUrl    by remember { mutableStateOf("") }
 
     val latestConnectedId   by rememberUpdatedState(connectedChannelId)
     val latestChannelUsers  by rememberUpdatedState(channelUsers)
@@ -727,6 +791,13 @@ fun ServerDetailScreen(
                 ) { Text("Tamam", color = Color.White) }
             },
         )
+    }
+
+    // ── Sunucu görsel URL'si — tek seferlik çekme ────────────────────────────
+    LaunchedEffect(serverId, "image") {
+        runCatching {
+            serverImageUrl = FirestoreClient.getServerImageUrl(serverId, currentUser.idToken)
+        }
     }
 
     // ── Poll channels + active users every 3 s ────────────────────────────────
@@ -828,6 +899,7 @@ fun ServerDetailScreen(
                 runCatching { FirestoreClient.deletePresence(serverId, currentUser.uid, currentUser.idToken) }
             }
             VoiceEngine.stop()
+            ScreenShareManager.stop()
         }
     }
 
@@ -836,6 +908,7 @@ fun ServerDetailScreen(
         val cid = connectedChannelId
         if (cid == null) {
             VoiceEngine.updatePeers(emptyList())
+            ScreenShareManager.setPeers(emptyList())
             return@LaunchedEffect
         }
         while (true) {
@@ -843,6 +916,7 @@ fun ServerDetailScreen(
                 val peers = FirestoreClient.getVoicePeers(serverId, cid, currentUser.idToken)
                     .filter { it.uid != currentUser.uid }
                 VoiceEngine.updatePeers(peers)
+                ScreenShareManager.setPeers(peers.map { it.ip to (it.port + 100) })
             } catch (_: Exception) {}
             delay(2_000)
         }
@@ -1072,6 +1146,12 @@ fun ServerDetailScreen(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
+                // Sunucu ikonu — görsel varsa daire, yoksa harf fallback
+                AsyncServerIcon(
+                    imageUrl = serverImageUrl,
+                    name     = serverName,
+                    size     = 30.dp,
+                )
                 Text(
                     text = serverName,
                     fontSize = 15.sp,
@@ -1297,6 +1377,21 @@ fun ServerDetailScreen(
                     tint    = if (isDeafened) Color(0xFFF23F43) else Color(0xFFB5BAC1),
                     onClick = { isDeafened = !isDeafened },
                 )
+                IconButton(
+                    onClick = {
+                        isBroadcasting = !isBroadcasting
+                        if (isBroadcasting) ScreenShareManager.start()
+                        else ScreenShareManager.stop()
+                    },
+                    modifier = Modifier.size(28.dp),
+                ) {
+                    Icon(
+                        imageVector        = Icons.Default.Cast,
+                        contentDescription = if (isBroadcasting) "Ekran Paylaşımını Durdur" else "Ekranı Paylaş",
+                        tint               = if (isBroadcasting) Color(0xFF5865F2) else Color(0xFFB5BAC1),
+                        modifier           = Modifier.size(18.dp),
+                    )
+                }
             }
         }   // end sidebar Column
 

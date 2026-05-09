@@ -8,7 +8,12 @@ plugins {
 }
 
 kotlin {
-    jvm("desktop")
+    jvm("desktop") {
+        @Suppress("OPT_IN_USAGE")
+        mainRun {
+            mainClass.set("com.furcord.MainKt")
+        }
+    }
 
     targets.withType<org.jetbrains.kotlin.gradle.targets.jvm.KotlinJvmTarget>().configureEach {
         compilations.all {
@@ -27,6 +32,7 @@ kotlin {
             implementation(compose.runtime)
             implementation(compose.foundation)
             implementation(compose.material3)
+            implementation(compose.materialIconsExtended)
             implementation(compose.ui)
             implementation(compose.components.resources)
             implementation(libs.androidx.lifecycle.viewmodel)
@@ -38,6 +44,9 @@ kotlin {
         desktopMain.dependencies {
             implementation(compose.desktop.currentOs)
             implementation(libs.kotlinx.coroutines.swing)
+            // JavaCV — screen capture + H264 encoding/decoding via FFmpeg
+            implementation(libs.javacv)
+            implementation(libs.ffmpeg.platform)
         }
     }
 }

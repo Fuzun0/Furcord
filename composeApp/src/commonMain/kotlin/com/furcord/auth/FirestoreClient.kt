@@ -131,7 +131,14 @@ object FirestoreClient {
             val doc = runCatching { fsJson.decodeFromString<FsDocument>(text) }.getOrNull()
             doc?.fields?.str("name")?.takeIf { it.isNotEmpty() } ?: serverId
         }
-
+    /** Sunucunun `imageUrl` alanını getirir; alan yoksa veya hata olursa boş string döner. */
+    suspend fun getServerImageUrl(serverId: String, idToken: String): String =
+        withContext(Dispatchers.IO) {
+            val (code, text) = request("GET", "$BASE/servers/$serverId", idToken = idToken)
+            if (code !in 200..299) return@withContext ""
+            val doc = runCatching { fsJson.decodeFromString<FsDocument>(text) }.getOrNull()
+            doc?.fields?.str("imageUrl") ?: ""
+        }
     /** Sunucunun sahibi olan kullan\u0131c\u0131n\u0131n UID'sini d\u00f6nd\u00fcr\u00fcr. */
     suspend fun getServerCreatorUid(serverId: String, idToken: String): String? =
         withContext(Dispatchers.IO) {

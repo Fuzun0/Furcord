@@ -4,6 +4,8 @@ compose-multiplatform   = "1.7.0"
 lifecycle               = "2.8.3"
 coroutines              = "1.9.0"
 kotlinx-serialization   = "1.7.3"
+javacv                  = "1.5.13"
+ffmpeg-jcv              = "8.0.1-1.5.13"
 
 [libraries]
 kotlinx-serialization-json         = { module = "org.jetbrains.kotlinx:kotlinx-serialization-json", version.ref = "kotlinx-serialization" }
@@ -11,6 +13,8 @@ androidx-lifecycle-viewmodel        = { module = "org.jetbrains.androidx.lifecyc
 androidx-lifecycle-viewmodel-compose= { module = "org.jetbrains.androidx.lifecycle:lifecycle-viewmodel-compose", version.ref = "lifecycle" }
 androidx-lifecycle-runtime-compose  = { module = "org.jetbrains.androidx.lifecycle:lifecycle-runtime-compose",   version.ref = "lifecycle" }
 kotlinx-coroutines-swing            = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-swing", version.ref = "coroutines" }
+javacv                              = { module = "org.bytedeco:javacv",           version.ref = "javacv"     }
+ffmpeg-platform                     = { module = "org.bytedeco:ffmpeg-platform",  version.ref = "ffmpeg-jcv" }
 
 [plugins]
 kotlinMultiplatform  = { id = "org.jetbrains.kotlin.multiplatform",        version.ref = "kotlin" }

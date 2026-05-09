@@ -28,15 +28,14 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.furcord.auth.AuthUser
-import com.furcord.auth.DmConversation
-import com.furcord.auth.DmRepository
 import com.furcord.auth.FriendEntry
 import com.furcord.auth.FirestoreClient
 import com.furcord.auth.RecentServers
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import androidx.compose.runtime.collectAsState
+import kotlinx.coroutines.withContext
 
 
 // ─── Renk paleti ─────────────────────────────────────────────────────────────
@@ -78,14 +77,12 @@ fun ServerLobbyScreen(
 
     var recentServers    by remember { mutableStateOf(RecentServers.load()) }
     var reconnectLoading by remember { mutableStateOf<String?>(null) }
+    // Sunucu ID → görsel URL önbelleği (reaktif — UI otomatik güncellenir)
+    val serverImages  = remember { mutableStateMapOf<String, String>() }
 
-    // Sol panel — arkadaş & DM sohbetleri
+    // Sol panel — arkadaş listesi
     var friends       by remember { mutableStateOf<List<FriendEntry>>(emptyList()) }
-    // DmRepository'den reaktif sohbet listesi
-    val conversations  by DmRepository.threads.collectAsState()
-    val unreadCount    by DmRepository.unreadCount.collectAsState()
     var friendsOpen   by remember { mutableStateOf(true) }
-    var convOpen      by remember { mutableStateOf(true) }
     var showAddFriend by remember { mutableStateOf(false) }
 
     // Firestore'dan oluşturulan sunucuları çek (var olmayanları SONA ekler, sırayı bozmaz)
@@ -94,6 +91,15 @@ fun ServerLobbyScreen(
             val myServers = FirestoreClient.getMyServers(currentUser.uid, currentUser.idToken)
             myServers.forEach { (id, name) -> RecentServers.addIfAbsent(id, name) }
             recentServers = RecentServers.load()
+            // Her sunucunun görsel URL'sini arka planda paralel çek
+            recentServers.forEach { (sid, _) ->
+                scope.launch {
+                    runCatching {
+                        val url = FirestoreClient.getServerImageUrl(sid, currentUser.idToken)
+                        if (url.isNotEmpty()) serverImages[sid] = url
+                    }
+                }
+            }
         } catch (_: Exception) {}
         // Arkadaş listesini odağa göre yenile: odakta 30s, arka planda 3 dakika
         while (isActive) {
@@ -373,91 +379,7 @@ fun ServerLobbyScreen(
                         }
                     }
 
-                    // ── Mesajlar çekmece ──────────────────────────────────
-                    item {
-                        HorizontalDivider(color = OUTLINE, modifier = Modifier.padding(vertical = 4.dp))
-                        Row(
-                            Modifier
-                                .fillMaxWidth()
-                                .clickable { convOpen = !convOpen }
-                                .padding(horizontal = 12.dp, vertical = 8.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            Icon(
-                                if (convOpen) Icons.Default.KeyboardArrowDown else Icons.Default.KeyboardArrowUp,
-                                null, tint = MUTED, modifier = Modifier.size(16.dp),
-                            )
-                            Spacer(Modifier.width(4.dp))
-                            Text(
-                                "MESAJLAR",
-                                fontSize = 11.sp, fontWeight = FontWeight.Bold,
-                                color = MUTED, letterSpacing = 0.8.sp,
-                                modifier = Modifier.weight(1f),
-                            )
-                            if (conversations.isNotEmpty()) {
-                                Text(
-                                    "${conversations.size}",
-                                    fontSize = 10.sp, color = Color.White,
-                                    modifier = Modifier
-                                        .clip(RoundedCornerShape(8.dp))
-                                        .background(OUTLINE)
-                                        .padding(horizontal = 5.dp, vertical = 1.dp),
-                                )
-                            }
-                        }
-                    }
-                    if (convOpen) {
-                        if (conversations.isEmpty()) {
-                            item {
-                                Text(
-                                    "Henüz sohbet yok.",
-                                    color = MUTED, fontSize = 12.sp,
-                                    modifier = Modifier.padding(horizontal = 20.dp, vertical = 4.dp),
-                                )
-                            }
-                        } else {
-                            items(conversations, key = { it.dmId }) { conv ->
-                                val isUnread = conv.lastSenderUid.isNotEmpty() &&
-                                    conv.lastSenderUid != currentUser.uid
-                                Row(
-                                    Modifier
-                                        .fillMaxWidth()
-                                        .background(if (isUnread) ACCENT.copy(alpha = 0.08f) else Color.Transparent)
-                                        .clickable { onOpenDm?.invoke(conv.otherUid, conv.otherName) }
-                                        .padding(horizontal = 16.dp, vertical = 6.dp),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(10.dp),
-                                ) {
-                                    Box {
-                                        UserAvatar(displayName = conv.otherName, photoURL = "", size = 28)
-                                        if (isUnread) {
-                                            Box(
-                                                Modifier
-                                                    .size(8.dp)
-                                                    .clip(CircleShape)
-                                                    .background(Color(0xFFED4245))
-                                                    .align(Alignment.TopEnd)
-                                            )
-                                        }
-                                    }
-                                    Column(Modifier.weight(1f)) {
-                                        Text(
-                                            conv.otherName,
-                                            color = if (isUnread) TEXT else TEXT2,
-                                            fontSize = 13.sp,
-                                            fontWeight = if (isUnread) FontWeight.SemiBold else FontWeight.Normal,
-                                            maxLines = 1, overflow = TextOverflow.Ellipsis,
-                                        )
-                                        Text(
-                                            conv.lastText, color = if (isUnread) TEXT2 else MUTED,
-                                            fontSize = 11.sp,
-                                            maxLines = 1, overflow = TextOverflow.Ellipsis,
-                                        )
-                                    }
-                                }
-                            }
-                        }
-                    }
+
                 }
             }
 
@@ -689,6 +611,7 @@ fun ServerLobbyScreen(
                             RecentServerRow(
                                 sid          = sid,
                                 sname        = sname,
+                                imageUrl     = serverImages[sid] ?: "",
                                 isLoading    = reconnectLoading == sid,
                                 anyLoading   = reconnectLoading != null || deletingServerId != null,
                                 isDeleting   = deletingServerId == sid,
@@ -743,6 +666,7 @@ private fun SectionLabel(text: String) {
 private fun RecentServerRow(
     sid: String,
     sname: String,
+    imageUrl: String = "",
     isLoading: Boolean,
     anyLoading: Boolean,
     isDeleting: Boolean,
@@ -757,21 +681,8 @@ private fun RecentServerRow(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        // Sunucu ikonu
-        Box(
-            modifier = Modifier
-                .size(40.dp)
-                .clip(RoundedCornerShape(12.dp))
-                .background(ACCENT),
-            contentAlignment = Alignment.Center,
-        ) {
-            Text(
-                text       = sname.firstOrNull()?.uppercaseChar()?.toString() ?: "?",
-                fontSize   = 18.sp,
-                fontWeight = FontWeight.Bold,
-                color      = Color.White,
-            )
-        }
+        // Sunucu ikonu — görsel varsa daire göster, yoksa harf fallback
+        AsyncServerIcon(imageUrl = imageUrl, name = sname, size = 40.dp)
         // İsim
         Text(
             text     = sname,
@@ -825,6 +736,66 @@ private fun RecentServerRow(
                     fontSize = 12.sp,
                 )
             }
+        }
+    }
+}
+
+/**
+ * Sunucu ikonu — imageUrl doluysa ağdan yükler (CircleShape), boşsa harf+renk fallback.
+ * Desktop-only: java.net + androidx.compose.ui.res.loadImageBitmap
+ */
+@Composable
+private fun AsyncServerIcon(imageUrl: String, name: String, size: androidx.compose.ui.unit.Dp) {
+    if (imageUrl.isNotEmpty()) {
+        var bmp by remember(imageUrl) { mutableStateOf<androidx.compose.ui.graphics.ImageBitmap?>(null) }
+        LaunchedEffect(imageUrl) {
+            withContext(Dispatchers.IO) {
+                runCatching {
+                    val bytes = java.net.URI.create(imageUrl).toURL().readBytes()
+                    bmp = androidx.compose.ui.res.loadImageBitmap(bytes.inputStream())
+                }
+            }
+        }
+        Box(
+            modifier = Modifier.size(size).clip(CircleShape),
+            contentAlignment = Alignment.Center,
+        ) {
+            if (bmp != null) {
+                androidx.compose.foundation.Image(
+                    bitmap             = bmp!!,
+                    contentDescription = name,
+                    modifier           = Modifier.fillMaxSize(),
+                    contentScale       = androidx.compose.ui.layout.ContentScale.Crop,
+                )
+            } else {
+                // Yüklenirken harf göster
+                Box(
+                    modifier = Modifier.fillMaxSize().background(ACCENT),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        text       = name.firstOrNull()?.uppercaseChar()?.toString() ?: "?",
+                        fontSize   = (size.value * 0.4f).sp,
+                        fontWeight = FontWeight.Bold,
+                        color      = Color.White,
+                    )
+                }
+            }
+        }
+    } else {
+        Box(
+            modifier = Modifier
+                .size(size)
+                .clip(CircleShape)
+                .background(ACCENT),
+            contentAlignment = Alignment.Center,
+        ) {
+            Text(
+                text       = name.firstOrNull()?.uppercaseChar()?.toString() ?: "?",
+                fontSize   = (size.value * 0.4f).sp,
+                fontWeight = FontWeight.Bold,
+                color      = Color.White,
+            )
         }
     }
 }
