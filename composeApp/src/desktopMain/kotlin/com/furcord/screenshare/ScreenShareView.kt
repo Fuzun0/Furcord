@@ -1,12 +1,16 @@
 package com.furcord.screenshare
 
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.hoverable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsHoveredAsState
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.FilledTonalButton
-import androidx.compose.material3.Text
+import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -16,31 +20,41 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import kotlinx.coroutines.flow.StateFlow
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Viewer — shows the incoming screen share stream
+// StreamViewer — universal video player (remote receiver OR local self-view)
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * Displays the live screen-share stream from a [ScreenReceiver].
+ * Full-area video player for screen sharing.
  *
- * Usage:
- * ```kotlin
- * val receiver = remember { ScreenReceiver(socket) }
- * DisposableEffect(Unit) {
- *     receiver.start()
- *     onDispose { receiver.stop() }
- * }
- * ScreenShareView(receiver)
- * ```
+ * Works for both:
+ *  - Remote viewing: feed [ScreenShareManager.receiverFrame]
+ *  - Self-view:      feed [ScreenShareManager.localFrame]
+ *
+ * @param frameFlow     Source of decoded [ImageBitmap] frames.
+ * @param peerVolume    Current volume level for this peer's audio (0f–2f).
+ * @param onVolumeChange Callback when the volume slider changes.
+ * @param onStop        Called when the user clicks "İzlemeyi Durdur".
+ * @param isSelfView    When true, hides the volume slider (no remote audio).
  */
 @Composable
-fun ScreenShareView(
-    receiver: ScreenReceiver,
-    modifier: Modifier = Modifier,
+fun StreamViewer(
+    frameFlow:      StateFlow<androidx.compose.ui.graphics.ImageBitmap?>,
+    peerVolume:     Float    = 1f,
+    onVolumeChange: (Float) -> Unit = {},
+    onStop:         () -> Unit,
+    isSelfView:     Boolean  = false,
+    modifier:       Modifier = Modifier,
 ) {
-    val frame by receiver.frame.collectAsState()
-    val fps   by receiver.decodedFps.collectAsState()
+    val frame by frameFlow.collectAsState()
+
+    val controlsInteraction = remember { MutableInteractionSource() }
+    val controlsHovered     by controlsInteraction.collectIsHoveredAsState()
+
+    // Show controls when hovering; always show when waiting for first frame
+    val showControls = controlsHovered || frame == null
 
     Box(
         modifier         = modifier.fillMaxSize().background(Color(0xFF111214)),
@@ -54,25 +68,8 @@ fun ScreenShareView(
                 modifier           = Modifier.fillMaxSize(),
                 contentScale       = ContentScale.Fit,
             )
-
-            // FPS overlay — top-right corner
-            Box(
-                modifier = Modifier
-                    .align(Alignment.TopEnd)
-                    .padding(10.dp)
-                    .clip(RoundedCornerShape(6.dp))
-                    .background(Color.Black.copy(alpha = 0.55f))
-                    .padding(horizontal = 8.dp, vertical = 3.dp),
-            ) {
-                Text(
-                    text       = "${"%.1f".format(fps)} FPS",
-                    color      = Color(0xFFB5BAC1),
-                    fontSize   = 11.sp,
-                    fontWeight = FontWeight.SemiBold,
-                )
-            }
         } else {
-            // Waiting for the first frame
+            // Waiting for first frame
             Column(
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.spacedBy(14.dp),
@@ -83,13 +80,111 @@ fun ScreenShareView(
                     modifier    = Modifier.size(36.dp),
                 )
                 Text(
-                    "Ekran paylaşımı bekleniyor…",
+                    text     = if (isSelfView) "Ekran önizlemesi başlatılıyor…" else "Ekran paylaşımı bekleniyor…",
                     color    = Color(0xFFB5BAC1),
                     fontSize = 13.sp,
                 )
             }
         }
+
+        // ── Bottom control bar — fade in on hover ─────────────────────────────
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .hoverable(controlsInteraction),
+            contentAlignment = Alignment.BottomCenter,
+        ) {
+            AnimatedVisibility(
+                visible = showControls,
+                enter   = fadeIn(),
+                exit    = fadeOut(),
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(Color(0xCC111214))
+                        .padding(horizontal = 20.dp, vertical = 12.dp),
+                    verticalAlignment   = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(16.dp),
+                ) {
+                    // Volume slider (hidden for self-view — no remote audio)
+                    if (!isSelfView) {
+                        Text("🔊", fontSize = 14.sp)
+                        Slider(
+                            value          = peerVolume,
+                            onValueChange  = onVolumeChange,
+                            valueRange     = 0f..2f,
+                            modifier       = Modifier.weight(1f).height(28.dp),
+                            colors         = SliderDefaults.colors(
+                                thumbColor         = Color(0xFF5865F2),
+                                activeTrackColor   = Color(0xFF5865F2),
+                                inactiveTrackColor = Color(0xFF4E5058),
+                            ),
+                        )
+                        Text(
+                            text     = "${(peerVolume * 100).toInt()}%",
+                            color    = Color(0xFFB5BAC1),
+                            fontSize = 11.sp,
+                            modifier = Modifier.width(36.dp),
+                        )
+                    } else {
+                        Spacer(Modifier.weight(1f))
+                    }
+
+                    // Stop-watching button
+                    FilledTonalButton(
+                        onClick = onStop,
+                        colors  = ButtonDefaults.filledTonalButtonColors(
+                            containerColor = Color(0xFF3A2022),
+                            contentColor   = Color(0xFFED4245),
+                        ),
+                        shape = RoundedCornerShape(8.dp),
+                    ) {
+                        Text(
+                            text       = if (isSelfView) "Önizlemeyi Kapat" else "İzlemeyi Durdur",
+                            fontSize   = 12.sp,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                    }
+                }
+            }
+        }
+
+        // FPS overlay — top-right corner (only when frame is present)
+        if (bmp != null) {
+            Box(
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(10.dp)
+                    .clip(RoundedCornerShape(6.dp))
+                    .background(Color.Black.copy(alpha = 0.55f))
+                    .padding(horizontal = 8.dp, vertical = 3.dp),
+            ) {
+                Text(
+                    text       = if (isSelfView) "CANLI" else "İZLİYORSUN",
+                    color      = if (isSelfView) Color(0xFFED4245) else Color(0xFF5865F2),
+                    fontSize   = 11.sp,
+                    fontWeight = FontWeight.Bold,
+                )
+            }
+        }
     }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ScreenShareView (legacy) — kept for backwards compatibility, wraps StreamViewer
+// ─────────────────────────────────────────────────────────────────────────────
+
+@Composable
+fun ScreenShareView(
+    receiver: ScreenReceiver,
+    modifier: Modifier = Modifier,
+) {
+    StreamViewer(
+        frameFlow  = receiver.frame,
+        onStop     = {},
+        modifier   = modifier,
+    )
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -99,20 +194,6 @@ fun ScreenShareView(
 /**
  * A minimal control strip shown to the broadcaster.
  * Place this above or below the chat area when screen sharing is active.
- *
- * Usage:
- * ```kotlin
- * var broadcaster by remember { mutableStateOf<ScreenBroadcaster?>(null) }
- *
- * ScreenShareBar(
- *     isSharing  = broadcaster != null,
- *     onStart    = {
- *         broadcaster = ScreenBroadcaster(socket) { peers }
- *         broadcaster!!.start()
- *     },
- *     onStop     = { broadcaster?.stop(); broadcaster = null },
- * )
- * ```
  */
 @Composable
 fun ScreenShareBar(
@@ -146,7 +227,7 @@ fun ScreenShareBar(
             )
             FilledTonalButton(
                 onClick = onStop,
-                colors  = androidx.compose.material3.ButtonDefaults.filledTonalButtonColors(
+                colors  = ButtonDefaults.filledTonalButtonColors(
                     containerColor = Color(0xFF3A2022),
                     contentColor   = Color(0xFFED4245),
                 ),
@@ -163,7 +244,7 @@ fun ScreenShareBar(
             )
             FilledTonalButton(
                 onClick = onStart,
-                colors  = androidx.compose.material3.ButtonDefaults.filledTonalButtonColors(
+                colors  = ButtonDefaults.filledTonalButtonColors(
                     containerColor = Color(0xFF5865F2),
                     contentColor   = Color.White,
                 ),

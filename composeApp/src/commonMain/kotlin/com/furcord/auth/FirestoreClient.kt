@@ -33,7 +33,7 @@ data class ChatMessage(
 )
 
 /** Ses kanalına bağlı bir eşin bağlantı bilgileri. */
-data class VoicePeer(val uid: String, val ip: String, val port: Int)
+data class VoicePeer(val uid: String, val ip: String, val port: Int, val isBroadcasting: Boolean = false)
 
 /** Aktif DM sohbeti — sol panelde ve FAB'da gösterilir. */
 data class DmConversation(
@@ -297,8 +297,16 @@ object FirestoreClient {
         serverId: String, channelId: String, uid: String,
         ip: String, port: Int, idToken: String,
     ) = withContext(Dispatchers.IO) {
-        val body = """{"fields":{"channelId":{"stringValue":"$channelId"},"ip":{"stringValue":"$ip"},"port":{"integerValue":"$port"}}}"""
+        val body = """{"fields":{"channelId":{"stringValue":"$channelId"},"ip":{"stringValue":"$ip"},"port":{"integerValue":"$port"},"isBroadcasting":{"booleanValue":false}}}"""
         request("PATCH", "$BASE/servers/$serverId/voicePeers/$uid", idToken = idToken, body = body)
+    }
+
+    /** Yayın durumunu günceller (start/stop broadcasting). */
+    suspend fun setBroadcastingStatus(
+        serverId: String, uid: String, isBroadcasting: Boolean, idToken: String,
+    ) = withContext(Dispatchers.IO) {
+        val body = """{"fields":{"isBroadcasting":{"booleanValue":$isBroadcasting}}}"""
+        request("PATCH", "$BASE/servers/$serverId/voicePeers/$uid?updateMask.fieldPaths=isBroadcasting", idToken = idToken, body = body)
     }
 
     /** Aynı ses kanalındaki diğer kullanıcıların bağlantı bilgilerini getirir. */
@@ -325,7 +333,7 @@ object FirestoreClient {
             if (chId != filterChannelId) return@mapNotNull null
             val ip   = f.str("ip").takeIf { it.isNotEmpty() } ?: return@mapNotNull null
             val port = f["port"]?.integer?.toIntOrNull() ?: return@mapNotNull null
-            VoicePeer(uid = uid, ip = ip, port = port)
+            VoicePeer(uid = uid, ip = ip, port = port, isBroadcasting = f.bool("isBroadcasting"))
         }
     }
 

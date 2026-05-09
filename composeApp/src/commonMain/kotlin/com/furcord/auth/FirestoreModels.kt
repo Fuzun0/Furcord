@@ -77,3 +77,6 @@ internal fun Map<String, FsValue>.str(key: String): String = this[key]?.string ?
 
 /** Returns the integerValue parsed as Long, or 0 if missing/null. */
 internal fun Map<String, FsValue>.lng(key: String): Long = this[key]?.integer?.toLongOrNull() ?: 0L
+
+/** Returns the booleanValue or false if missing/null. */
+internal fun Map<String, FsValue>.bool(key: String): Boolean = this[key]?.boolean ?: false

@@ -40,6 +40,7 @@ import com.furcord.auth.VoicePeer
 import com.furcord.auth.VoiceChannel
 import com.furcord.voice.VoiceEngine
 import com.furcord.screenshare.ScreenShareManager
+import com.furcord.screenshare.StreamViewerComposable
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Cast
 import kotlinx.coroutines.Dispatchers
@@ -274,8 +275,10 @@ private fun ChannelRow(
     isSelected: Boolean,
     activeUsers: List<ActiveUser>,
     currentUid: String,
+    broadcastingUids: Set<String> = emptySet(),
     onClick: () -> Unit,
     onUserRightClick: ((ActiveUser) -> Unit)? = null,
+    onWatchStream: ((uid: String) -> Unit)? = null,
 ) {
     val rowInteraction = remember { MutableInteractionSource() }
     val hovered by rowInteraction.collectIsHoveredAsState()
@@ -330,12 +333,17 @@ private fun ChannelRow(
         // Active users beneath the channel row
         if (activeUsers.isNotEmpty()) {
             activeUsers.forEach { u ->
-                val isSelf = u.uid == currentUid
+                val isSelf        = u.uid == currentUid
+                val isLive        = u.uid in broadcastingUids
+                val userInteract  = remember(u.uid) { MutableInteractionSource() }
+                val userHovered   by userInteract.collectIsHoveredAsState()
+
                 Box {
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
                             .padding(start = 30.dp, end = 8.dp, top = 2.dp, bottom = 2.dp)
+                            .hoverable(userInteract)
                             .then(
                                 if (!isSelf && onUserRightClick != null) {
                                     Modifier.pointerInput(u.uid) {
@@ -353,7 +361,7 @@ private fun ChannelRow(
                                 } else Modifier
                             ),
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
                     ) {
                         UserAvatar(
                             displayName = u.username,
@@ -366,7 +374,50 @@ private fun ChannelRow(
                             color = if (isSelf) Color(0xFF23A55A) else Color(0xFFB5BAC1),
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f),
                         )
+                        // LIVE badge
+                        if (isLive) {
+                            Box(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(3.dp))
+                                    .background(Color(0xFFED4245))
+                                    .padding(horizontal = 4.dp, vertical = 1.dp),
+                            ) {
+                                Text(
+                                    text       = "YAYINDA",
+                                    fontSize   = 8.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color      = Color.White,
+                                )
+                            }
+                        }
+                        // Hover-to-watch button
+                        if (isLive && userHovered && onWatchStream != null) {
+                            Box(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(4.dp))
+                                    .background(Color(0xFF5865F2))
+                                    .padding(horizontal = 6.dp, vertical = 2.dp)
+                                    .pointerInput(u.uid) {
+                                        awaitPointerEventScope {
+                                            while (true) {
+                                                val e = awaitPointerEvent()
+                                                if (e.type == PointerEventType.Press &&
+                                                    !e.buttons.isSecondaryPressed
+                                                ) { onWatchStream(u.uid) }
+                                            }
+                                        }
+                                    },
+                            ) {
+                                Text(
+                                    text       = "Yayını İzle",
+                                    fontSize   = 9.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color      = Color.White,
+                                )
+                            }
+                        }
                     }
                 }
             }
@@ -704,6 +755,10 @@ fun ServerDetailScreen(
     var isMuted            by remember { mutableStateOf(false) }
     var isDeafened         by remember { mutableStateOf(false) }
     var isBroadcasting     by remember { mutableStateOf(false) }
+    // Ekran izleyici: null = chat göster, uid = o kullanıcının stream'ini göster
+    var activeStreamUid    by remember { mutableStateOf<String?>(null) }
+    // Yayın yapan peer uid'leri (Firestore'dan poll edilir)
+    val broadcastingUids   = remember { mutableStateOf<Set<String>>(emptySet()) }
     var loading            by remember { mutableStateOf(true) }
 
     // Chat state — önbellekten başla, re-entry'de mesajlar kaybolmasın
@@ -917,6 +972,16 @@ fun ServerDetailScreen(
                     .filter { it.uid != currentUser.uid }
                 VoiceEngine.updatePeers(peers)
                 ScreenShareManager.setPeers(peers.map { it.ip to (it.port + 100) })
+                // Track who is broadcasting
+                val liveUids = peers.filter { it.isBroadcasting }.map { it.uid }.toSet()
+                broadcastingUids.value = liveUids
+                // Auto-stop receiver if the broadcaster left
+                if (activeStreamUid != null && activeStreamUid != currentUser.uid &&
+                    activeStreamUid !in liveUids
+                ) {
+                    ScreenShareManager.stopReceiver()
+                    activeStreamUid = null
+                }
             } catch (_: Exception) {}
             delay(2_000)
         }
@@ -1272,8 +1337,21 @@ fun ServerDetailScreen(
                         isSelected       = selectedChannelId == ch.id,
                         activeUsers      = channelUsers[ch.id] ?: emptyList(),
                         currentUid       = currentUser.uid,
+                        broadcastingUids = broadcastingUids.value +
+                            if (isBroadcasting) setOf(currentUser.uid) else emptySet(),
                         onClick          = { joinChannel(ch) },
                         onUserRightClick = { u -> contextMenuUser = u; showVolumeSlider = false },
+                        onWatchStream    = { uid ->
+                            if (uid == currentUser.uid) {
+                                // Self-view — broadcast ön izleme
+                                activeStreamUid = uid
+                            } else {
+                                // Başka biri izleniyor
+                                ScreenShareManager.stopReceiver()
+                                ScreenShareManager.startReceiver()
+                                activeStreamUid = uid
+                            }
+                        },
                     )
                 }
                 if (channels.isEmpty() && !loading) {
@@ -1444,7 +1522,26 @@ fun ServerDetailScreen(
         }   // end sidebar Box
 
         // ── Main content area ─────────────────────────────────────────────────
-        if (showTextChannel) {
+        // ── StreamViewer: yayın izleniyorsa chat'in yerine geçer ─────────────
+        val watchingUid = activeStreamUid
+        if (watchingUid != null) {
+            val isSelf = watchingUid == currentUser.uid
+            StreamViewerComposable(
+                isSelfView     = isSelf,
+                peerVolume     = if (isSelf) 1f else (peerVolumes[watchingUid] ?: 1f),
+                onVolumeChange = { vol ->
+                    if (!isSelf) {
+                        peerVolumes[watchingUid] = vol
+                        VoiceEngine.setPeerVolume(watchingUid, vol)
+                    }
+                },
+                onStop = {
+                    if (!isSelf) ScreenShareManager.stopReceiver()
+                    activeStreamUid = null
+                },
+                modifier   = Modifier.weight(1f).fillMaxHeight(),
+            )
+        } else if (showTextChannel) {
             // ── # genel metin kanalı ─────────────────────────────────────────
             Column(
                 modifier = Modifier

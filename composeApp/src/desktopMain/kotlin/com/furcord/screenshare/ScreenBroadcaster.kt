@@ -1,9 +1,15 @@
 package com.furcord.screenshare
 
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.toComposeImageBitmap
 import kotlinx.coroutines.*
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import org.bytedeco.ffmpeg.global.avcodec
 import org.bytedeco.javacv.FFmpegFrameGrabber
 import org.bytedeco.javacv.FFmpegFrameRecorder
+import org.bytedeco.javacv.Java2DFrameConverter
 import java.io.ByteArrayOutputStream
 import java.net.DatagramPacket
 import java.net.DatagramSocket
@@ -65,7 +71,10 @@ class ScreenBroadcaster(
 
     @Volatile var isRunning  = false; private set
     @Volatile var bytesSent  = 0L;    private set // diagnostic counter
-
+    /** Local preview — the broadcaster can see their own stream quality. */
+    private val _localFrame = MutableStateFlow<ImageBitmap?>(null)
+    val localFrame: StateFlow<ImageBitmap?> = _localFrame.asStateFlow()
+    private val localConverter = Java2DFrameConverter()
     // ── Initialisation ────────────────────────────────────────────────────────
 
     init {
@@ -123,6 +132,12 @@ class ScreenBroadcaster(
                 try {
                     // 1. Grab the next video frame from the screen
                     val frame = grabber.grabImage() ?: continue
+
+                    // 1b. Publish a local preview frame (self-view)
+                    runCatching {
+                        localConverter.getBufferedImage(frame)?.toComposeImageBitmap()
+                            ?.let { _localFrame.value = it }
+                    }
 
                     // 2. Encode to H264/mpegts — writes TS packets into baos
                     recorder.record(frame)

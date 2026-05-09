@@ -1,9 +1,12 @@
 package com.furcord.screenshare
 
+import androidx.compose.ui.graphics.ImageBitmap
+import kotlinx.coroutines.flow.StateFlow
+
 /**
  * Platform-agnostic screen-share controller.
  *
- * The actual implementation (desktopMain) wraps [ScreenBroadcaster].
+ * The actual implementation (desktopMain) wraps [ScreenBroadcaster] and [ScreenReceiver].
  * Peers are expressed as plain (ip, port) pairs so this interface
  * stays free of JVM-specific types like InetSocketAddress.
  */
@@ -16,4 +19,12 @@ expect object ScreenShareManager {
     fun stop()
     /** Whether a broadcast is currently in progress. */
     val isActive: Boolean
+    /** Local preview frames from the broadcaster (self-view). Null when not broadcasting. */
+    val localFrame: StateFlow<ImageBitmap?>
+    /** Decoded frames from a remote broadcaster. Null frames when no stream yet. */
+    val receiverFrame: StateFlow<ImageBitmap?>
+    /** Start receiving from a remote broadcaster. No-op if already receiving. */
+    fun startReceiver()
+    /** Stop receiving and release decoder resources. */
+    fun stopReceiver()
 }
