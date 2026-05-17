@@ -127,6 +127,11 @@ object LiveKitRoom {
     private val pubCandidateQueue = mutableListOf<RTCIceCandidate>()
     private val subCandidateQueue = mutableListOf<RTCIceCandidate>()
 
+    // Renegotiation guard: once we've sent the initial offer we suppress all
+    // subsequent onRenegotiationNeeded events.  ICE restart (FAILED → restartIce)
+    // resets this flag so a fresh offer can be generated.
+    @Volatile private var pubOfferSent = false
+
     // =========================================================================
     // PUBLIC API
     // =========================================================================
@@ -186,7 +191,11 @@ object LiveKitRoom {
                                 catch (ex: Exception) { ex.printStackTrace() }
                             }
                         }
-                        val answerSdp = RTCSessionDescription(RTCSdpType.ANSWER, event.sdp.sdp)
+                        // Munge the server's answer just like our offer, so the
+                        // negotiated Opus params (usedtx=0, cbr=1, 128kbps) are
+                        // actually applied to the local encoder — not the server's defaults.
+                        val mungedAnswerSdp = mungeOpusSdp(event.sdp.sdp)
+                        val answerSdp = RTCSessionDescription(RTCSdpType.ANSWER, mungedAnswerSdp)
                         gcJail.add(answerSdp)
                         pubPc?.setRemoteDescription(answerSdp, pubSetRemoteObs!!)
                     }
@@ -264,6 +273,7 @@ object LiveKitRoom {
     fun leave() {
         pubRemoteDescSet = false
         subRemoteDescSet = false
+        pubOfferSent = false
         synchronized(pubCandidateQueue) { pubCandidateQueue.clear() }
         synchronized(subCandidateQueue) { subCandidateQueue.clear() }
         try { signalingClient?.disconnect() } catch (_: Exception) {}
@@ -295,12 +305,24 @@ object LiveKitRoom {
             }
             override fun onRenegotiationNeeded() {
                 try {
+                    if (pubOfferSent) {
+                        println("[LiveKit] Publisher: onRenegotiationNeeded SUPPRESSED (state=${pubPc?.getSignalingState()})")
+                        return
+                    }
+                    pubOfferSent = true
                     println("[LiveKit] Publisher: onRenegotiationNeeded → sending offer")
                     scope.launch { publisherNegotiate(sig) }
                 } catch (e: Exception) { e.printStackTrace() }
             }
             override fun onIceConnectionChange(s: RTCIceConnectionState) {
-                try { println("[LiveKit] Publisher ICE → $s") } catch (e: Exception) { e.printStackTrace() }
+                try {
+                    println("[LiveKit] Publisher ICE → $s")
+                    if (s == RTCIceConnectionState.FAILED) {
+                        println("[LiveKit] Publisher ICE FAILED — resetting offer flag and restarting ICE")
+                        pubOfferSent = false
+                        pubPc?.restartIce()
+                    }
+                } catch (e: Exception) { e.printStackTrace() }
             }
             override fun onConnectionChange(s: RTCPeerConnectionState) {
                 try { println("[LiveKit] Publisher PC  → $s") } catch (e: Exception) { e.printStackTrace() }
