@@ -1009,12 +1009,24 @@ fun ServerDetailScreen(
     LaunchedEffect(isDeafened) { VoiceEngine.isDeafened = isDeafened }
 
     // ── isBroadcasting → ScreenShareManager start/stop ───────────────────────
+    // KEY FIX: on initial composition isBroadcasting=false — we must NOT call
+    // ScreenShareManager.stop() then, because stop() calls LiveKitRoom.stopPublisher()
+    // which (even as a no-op now) was being triggered before any WebRTC work started.
+    // We track the previous value and only stop when transitioning true→false.
+    val wasBroadcasting = remember { androidx.compose.runtime.mutableStateOf(false) }
     LaunchedEffect(isBroadcasting) {
-        if (isBroadcasting) ScreenShareManager.start() else ScreenShareManager.stop()
-        // Kendi yayınını durdurduğunda PiP önizlemesini de kapat
-        if (!isBroadcasting && activeStreamUid == currentUser.uid) {
-            activeStreamUid = null
-            isPiPMode = false
+        if (isBroadcasting) {
+            wasBroadcasting.value = true
+            ScreenShareManager.start()
+        } else if (wasBroadcasting.value) {
+            // Only stop if we were previously broadcasting (true→false transition)
+            wasBroadcasting.value = false
+            ScreenShareManager.stop()
+            // Kendi yayınını durdurduğunda PiP önizlemesini de kapat
+            if (activeStreamUid == currentUser.uid) {
+                activeStreamUid = null
+                isPiPMode = false
+            }
         }
     }
 
