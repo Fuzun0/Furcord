@@ -39,12 +39,8 @@ import com.furcord.auth.MessageStore
 import com.furcord.auth.VoicePeer
 import com.furcord.auth.VoiceChannel
 import com.furcord.voice.VoiceEngine
-import com.furcord.screenshare.PiPStreamWindow
-import com.furcord.screenshare.ScreenShareManager
-import com.furcord.screenshare.StreamViewerComposable
 import androidx.compose.foundation.Image
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Cast
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Fullscreen
 import androidx.compose.material.icons.filled.Minimize
@@ -285,10 +281,8 @@ private fun ChannelRow(
     isSelected: Boolean,
     activeUsers: List<ActiveUser>,
     currentUid: String,
-    broadcastingUids: Set<String> = emptySet(),
     onClick: () -> Unit,
     onUserRightClick: ((ActiveUser) -> Unit)? = null,
-    onWatchStream: ((uid: String) -> Unit)? = null,
 ) {
     val rowInteraction = remember { MutableInteractionSource() }
     val hovered by rowInteraction.collectIsHoveredAsState()
@@ -344,9 +338,7 @@ private fun ChannelRow(
         if (activeUsers.isNotEmpty()) {
             activeUsers.forEach { u ->
                 val isSelf        = u.uid == currentUid
-                val isLive        = u.uid in broadcastingUids
                 val userInteract  = remember(u.uid) { MutableInteractionSource() }
-                val userHovered   by userInteract.collectIsHoveredAsState()
 
                 Box {
                     Row(
@@ -386,48 +378,6 @@ private fun ChannelRow(
                             overflow = TextOverflow.Ellipsis,
                             modifier = Modifier.weight(1f),
                         )
-                        // LIVE badge
-                        if (isLive) {
-                            Box(
-                                modifier = Modifier
-                                    .clip(RoundedCornerShape(3.dp))
-                                    .background(Color(0xFFED4245))
-                                    .padding(horizontal = 4.dp, vertical = 1.dp),
-                            ) {
-                                Text(
-                                    text       = "YAYINDA",
-                                    fontSize   = 8.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    color      = Color.White,
-                                )
-                            }
-                        }
-                        // Hover-to-watch button
-                        if (isLive && userHovered && onWatchStream != null) {
-                            Box(
-                                modifier = Modifier
-                                    .clip(RoundedCornerShape(4.dp))
-                                    .background(Color(0xFF5865F2))
-                                    .padding(horizontal = 6.dp, vertical = 2.dp)
-                                    .pointerInput(u.uid) {
-                                        awaitPointerEventScope {
-                                            while (true) {
-                                                val e = awaitPointerEvent()
-                                                if (e.type == PointerEventType.Press &&
-                                                    !e.buttons.isSecondaryPressed
-                                                ) { onWatchStream(u.uid) }
-                                            }
-                                        }
-                                    },
-                            ) {
-                                Text(
-                                    text       = "Yayını İzle",
-                                    fontSize   = 9.sp,
-                                    fontWeight = FontWeight.SemiBold,
-                                    color      = Color.White,
-                                )
-                            }
-                        }
                     }
                 }
             }
@@ -754,7 +704,6 @@ fun ServerDetailScreen(
     onLeaveServer: () -> Unit,
     onUserUpdated: (newDisplayName: String, newPhotoURL: String) -> Unit = { _, _ -> },
     onOpenDm: ((uid: String, name: String) -> Unit)? = null,
-    onStreamFullscreenChange: ((Boolean) -> Unit)? = null,
 ) {
     val scope = rememberCoroutineScope()
 
@@ -765,14 +714,6 @@ fun ServerDetailScreen(
     var showTextChannel    by remember { mutableStateOf(true) }   // true = # genel seçili
     var isMuted            by remember { mutableStateOf(false) }
     var isDeafened         by remember { mutableStateOf(false) }
-    var isBroadcasting     by remember { mutableStateOf(false) }
-    // Ekran izleyici: null = chat göster, uid = o kullanıcının stream'ini göster
-    var activeStreamUid    by remember { mutableStateOf<String?>(null) }
-    // PiP modu: true ise stream küçük pencerede gösterilir, chat görünür kalır
-    var isPiPMode          by remember { mutableStateOf(false) }
-    // Yayın yapan peer uid'leri (Firestore'dan poll edilir)
-    // mutableStateOf kullanılınca Compose her değişiklikte otomatik recompose yapar
-    var broadcastingUids   by remember { mutableStateOf<Set<String>>(emptySet()) }
     var loading            by remember { mutableStateOf(true) }
 
     // Chat state — önbellekten başla, re-entry'de mesajlar kaybolmasın
@@ -968,7 +909,6 @@ fun ServerDetailScreen(
                 runCatching { FirestoreClient.deletePresence(serverId, currentUser.uid, currentUser.idToken) }
             }
             VoiceEngine.stop()
-            ScreenShareManager.stop()
         }
     }
 
@@ -977,7 +917,6 @@ fun ServerDetailScreen(
         val cid = connectedChannelId
         if (cid == null) {
             VoiceEngine.updatePeers(emptyList())
-            ScreenShareManager.setPeers(emptyList())
             return@LaunchedEffect
         }
         while (true) {
@@ -985,20 +924,6 @@ fun ServerDetailScreen(
                 val peers = FirestoreClient.getVoicePeers(serverId, cid, currentUser.idToken)
                     .filter { it.uid != currentUser.uid }
                 VoiceEngine.updatePeers(peers)
-                ScreenShareManager.setPeers(peers.map { it.ip to (it.port + 100) })
-                // Track who is broadcasting
-                val liveUids = peers.filter { it.isBroadcasting }.map { it.uid }.toSet()
-                // Yeni Set örneği atanınca Compose recomposition'ı garantilenir
-                if (broadcastingUids != liveUids) {
-                    broadcastingUids = liveUids
-                }
-                // Auto-stop receiver if the broadcaster left
-                if (activeStreamUid != null && activeStreamUid != currentUser.uid &&
-                    activeStreamUid !in broadcastingUids
-                ) {
-                    ScreenShareManager.stopReceiver()
-                    activeStreamUid = null
-                }
             } catch (_: Exception) {}
             delay(2_000)
         }
@@ -1007,46 +932,6 @@ fun ServerDetailScreen(
     // ── Sync mute/deafen state with VoiceEngine ───────────────────────────────
     LaunchedEffect(isMuted)    { VoiceEngine.isMuted    = isMuted    }
     LaunchedEffect(isDeafened) { VoiceEngine.isDeafened = isDeafened }
-
-    // ── isBroadcasting → ScreenShareManager start/stop ───────────────────────
-    // KEY FIX: on initial composition isBroadcasting=false — we must NOT call
-    // ScreenShareManager.stop() then, because stop() calls LiveKitRoom.stopPublisher()
-    // which (even as a no-op now) was being triggered before any WebRTC work started.
-    // We track the previous value and only stop when transitioning true→false.
-    val wasBroadcasting = remember { androidx.compose.runtime.mutableStateOf(false) }
-    LaunchedEffect(isBroadcasting) {
-        if (isBroadcasting) {
-            wasBroadcasting.value = true
-            ScreenShareManager.start()
-        } else if (wasBroadcasting.value) {
-            // Only stop if we were previously broadcasting (true→false transition)
-            wasBroadcasting.value = false
-            ScreenShareManager.stop()
-            // Kendi yayınını durdurduğunda PiP önizlemesini de kapat
-            if (activeStreamUid == currentUser.uid) {
-                activeStreamUid = null
-                isPiPMode = false
-            }
-        }
-    }
-
-    // ── isBroadcasting → Firestore PATCH (sadece kanal bağlıyken) ────────────
-    LaunchedEffect(isBroadcasting, connectedChannelId) {
-        val cid = connectedChannelId ?: return@LaunchedEffect
-        runCatching {
-            FirestoreClient.setBroadcastingStatus(
-                serverId       = serverId,
-                uid            = currentUser.uid,
-                isBroadcasting = isBroadcasting,
-                idToken        = currentUser.idToken,
-            )
-        }
-    }
-
-    // ── Tam ekran / PiP değişikliğini üst katmana bildir ─────────────────────
-    LaunchedEffect(activeStreamUid, isPiPMode) {
-        onStreamFullscreenChange?.invoke(activeStreamUid != null && !isPiPMode)
-    }
 
     // ── Sunucu sahipliğini yükle ──────────────────────────────────────────────
     LaunchedEffect(serverId) {
@@ -1395,23 +1280,8 @@ fun ServerDetailScreen(
                         isSelected       = selectedChannelId == ch.id,
                         activeUsers      = channelUsers[ch.id] ?: emptyList(),
                         currentUid       = currentUser.uid,
-                        broadcastingUids = broadcastingUids +
-                            if (isBroadcasting) setOf(currentUser.uid) else emptySet(),
                         onClick          = { joinChannel(ch) },
                         onUserRightClick = { u -> contextMenuUser = u; showVolumeSlider = false },
-                        onWatchStream    = { uid ->
-                            if (uid == currentUser.uid) {
-                                // Kendi yayını — Droste etkisini önlemek için otomatik PiP
-                                activeStreamUid = uid
-                                isPiPMode = true
-                            } else {
-                                // Başka birinin yayını — tam ekran
-                                ScreenShareManager.stopReceiver()
-                                ScreenShareManager.startReceiver()
-                                activeStreamUid = uid
-                                isPiPMode = false
-                            }
-                        }
                     )
                 }
                 if (channels.isEmpty() && !loading) {
@@ -1515,17 +1385,6 @@ fun ServerDetailScreen(
                     tint    = if (isDeafened) Color(0xFFF23F43) else Color(0xFFB5BAC1),
                     onClick = { isDeafened = !isDeafened },
                 )
-                IconButton(
-                    onClick = { isBroadcasting = !isBroadcasting },
-                    modifier = Modifier.size(28.dp),
-                ) {
-                    Icon(
-                        imageVector        = Icons.Default.Cast,
-                        contentDescription = if (isBroadcasting) "Ekran Paylaşımını Durdur" else "Ekranı Paylaş",
-                        tint               = if (isBroadcasting) Color(0xFF5865F2) else Color(0xFFB5BAC1),
-                        modifier           = Modifier.size(18.dp),
-                    )
-                }
             }
         }   // end sidebar Column
 
@@ -1578,29 +1437,7 @@ fun ServerDetailScreen(
         }   // end sidebar Box
 
         // ── Main content area ─────────────────────────────────────────────────
-        // ── StreamViewer: tam ekranda chat yerine göster (PiP değilse) ────────
-        val watchingUid = activeStreamUid
-        if (watchingUid != null && !isPiPMode) {
-            val isSelf = watchingUid == currentUser.uid
-            StreamViewerComposable(
-                isSelfView     = isSelf,
-                peerVolume     = if (isSelf) 1f else (peerVolumes[watchingUid] ?: 1f),
-                onVolumeChange = { vol ->
-                    if (!isSelf) {
-                        peerVolumes[watchingUid] = vol
-                        VoiceEngine.setPeerVolume(watchingUid, vol)
-                    }
-                },
-                onStop = {
-                    if (!isSelf) ScreenShareManager.stopReceiver()
-                    activeStreamUid = null
-                    isPiPMode = false
-                },
-                isPiPMode   = false,
-                onTogglePiP = { isPiPMode = true },
-                modifier    = Modifier.weight(1f).fillMaxHeight(),
-            )
-        } else if (showTextChannel) {
+        if (showTextChannel) {
             // ── # genel metin kanalı ─────────────────────────────────────────
             Column(
                 modifier = Modifier
@@ -1791,31 +1628,6 @@ fun ServerDetailScreen(
             }
         }
     }   // end Row
-
-    // ── PiP — OS-level always-on-top Window (aktif yayın varken ve isPiPMode=true) ──
-    val pipUid = if (isPiPMode) activeStreamUid else null
-    if (pipUid != null) {
-        val isSelfPiP = pipUid == currentUser.uid
-        PiPStreamWindow(
-            isSelfView     = isSelfPiP,
-            peerVolume     = if (isSelfPiP) 1f else (peerVolumes[pipUid] ?: 1f),
-            onVolumeChange = { vol ->
-                if (!isSelfPiP) {
-                    peerVolumes[pipUid] = vol
-                    VoiceEngine.setPeerVolume(pipUid, vol)
-                }
-            },
-            onExpand = {
-                // PiP'i kapat, tam ekran StreamViewer'a geç
-                isPiPMode = false
-            },
-            onClose  = {
-                if (!isSelfPiP) ScreenShareManager.stopReceiver()
-                activeStreamUid = null
-                isPiPMode       = false
-            },
-        )
-    }
     }   // end Box(fillMaxSize)
 }
 
