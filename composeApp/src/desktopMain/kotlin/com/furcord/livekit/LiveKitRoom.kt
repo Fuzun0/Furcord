@@ -550,7 +550,8 @@ object LiveKitRoom {
     // =========================================================================
     // SDP MUNGE — Opus voice quality tuning
     // DTX=off    → no packet gaps during silence (removes choppiness)
-    // 64 kbps    → Discord-level audio quality
+    // VBR 64kbps → Discord-level quality; VBR lets FEC use extra bits on loss
+    //              (CBR was preventing FEC headroom → glitches on mobile)
     // FEC=on     → single-packet-loss correction
     // minptime=10→ 10 ms packet duration (Discord default)
     // =========================================================================
@@ -558,7 +559,7 @@ object LiveKitRoom {
         val pt = Regex("""a=rtpmap:(\d+) opus/48000""").find(sdp)
             ?.groupValues?.get(1)
             ?: return sdp.also { println("[LiveKit] SDP munge: Opus PT not found") }
-        val newFmtp   = "a=fmtp:$pt minptime=10;useinbandfec=1;usedtx=0;cbr=1;maxaveragebitrate=128000"
+        val newFmtp   = "a=fmtp:$pt minptime=10;useinbandfec=1;usedtx=0;maxaveragebitrate=64000"
         val fmtpRegex = Regex("""a=fmtp:$pt [^\r\n]*""")
         return if (fmtpRegex.containsMatchIn(sdp))
             fmtpRegex.replace(sdp, newFmtp)
