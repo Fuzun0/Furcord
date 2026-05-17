@@ -71,25 +71,11 @@ object LiveKitRoom {
 
     // =========================================================================
     // PEER CONNECTION FACTORY
-    // Single shared factory — default native ADM+APM (WASAPI on Windows).
-    // kWindowsCoreAudio2 uses a different C++ implementation that does NOT default
-    // to kDefaultCommunicationDevice (eCommunications WASAPI endpoint).
-    // kWindowsCoreAudio (the default) opens both mic and speaker on the
-    // eCommunications endpoint → Windows activates system-level NS/AEC/AGC APOs.
-    // kWindowsCoreAudio2 opens devices on the eConsole/multimedia endpoint → no
-    // Windows voice processing layer, audio quality is preserved as-is.
-    // ADM is kept alive in gcJail (singleton also holds a strong ref) so the
-    // underlying C++ object is never finalised while the factory is active.
+    // Default native ADM (kWindowsCoreAudio / WASAPI shared mode on Windows).
     // =========================================================================
-    private val adm: AudioDeviceModule by lazy {
-        AudioDeviceModule(AudioLayer.kWindowsCoreAudio2).also {
-            gcJail.add(it)
-            println("[LiveKit] AudioDeviceModule created (kWindowsCoreAudio2 — eConsole WASAPI)")
-        }
-    }
     private val factory: PeerConnectionFactory by lazy {
-        PeerConnectionFactory(adm).also {
-            println("[LiveKit] PeerConnectionFactory created (kWindowsCoreAudio2 ADM, no Windows voice APOs)")
+        PeerConnectionFactory().also {
+            println("[LiveKit] PeerConnectionFactory created (default ADM)")
         }
     }
 
@@ -362,27 +348,29 @@ object LiveKitRoom {
         println("[LiveKit] Publisher PC created")
     }
 
-    // ── Raw Audio Profile — ALL WebRTC APM processing OFF ────────────────────
-    // AEC/NS/AGC/HPF/TD/RED all disabled — raw PCM fed directly to Opus encoder.
-    // Desktop hardware already does its own audio processing; WebRTC software
-    // APM on top causes gating, pumping, and choppy artifacts.
+    // ── Audio Profile ────────────────────────────────────────────────────────
+    // AEC AÇIK  — WebRTC'nin tam audio pipeline'ını etkinleştirir; paket kaybı
+    //             geçişlerinde hard-cut yerine smooth blend/CNG yapar ("çıt" sesini önler).
+    //             Kulaklık kullanıcısında gerçek yankı yoktur; AEC sessizce geçer.
+    // NS  KAPALI — agresif gating kesilmesi ("kapı-aç-kapı-kapat" efekti) yapıyordu
+    // AGC KAPALI — hacim dalgalanmaları/pompalama yapıyordu
     // ─────────────────────────────────────────────────────────────────────────
     private fun attachMicrophone() {
         try {
             val opts = AudioOptions().apply {
-                echoCancellation     = false  // AEC KAPALI — masaüstünde gating kesilmesi yapıyordu
+                echoCancellation     = true   // AEC AÇIK  — tam pipeline + smooth packet-loss geçişi
                 noiseSuppression     = false  // NS  KAPALI — agresif gate kesik ses yapıyordu
                 autoGainControl      = false  // AGC KAPALI — hacim dalgalanmalarını önler
                 highpassFilter       = false  // HPF KAPALI — düşük frekans sıcaklığını korur
                 typingDetection      = false  // TD  KAPALI — tuş sesinde ses kesmez
-                residualEchoDetector = false  // RED KAPALI — AEC kapalıysa gereksiz
+                residualEchoDetector = false  // RED KAPALI
             }
             pubAudioSource = factory.createAudioSource(opts)
             pubAudioTrack  = factory.createAudioTrack("mic_audio", pubAudioSource!!)
             // addTrack returns an RTCRtpSender — jail immediately; GC of sender
             // finalizer calls native delete while the RTP pipeline is active.
             pubPc?.addTrack(pubAudioTrack!!, listOf("microphone"))?.also { gcJail.add(it) }
-            println("[LiveKit] Microphone attached — Raw Profile (AEC=off NS=off AGC=off HPF=off TD=off RED=off)")
+            println("[LiveKit] Microphone attached (AEC=on NS=off AGC=off HPF=off TD=off RED=off)")
         } catch (e: Exception) {
             println("[LiveKit] attachMicrophone FAILED:")
             e.printStackTrace()
@@ -407,7 +395,7 @@ object LiveKitRoom {
         }
         pc.setLocalDescription(mungedOffer, pubSetLocalDescObs!!)
         sig.sendOffer(mungedSdp)
-        println("[LiveKit] Offer sent (Opus DTX=off CBR=on FEC=on 128kbps)")
+        println("[LiveKit] Offer sent (Opus DTX=off VBR 64kbps FEC=on)")
     }
 
     // =========================================================================
