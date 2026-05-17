@@ -39,7 +39,6 @@ object VoiceEngine {
     private const val HEADER_BYTES        = 8
     private const val PACKET_BYTES        = HEADER_BYTES + FRAME_BYTES
     private const val BUFFER_FRAMES       = 20   // max jitter buffer kapasitesi (400ms)
-    private const val PRIME_FRAMES        = 2    // ilk oynatma öncesi doldurulması gereken frame sayısı (40ms)
     private const val GATE_HOLD_FRAMES    = 10   // noise gate hold süresi (10 × 20ms = 200ms)
 
     private val STUN_SERVERS = listOf(
@@ -62,7 +61,7 @@ object VoiceEngine {
     /** Mikrofon giriş kazanç: 0.0 = sessiz, 1.0 = normal, 2.0 = 2x. Disk'e kaydedilir. */
     @Volatile var micGain: Float = AppPrefs.micGain
     /** Gürültü kapısı eşiği. RMS bu değerin altındaysa frame gönderilmez. 0 = devre dışı. */
-    @Volatile var noiseGateThreshold: Float = 300f
+    @Volatile var noiseGateThreshold: Float = 150f
 
     var localPublicIp: String = ""; private set
     var localPort: Int = 0;         private set
@@ -85,9 +84,8 @@ object VoiceEngine {
 
     private class PeerBuffer(capacity: Int = SAMPLES_FRAME * BUFFER_FRAMES) {
         private val ring = ShortArray(capacity)
-        private var wPos   = 0
-        private var count  = 0
-        private var primed = false  // ilk kez oynatma başlamadan önce PRIME_FRAMES doldurulur
+        private var wPos  = 0
+        private var count = 0
 
         @Synchronized
         fun write(src: ByteArray, byteOffset: Int, byteLen: Int) {
@@ -101,8 +99,6 @@ object VoiceEngine {
             repeat(frames) {
                 if (count < ring.size) { ring[wPos] = bb.get(); wPos = (wPos + 1) % ring.size; count++ }
             }
-            // PRIME_FRAMES dolunca oynatmayı aç
-            if (!primed && count >= SAMPLES_FRAME * PRIME_FRAMES) primed = true
         }
 
         @Synchronized
@@ -114,11 +110,7 @@ object VoiceEngine {
             count -= avail
         }
 
-        @Synchronized fun hasData(): Boolean {
-            // Buffer tamamen boşaldıysa priming'i sıfırla (underrun recovery)
-            if (count == 0) primed = false
-            return primed && count >= SAMPLES_FRAME
-        }
+        @Synchronized fun hasData() = count >= SAMPLES_FRAME
     }
 
     // ── Start / Stop ──────────────────────────────────────────────────────────
