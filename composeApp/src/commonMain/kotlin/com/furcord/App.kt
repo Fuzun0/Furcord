@@ -231,11 +231,9 @@ fun App() {
                                 ) {
                                     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                                         val changelog = listOf(
-                                            "🎙️ Pürüzsüz Ses Deneyimi: Ses altyapımızı tamamen yeniledik. Artık arka plan gürültüsü olmadan, Discord kalitesinde kesintisiz sohbet edebilirsiniz.",
-                                            "💬 Mesaj Yanıtlama: Tıpkı WhatsApp'taki gibi artık önceki mesajları alıntılayıp cevap verebilirsiniz.",
-                                            "📋 Toplu Kopyalama: Birden fazla mesajı seçip tek seferde kopyalama özelliği eklendi.",
-                                            "⚡ Işık Hızında Görseller: Gönderilen resimler artık cihazınıza kaydediliyor. Eskilere dönüp bakarken resimler internet beklemeden anında açılacak!",
-                                            "🛠️ Yayın özelliği, size çok daha iyi bir deneyim sunabilmemiz için kısa süreliğine bakıma alındı.",
+                                            "🎙️ Daha Net Ses: Gürültü bastırma (NS) kapatıldı — agresif filtre kesik/robotik sesi gideriyor. Bitrate 128kbps'e yükseltildi.",
+                                            "🖱️ Sağ-Tık Menüsü: Mesajlara sağ tıklayarak 'Yanıtla' ve 'Kopyala' seçeneklerine ulaşabilirsiniz.",
+                                            "💬 Masaüstü Deneyimi: Mobil uzun-basma kaldırıldı, yerine native Desktop sağ-tık context menüsü getirildi.",
                                         )
                                         changelog.forEach { line ->
                                             Text("• $line", style = MaterialTheme.typography.bodySmall)
