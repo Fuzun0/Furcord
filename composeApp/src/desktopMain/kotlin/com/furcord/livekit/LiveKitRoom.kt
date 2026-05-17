@@ -1,258 +1,104 @@
-package com.furcord.livekit
+﻿package com.furcord.livekit
 
 import dev.onvoid.webrtc.*
-import dev.onvoid.webrtc.logging.LogSink
-import dev.onvoid.webrtc.logging.Logging
-import dev.onvoid.webrtc.logging.Logging.Severity
 import dev.onvoid.webrtc.media.audio.*
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
-import java.io.FileOutputStream
-import java.io.PrintStream
+import kotlinx.coroutines.suspendCancellableCoroutine
+import java.util.concurrent.CopyOnWriteArrayList
 
 /**
- * Audio-only LiveKit room.
+ * Audio-only LiveKit room â€” v1.0.59 tam yeniden yazÄ±m.
  *
- * VIDEO / SCREEN-SHARE INTENTIONALLY REMOVED.
- *
- * All webrtc-java JNI wrappers (AudioSource, AudioTrack, PeerConnection,
- * RTCDataChannel, observers, ICE candidates, session descriptions) are kept in
- * [gcJail] for their entire lifetime.  They are NEVER disposed or cleared.
- * Explicitly calling .close() or .dispose() on native objects while the C++
- * engine is still running races the GC thread → 0xc0000005 (jvm.dll+0x369b04).
- * The only safe teardown is disconnecting the OkHttp WebSocket.
+ * TEMEL KURALLAR:
+ *  - JNI wrappers ASLA dispose/close edilmez â†’ C++ native thread'leri async Ã§alÄ±ÅŸÄ±r,
+ *    Java-side teardown yarÄ±ÅŸ yaratÄ±r â†’ crash (jvm.dll+0x369b04).
+ *  - C++'Ä±n raw pointer tuttuÄŸu tÃ¼m nesneler [gcJail]'de kalÄ±r.
+ *  - SDP munge YOK â€” WebRTC'nin default Opus ayarlarÄ± (useinbandfec, uygun bitrate)
+ *    zaten iyidir; elle mÃ¼dahale geÃ§miÅŸte sorun yarattÄ±.
+ *  - AudioOptions default â€” WebRTC'nin dengeli AEC/NS/AGC'si en iyi starting point.
  */
 object LiveKitRoom {
 
-    // =========================================================================
-    // NATIVE WEBRTC LOGGING — must run before any native object is created
-    // =========================================================================
-    init {
-        try {
-            val logFile = java.io.File("livekit-trace.log").also { it.createNewFile() }
-            val fos     = FileOutputStream(logFile, false)
-            val tee     = object : java.io.OutputStream() {
-                val original = System.out
-                val file     = PrintStream(fos, true)
-                override fun write(b: Int)                           { original.write(b);            file.write(b)            }
-                override fun write(b: ByteArray)                     { original.write(b);            file.write(b)            }
-                override fun write(b: ByteArray, off: Int, len: Int) { original.write(b, off, len);  file.write(b, off, len)  }
-                override fun flush() { original.flush(); file.flush() }
-            }
-            System.setOut(PrintStream(tee, true))
-            println("[LiveKit] TRACE FILE: ${logFile.absolutePath}")
-        } catch (e: Exception) {
-            println("[LiveKit] WARNING: Could not open trace log: ${e.message}")
-        }
-
-        Logging.logToDebug(Severity.INFO)
-        Logging.logTimestamps(false)
-        Logging.logThreads(false)
-        Logging.addLogSink(Severity.WARNING, object : LogSink {
-            override fun onLogMessage(severity: Severity, message: String) {
-                println("[WebRTC-C++/${severity.name}] ${message.trimEnd()}")
-            }
-        })
-        println("[LiveKit] Native WebRTC logging enabled (WARNING+ forwarded to stdout)")
-    }
-
-    val serverUrl: String = System.getProperty("furcord.livekit.url",       "")
-    val apiKey:    String = System.getProperty("furcord.livekit.apiKey",     "")
-    val apiSecret: String = System.getProperty("furcord.livekit.apiSecret",  "")
+    val serverUrl: String = System.getProperty("furcord.livekit.url",      "")
+    val apiKey:    String = System.getProperty("furcord.livekit.apiKey",    "")
+    val apiSecret: String = System.getProperty("furcord.livekit.apiSecret", "")
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
-    // =========================================================================
-    // GC JAIL
-    // Every JNI wrapper object that C++ holds a raw pointer to MUST live here.
-    // Never call gcJail.clear() — do not dispose these objects.
-    // =========================================================================
-    private val gcJail = java.util.concurrent.CopyOnWriteArrayList<Any>()
+    // â”€â”€ GC Jail â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // C++'Ä±n raw pointer tuttuÄŸu her JNI wrapper nesnesi burada Ã¶mÃ¼r boyu yaÅŸar.
+    // gcJail.clear() ASLA Ã§aÄŸrÄ±lmaz.
+    private val gcJail = CopyOnWriteArrayList<Any>()
 
-    // =========================================================================
-    // PEER CONNECTION FACTORY
-    // Default native ADM (kWindowsCoreAudio / WASAPI shared mode on Windows).
-    // =========================================================================
-    private val factory: PeerConnectionFactory by lazy {
-        PeerConnectionFactory().also {
-            println("[LiveKit] PeerConnectionFactory created (default ADM)")
-        }
-    }
+    // â”€â”€ WebRTC Factory â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    private val factory: PeerConnectionFactory by lazy { PeerConnectionFactory() }
 
-    // =========================================================================
-    // SESSION STATE
-    // =========================================================================
-    private var signalingClient: LiveKitSignalingClient? = null
-    private var pubPc:  RTCPeerConnection?               = null
-    private var subPc:  RTCPeerConnection?      = null
-    private var iceServers: List<RTCIceServer>  = emptyList()
+    // â”€â”€ Session state â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    private var sig: LiveKitSignalingClient?   = null
+    private var pubPc: RTCPeerConnection?      = null
+    private var subPc: RTCPeerConnection?      = null
+    private var iceServers: List<RTCIceServer> = emptyList()
 
-    // RTCConfiguration must be class-level — local var becomes GC-eligible the
-    // moment createPeerConnection() returns, while C++ still reads the ICE list.
-    private var pubRtcConfig: RTCConfiguration? = null
-    private var subRtcConfig: RTCConfiguration? = null
+    // RTCConfiguration class-level olmalÄ± â€” createPeerConnection sonrasÄ± da
+    // C++ ICE listesini okur; local var GC'ye yenik dÃ¼ÅŸer.
+    private var pubCfg: RTCConfiguration? = null
+    private var subCfg: RTCConfiguration? = null
 
-    // =========================================================================
-    // AUDIO OBJECTS — class-level for full session lifetime
-    // =========================================================================
-    private var pubAudioSource: AudioTrackSource? = null
-    private var pubAudioTrack:  AudioTrack?       = null
+    // Ses nesneleri
+    private var audioSource: AudioTrackSource? = null
+    private var audioTrack:  AudioTrack?       = null
 
-    // =========================================================================
-    // SDP / PC OBSERVER STRONG REFERENCES
-    // C++ holds raw pointers to these observers and fires callbacks on native
-    // threads.  GC-collecting an observer mid-callback → 0xc0000005.
-    // =========================================================================
-    private var pubPcObserver:      PeerConnectionObserver?           = null
-    private var subPcObserver:      PeerConnectionObserver?           = null
-    private var pubCreateOfferObs:  CreateSessionDescriptionObserver? = null
-    private var subCreateAnswerObs: CreateSessionDescriptionObserver? = null
-    private var pubSetLocalDescObs: SetSessionDescriptionObserver?    = null
-    private var pubSetRemoteObs:    SetSessionDescriptionObserver?    = null
-    private var subSetLocalDescObs: SetSessionDescriptionObserver?    = null
-    private var subSetRemoteObs:    SetSessionDescriptionObserver?    = null
+    // PeerConnectionObserver'lar class-level: C++ raw pointer tutar
+    private var pubObs: PeerConnectionObserver? = null
+    private var subObs: PeerConnectionObserver? = null
 
-    // =========================================================================
-    // ICE CANDIDATE QUEUES
-    // Trickle ICE adayları setRemoteDescription'dan ÖNCE gelebilir (server,
-    // offer/answer ile paralel olarak aday gönderir).  setRemoteDescription async
-    // olduğundan onSuccess callback'i henüz çağrılmadan addIceCandidate yapılırsa
-    // aday sessizce düşer → ICE sadece relay ile tamamlanır → yüksek gecikme.
-    // Çözüm: setRemoteDescription tamamlanana kadar adayları tamponla, sonra boşalt.
-    // =========================================================================
-    @Volatile private var pubRemoteDescSet = false
-    @Volatile private var subRemoteDescSet = false
-    private val pubCandidateQueue = mutableListOf<RTCIceCandidate>()
-    private val subCandidateQueue = mutableListOf<RTCIceCandidate>()
+    // ICE aday tamponlarÄ± â€” setRemoteDescription tamamlanmadan Ã¶nce gelen adaylar
+    @Volatile private var pubRemoteSet = false
+    @Volatile private var subRemoteSet = false
+    private val pubCandBuf = mutableListOf<RTCIceCandidate>()
+    private val subCandBuf = mutableListOf<RTCIceCandidate>()
 
-    // Renegotiation guard: once we've sent the initial offer we suppress all
-    // subsequent onRenegotiationNeeded events.  ICE restart (FAILED → restartIce)
-    // resets this flag so a fresh offer can be generated.
-    @Volatile private var pubOfferSent = false
+    // Renegotiation guard: ilk offer gÃ¶nderildikten sonra tekrar gÃ¶nderme
+    @Volatile private var offerSent = false
 
-    // =========================================================================
-    // PUBLIC API
-    // =========================================================================
+    // â”€â”€ Public API â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
-    /**
-     * Joins a LiveKit room with a SINGLE WebSocket connection (pub+sub unified).
-     *
-     * LiveKit routes ALL ICE trickle candidates through the one active WebSocket
-     * per participant identity.  The previous dual-WS design silently dropped half
-     * of all candidates (target=1 arrived on pubSig → ignored; target=0 arrived on
-     * subSig → ignored), leaving ICE incomplete and forcing relay-only paths.
-     * Additionally, the second connection attempt with the same identity kicked the
-     * first.  Both issues are eliminated here.
-     */
     fun join(roomName: String, identity: String, displayName: String) {
         scope.launch {
             val token = LiveKitTokenGenerator.generateToken(
                 apiKey, apiSecret, roomName, identity, displayName,
                 canPublish = true, canSubscribe = true
             )
-            val sig = LiveKitSignalingClient(serverUrl, token).also { signalingClient = it }
-            sig.connect()
-            println("[LiveKit] Connecting (single-WS pub+sub) → $serverUrl  room=$roomName  identity=$identity")
+            sig = LiveKitSignalingClient(serverUrl, token).also { it.connect() }
+            println("[LK] BaÄŸlanÄ±yor â†’ room=$roomName  id=$identity")
 
-            sig.events.collect { event ->
-                when (event) {
-                    // ── Handshake ────────────────────────────────────────────────────
-                    is LiveKitSignalingClient.Event.Connected -> {
-                        println("[LiveKit] WebSocket connected")
-                    }
+            sig!!.events.collect { ev ->
+                when (ev) {
+                    is LiveKitSignalingClient.Event.Connected ->
+                        println("[LK] WS baÄŸlandÄ±")
+
                     is LiveKitSignalingClient.Event.JoinReceived -> {
-                        println("[LiveKit] Join ack — ${event.response.iceServers.size} ICE server(s)")
-                        iceServers = event.response.iceServers.map { it.toRTC() }
-                        createPublisherPc(sig)
-                        createSubscriberPc(sig)
+                        println("[LK] Join â€” ${ev.response.iceServers.size} ICE sunucu")
+                        iceServers = ev.response.iceServers.map { it.toRTC() }
+                        setupPub()
+                        setupSub()
                     }
 
-                    // ── Publisher path: server sends Answer → pubPc ──────────────────
-                    is LiveKitSignalingClient.Event.AnswerReceived -> {
-                        println("[LiveKit] Answer received → pubPc.setRemoteDescription")
-                        pubSetRemoteObs = object : SetSessionDescriptionObserver {
-                            override fun onSuccess() {
-                                try {
-                                    println("[LiveKit] pub setRemoteDescription — OK")
-                                    pubRemoteDescSet = true
-                                    synchronized(pubCandidateQueue) {
-                                        if (pubCandidateQueue.isNotEmpty()) {
-                                            println("[LiveKit] Draining ${pubCandidateQueue.size} queued ICE candidate(s) → pubPc")
-                                            pubCandidateQueue.forEach { pubPc?.addIceCandidate(it) }
-                                            pubCandidateQueue.clear()
-                                        }
-                                    }
-                                } catch (e: Exception) { e.printStackTrace() }
-                            }
-                            override fun onFailure(e: String) {
-                                try { println("[LiveKit] pub setRemoteDescription — FAILED: $e") }
-                                catch (ex: Exception) { ex.printStackTrace() }
-                            }
-                        }
-                        // Munge the server's answer just like our offer, so the
-                        // negotiated Opus params (usedtx=0, cbr=1, 128kbps) are
-                        // actually applied to the local encoder — not the server's defaults.
-                        val mungedAnswerSdp = mungeOpusSdp(event.sdp.sdp)
-                        val answerSdp = RTCSessionDescription(RTCSdpType.ANSWER, mungedAnswerSdp)
-                        gcJail.add(answerSdp)
-                        pubPc?.setRemoteDescription(answerSdp, pubSetRemoteObs!!)
-                    }
+                    // Server bizim offer'Ä±mÄ±za cevap verdi (publisher yolu)
+                    is LiveKitSignalingClient.Event.AnswerReceived ->
+                        applyPubAnswer(ev.sdp.sdp)
 
-                    // ── Subscriber path: server sends Offer → subPc → Answer ─────────
-                    is LiveKitSignalingClient.Event.OfferReceived -> {
-                        println("[LiveKit] Offer received (${event.sdp.sdp.length} b) → subPc.setRemoteDescription")
-                        subSetRemoteObs = object : SetSessionDescriptionObserver {
-                            override fun onSuccess() {
-                                try {
-                                    println("[LiveKit] sub setRemoteDescription — OK → creating answer")
-                                    subRemoteDescSet = true
-                                    synchronized(subCandidateQueue) {
-                                        if (subCandidateQueue.isNotEmpty()) {
-                                            println("[LiveKit] Draining ${subCandidateQueue.size} queued ICE candidate(s) → subPc")
-                                            subCandidateQueue.forEach { subPc?.addIceCandidate(it) }
-                                            subCandidateQueue.clear()
-                                        }
-                                    }
-                                    scope.launch { subscriberAnswer(sig) }
-                                } catch (e: Exception) { e.printStackTrace() }
-                            }
-                            override fun onFailure(e: String) {
-                                try { println("[LiveKit] sub setRemoteDescription FAILED: $e") }
-                                catch (ex: Exception) { ex.printStackTrace() }
-                            }
-                        }
-                        val offerSdp = RTCSessionDescription(RTCSdpType.OFFER, event.sdp.sdp)
-                        gcJail.add(offerSdp)
-                        subPc?.setRemoteDescription(offerSdp, subSetRemoteObs!!)
-                    }
+                    // Server bize offer gÃ¶nderdi (subscriber yolu)
+                    is LiveKitSignalingClient.Event.OfferReceived ->
+                        applySubOffer(ev.sdp.sdp)
 
-                    // ── ICE trickle — buffered to avoid race with setRemoteDescription ──
-                    is LiveKitSignalingClient.Event.TrickleReceived -> {
-                        val (sdp, mid, idx) = parseCandidateJson(event.msg.candidateInit)
-                        val candidate = RTCIceCandidate(mid, idx, sdp)
-                        gcJail.add(candidate)
-                        when (event.msg.target) {
-                            0 -> if (pubRemoteDescSet) {
-                                pubPc?.addIceCandidate(candidate)
-                                println("[LiveKit] ICE → pubPc  mid=$mid")
-                            } else {
-                                synchronized(pubCandidateQueue) { pubCandidateQueue.add(candidate) }
-                                println("[LiveKit] ICE → pubPc  mid=$mid (queued — remote desc pending)")
-                            }
-                            1 -> if (subRemoteDescSet) {
-                                subPc?.addIceCandidate(candidate)
-                                println("[LiveKit] ICE → subPc  mid=$mid")
-                            } else {
-                                synchronized(subCandidateQueue) { subCandidateQueue.add(candidate) }
-                                println("[LiveKit] ICE → subPc  mid=$mid (queued — remote desc pending)")
-                            }
-                            else -> println("[LiveKit] ICE unknown target=${event.msg.target}, ignored")
-                        }
-                    }
+                    is LiveKitSignalingClient.Event.TrickleReceived ->
+                        handleTrickle(ev.msg)
 
-                    is LiveKitSignalingClient.Event.Disconnected -> {
-                        println("[LiveKit] WebSocket disconnected")
-                    }
+                    is LiveKitSignalingClient.Event.Disconnected ->
+                        println("[LK] WS baÄŸlantÄ±sÄ± kesildi")
+
                     else -> {}
                 }
             }
@@ -260,316 +106,246 @@ object LiveKitRoom {
     }
 
     /**
-     * Soft disconnect — ONLY closes the OkHttp WebSockets.
-     *
-     * NEVER call .close() or .dispose() on PeerConnections, factory, audio
-     * sources/tracks, or gcJail contents.  The C++ engine runs async cleanup
-     * threads; racing them with Java-side teardown → GC thread segfault
-     * (jvm.dll+0x369b04).  Native objects are intentionally leaked; the JVM
-     * process will clean them on exit.
+     * Odadan ayrÄ±l â€” YALNIZCA WebSocket kapatÄ±lÄ±r.
+     * Native nesneler kasÄ±tlÄ± olarak serbest bÄ±rakÄ±lmaz.
      */
     fun leave() {
-        pubRemoteDescSet = false
-        subRemoteDescSet = false
-        pubOfferSent = false
-        synchronized(pubCandidateQueue) { pubCandidateQueue.clear() }
-        synchronized(subCandidateQueue) { subCandidateQueue.clear() }
-        try { signalingClient?.disconnect() } catch (_: Exception) {}
-        println("[LiveKit] leave(): WebSocket closed — native objects intentionally retained")
+        pubRemoteSet = false
+        subRemoteSet = false
+        offerSent    = false
+        synchronized(pubCandBuf) { pubCandBuf.clear() }
+        synchronized(subCandBuf) { subCandBuf.clear() }
+        try { sig?.disconnect() } catch (_: Exception) {}
+        println("[LK] leave() â€” WS kapatÄ±ldÄ±")
     }
 
-    // =========================================================================
-    // PUBLISHER PEER CONNECTION
-    // =========================================================================
+    // â”€â”€ Publisher PC â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
-    private fun createPublisherPc(sig: LiveKitSignalingClient) {
-        pubRtcConfig = RTCConfiguration().apply { iceServers = this@LiveKitRoom.iceServers }
+    private fun setupPub() {
+        pubCfg = RTCConfiguration().apply { iceServers = this@LiveKitRoom.iceServers }
+        pubObs = object : PeerConnectionObserver {
+            override fun onSignalingChange(s: RTCSignalingState)          = println("[LK][PUB] sig=$s")
+            override fun onIceGatheringChange(s: RTCIceGatheringState)    = println("[LK][PUB] gather=$s")
+            override fun onIceCandidateError(e: RTCPeerConnectionIceErrorEvent) =
+                println("[LK][PUB] ICE hata: ${e.errorText} (${e.errorCode})")
 
-        pubPcObserver = object : PeerConnectionObserver {
-            override fun onSignalingChange(s: RTCSignalingState) {
-                try { println("[LiveKit] [PUB] onSignalingChange: $s") } catch (e: Exception) { e.printStackTrace() }
-            }
             override fun onIceCandidate(c: RTCIceCandidate) {
-                try {
-                    gcJail.add(c)
-                    scope.launch { sig.sendTrickle(candidateToJson(c), 0) }
-                } catch (e: Exception) { e.printStackTrace() }
+                gcJail.add(c)
+                scope.launch { sig?.sendTrickle(candidateToJson(c), 0) }
             }
-            override fun onIceCandidateError(e: RTCPeerConnectionIceErrorEvent) {
-                try { println("[LiveKit] [PUB] onIceCandidateError: ${e.errorText} (${e.errorCode})") } catch (ex: Exception) { ex.printStackTrace() }
+
+            override fun onIceConnectionChange(s: RTCIceConnectionState) {
+                println("[LK][PUB] ICE=$s")
+                if (s == RTCIceConnectionState.FAILED) {
+                    println("[LK][PUB] ICE FAILED â†’ yeniden baÅŸlatÄ±lÄ±yor")
+                    offerSent = false
+                    pubPc?.restartIce()
+                }
             }
-            override fun onIceGatheringChange(s: RTCIceGatheringState) {
-                try { println("[LiveKit] [PUB] onIceGatheringChange: $s") } catch (e: Exception) { e.printStackTrace() }
-            }
+
+            override fun onConnectionChange(s: RTCPeerConnectionState) = println("[LK][PUB] PC=$s")
+
             override fun onRenegotiationNeeded() {
-                try {
-                    if (pubOfferSent) {
-                        println("[LiveKit] Publisher: onRenegotiationNeeded SUPPRESSED (state=${pubPc?.getSignalingState()})")
-                        return
-                    }
-                    pubOfferSent = true
-                    println("[LiveKit] Publisher: onRenegotiationNeeded → sending offer")
-                    scope.launch { publisherNegotiate(sig) }
-                } catch (e: Exception) { e.printStackTrace() }
+                if (offerSent) {
+                    println("[LK][PUB] onRenegotiationNeeded engellendi")
+                    return
+                }
+                offerSent = true
+                scope.launch { sendPubOffer() }
             }
-            override fun onIceConnectionChange(s: RTCIceConnectionState) {
-                try {
-                    println("[LiveKit] Publisher ICE → $s")
-                    if (s == RTCIceConnectionState.FAILED) {
-                        println("[LiveKit] Publisher ICE FAILED — resetting offer flag and restarting ICE")
-                        pubOfferSent = false
-                        pubPc?.restartIce()
-                    }
-                } catch (e: Exception) { e.printStackTrace() }
-            }
-            override fun onConnectionChange(s: RTCPeerConnectionState) {
-                try { println("[LiveKit] Publisher PC  → $s") } catch (e: Exception) { e.printStackTrace() }
-            }
+
             override fun onDataChannel(dc: RTCDataChannel) {
-                try {
-                    gcJail.add(dc)
-                    val obs = object : RTCDataChannelObserver {
-                        override fun onBufferedAmountChange(p: Long) {}
-                        override fun onStateChange() {}
-                        override fun onMessage(b: RTCDataChannelBuffer) {}
-                    }
-                    gcJail.add(obs)
-                    dc.registerObserver(obs)
-                } catch (e: Exception) { e.printStackTrace() }
+                gcJail.add(dc)
+                val obs = object : RTCDataChannelObserver {
+                    override fun onBufferedAmountChange(p: Long) {}
+                    override fun onStateChange() {}
+                    override fun onMessage(b: RTCDataChannelBuffer) {}
+                }
+                gcJail.add(obs)
+                dc.registerObserver(obs)
             }
         }
 
-        pubPc = factory.createPeerConnection(pubRtcConfig!!, pubPcObserver!!) ?: run {
-            println("[LiveKit] FATAL: createPeerConnection returned null (publisher)")
+        pubPc = factory.createPeerConnection(pubCfg!!, pubObs!!) ?: run {
+            println("[LK] HATA: pubPc null")
             return
         }
 
-        attachMicrophone()
-        println("[LiveKit] Publisher PC created")
+        // Mikrofon â€” WebRTC varsayÄ±lan AudioOptions (AEC+NS+AGC dengeli)
+        audioSource = factory.createAudioSource(AudioOptions())
+        audioTrack  = factory.createAudioTrack("audio", audioSource!!)
+        pubPc!!.addTrack(audioTrack!!, listOf("audio"))?.also { gcJail.add(it) }
+        println("[LK] Publisher PC hazÄ±r")
     }
 
-    // ── Audio Profile ────────────────────────────────────────────────────────
-    // AEC AÇIK  — WebRTC'nin tam audio pipeline'ını etkinleştirir; paket kaybı
-    //             geçişlerinde hard-cut yerine smooth blend/CNG yapar ("çıt" sesini önler).
-    //             Kulaklık kullanıcısında gerçek yankı yoktur; AEC sessizce geçer.
-    // NS  KAPALI — agresif gating kesilmesi ("kapı-aç-kapı-kapat" efekti) yapıyordu
-    // AGC KAPALI — hacim dalgalanmaları/pompalama yapıyordu
-    // ─────────────────────────────────────────────────────────────────────────
-    private fun attachMicrophone() {
-        try {
-            val opts = AudioOptions().apply {
-                echoCancellation     = true   // AEC AÇIK  — tam pipeline + smooth packet-loss geçişi
-                noiseSuppression     = false  // NS  KAPALI — agresif gate kesik ses yapıyordu
-                autoGainControl      = false  // AGC KAPALI — hacim dalgalanmalarını önler
-                highpassFilter       = false  // HPF KAPALI — düşük frekans sıcaklığını korur
-                typingDetection      = false  // TD  KAPALI — tuş sesinde ses kesmez
-                residualEchoDetector = false  // RED KAPALI
-            }
-            pubAudioSource = factory.createAudioSource(opts)
-            pubAudioTrack  = factory.createAudioTrack("mic_audio", pubAudioSource!!)
-            // addTrack returns an RTCRtpSender — jail immediately; GC of sender
-            // finalizer calls native delete while the RTP pipeline is active.
-            pubPc?.addTrack(pubAudioTrack!!, listOf("microphone"))?.also { gcJail.add(it) }
-            println("[LiveKit] Microphone attached (AEC=on NS=off AGC=off HPF=off TD=off RED=off)")
-        } catch (e: Exception) {
-            println("[LiveKit] attachMicrophone FAILED:")
-            e.printStackTrace()
-        }
-    }
-
-    // ── Offer with Opus SDP munge ────────────────────────────────────────────
-    // DTX off → no silent gaps; 64 kbps → Discord-level quality; FEC → packet loss resilience
-    private suspend fun publisherNegotiate(sig: LiveKitSignalingClient) {
+    private suspend fun sendPubOffer() {
         val pc    = pubPc ?: return
-        val offer = createOffer(pc) ?: run { println("[LiveKit] createOffer returned null"); return }
-        val mungedSdp   = mungeOpusSdp(offer.sdp)
-        val mungedOffer = RTCSessionDescription(RTCSdpType.OFFER, mungedSdp)
-        gcJail.add(mungedOffer)
-        pubSetLocalDescObs = object : SetSessionDescriptionObserver {
-            override fun onSuccess() {
-                try { println("[LiveKit] pub setLocalDescription — OK") } catch (e: Exception) { e.printStackTrace() }
-            }
-            override fun onFailure(e: String) {
-                try { println("[LiveKit] pub setLocalDescription — FAILED: $e") } catch (ex: Exception) { ex.printStackTrace() }
-            }
-        }
-        pc.setLocalDescription(mungedOffer, pubSetLocalDescObs!!)
-        sig.sendOffer(mungedSdp)
-        println("[LiveKit] Offer sent (Opus DTX=off VBR 64kbps FEC=on)")
+        val offer = awaitCreateSdp { obs -> pc.createOffer(RTCOfferOptions(), obs) } ?: return
+        val setLocalObs = jailedSetObs("[LK][PUB] setLocal")
+        pc.setLocalDescription(offer, setLocalObs)
+        sig?.sendOffer(offer.sdp)
+        println("[LK] Offer gÃ¶nderildi")
     }
 
-    // =========================================================================
-    // SUBSCRIBER PEER CONNECTION
-    // =========================================================================
-
-    private fun createSubscriberPc(sig: LiveKitSignalingClient) {
-        subRtcConfig = RTCConfiguration().apply { iceServers = this@LiveKitRoom.iceServers }
-
-        subPcObserver = object : PeerConnectionObserver {
-            override fun onSignalingChange(s: RTCSignalingState) {
-                try { println("[LiveKit] [SUB] onSignalingChange: $s") } catch (e: Exception) { e.printStackTrace() }
+    private fun applyPubAnswer(sdp: String) {
+        val pc = pubPc ?: return
+        val obs = object : SetSessionDescriptionObserver {
+            override fun onSuccess() {
+                println("[LK][PUB] setRemote OK")
+                pubRemoteSet = true
+                synchronized(pubCandBuf) {
+                    if (pubCandBuf.isNotEmpty()) {
+                        println("[LK][PUB] ${pubCandBuf.size} bekleyen ICE adayÄ± ekleniyor")
+                        pubCandBuf.forEach { pc.addIceCandidate(it) }
+                        pubCandBuf.clear()
+                    }
+                }
             }
+            override fun onFailure(e: String) = println("[LK][PUB] setRemote HATA: $e")
+        }
+        gcJail.add(obs)
+        pc.setRemoteDescription(RTCSessionDescription(RTCSdpType.ANSWER, sdp).also { gcJail.add(it) }, obs)
+    }
+
+    // â”€â”€ Subscriber PC â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+    private fun setupSub() {
+        subCfg = RTCConfiguration().apply { iceServers = this@LiveKitRoom.iceServers }
+        subObs = object : PeerConnectionObserver {
+            override fun onSignalingChange(s: RTCSignalingState)          = println("[LK][SUB] sig=$s")
+            override fun onIceGatheringChange(s: RTCIceGatheringState)    = println("[LK][SUB] gather=$s")
+            override fun onIceCandidateError(e: RTCPeerConnectionIceErrorEvent) =
+                println("[LK][SUB] ICE hata: ${e.errorText} (${e.errorCode})")
+
             override fun onIceCandidate(c: RTCIceCandidate) {
-                try {
-                    gcJail.add(c)
-                    scope.launch { sig.sendTrickle(candidateToJson(c), 1) }
-                } catch (e: Exception) { e.printStackTrace() }
-            }
-            override fun onIceCandidateError(e: RTCPeerConnectionIceErrorEvent) {
-                try { println("[LiveKit] [SUB] onIceCandidateError: ${e.errorText} (${e.errorCode})") } catch (ex: Exception) { ex.printStackTrace() }
-            }
-            override fun onIceGatheringChange(s: RTCIceGatheringState) {
-                try { println("[LiveKit] [SUB] onIceGatheringChange: $s") } catch (e: Exception) { e.printStackTrace() }
-            }
-            override fun onIceConnectionChange(s: RTCIceConnectionState) {
-                try { println("[LiveKit] Subscriber ICE → $s") } catch (e: Exception) { e.printStackTrace() }
-            }
-            override fun onConnectionChange(s: RTCPeerConnectionState) {
-                try { println("[LiveKit] Subscriber PC  → $s") } catch (e: Exception) { e.printStackTrace() }
+                gcJail.add(c)
+                scope.launch { sig?.sendTrickle(candidateToJson(c), 1) }
             }
 
-            // Jail all JNI wrappers delivered by C++ callbacks — they have no
-            // existing strong ref on the Java side and are immediately GC-eligible
-            // unless we retain them here.
-            override fun onTrack(transceiver: RTCRtpTransceiver) {
-                try {
-                    gcJail.add(transceiver)
-                    val receiver = transceiver.receiver ?: return
-                    gcJail.add(receiver)
-                    val track = try { receiver.getTrack() } catch (_: Exception) { null } ?: return
-                    gcJail.add(track)
-                    println("[LiveKit] onTrack: ${track.javaClass.simpleName} id=${track.id} (audio-only mode, no sink attached)")
-                } catch (e: Exception) { e.printStackTrace() }
+            override fun onIceConnectionChange(s: RTCIceConnectionState) = println("[LK][SUB] ICE=$s")
+            override fun onConnectionChange(s: RTCPeerConnectionState)   = println("[LK][SUB] PC=$s")
+
+            override fun onTrack(t: RTCRtpTransceiver) {
+                gcJail.add(t)
+                t.receiver?.also { r ->
+                    gcJail.add(r)
+                    try { r.getTrack()?.also { gcJail.add(it) } } catch (_: Exception) {}
+                }
+                println("[LK][SUB] onTrack")
             }
 
-            override fun onAddTrack(receiver: RTCRtpReceiver, streams: Array<dev.onvoid.webrtc.media.MediaStream>) {
-                try {
-                    gcJail.add(receiver)
-                    streams.forEach { gcJail.add(it) }
-                    val track = try { receiver.getTrack() } catch (_: Exception) { null } ?: return
-                    gcJail.add(track)
-                    println("[LiveKit] onAddTrack: ${track.javaClass.simpleName} id=${track.id} (audio-only mode, no sink attached)")
-                } catch (e: Exception) { e.printStackTrace() }
+            override fun onAddTrack(r: RTCRtpReceiver, s: Array<dev.onvoid.webrtc.media.MediaStream>) {
+                gcJail.add(r)
+                s.forEach { gcJail.add(it) }
+                try { r.getTrack()?.also { gcJail.add(it) } } catch (_: Exception) {}
+                println("[LK][SUB] onAddTrack")
             }
 
-            override fun onRemoveTrack(receiver: RTCRtpReceiver) {
-                try {
-                    // No video sinks to detach in audio-only mode.
-                    // Jail the receiver so GC doesn't race C++ teardown.
-                    gcJail.add(receiver)
-                    println("[LiveKit] onRemoveTrack (audio-only, no action needed)")
-                } catch (e: Exception) { e.printStackTrace() }
+            override fun onRemoveTrack(r: RTCRtpReceiver) {
+                gcJail.add(r)
+                println("[LK][SUB] onRemoveTrack")
             }
 
             override fun onDataChannel(dc: RTCDataChannel) {
-                try {
-                    gcJail.add(dc)
-                    val obs = object : RTCDataChannelObserver {
-                        override fun onBufferedAmountChange(p: Long) {}
-                        override fun onStateChange() {}
-                        override fun onMessage(b: RTCDataChannelBuffer) {}
-                    }
-                    gcJail.add(obs)
-                    dc.registerObserver(obs)
-                } catch (e: Exception) { e.printStackTrace() }
+                gcJail.add(dc)
+                val obs = object : RTCDataChannelObserver {
+                    override fun onBufferedAmountChange(p: Long) {}
+                    override fun onStateChange() {}
+                    override fun onMessage(b: RTCDataChannelBuffer) {}
+                }
+                gcJail.add(obs)
+                dc.registerObserver(obs)
             }
         }
 
-        subPc = factory.createPeerConnection(subRtcConfig!!, subPcObserver!!) ?: run {
-            println("[LiveKit] FATAL: createPeerConnection returned null (subscriber)")
+        subPc = factory.createPeerConnection(subCfg!!, subObs!!) ?: run {
+            println("[LK] HATA: subPc null")
             return
         }
-        println("[LiveKit] Subscriber PC created")
+        println("[LK] Subscriber PC hazÄ±r")
     }
 
-    private suspend fun subscriberAnswer(sig: LiveKitSignalingClient) {
-        val pc     = subPc ?: return
-        val answer = createAnswer(pc) ?: run { println("[LiveKit] createAnswer returned null"); return }
-        subSetLocalDescObs = object : SetSessionDescriptionObserver {
+    private fun applySubOffer(sdp: String) {
+        val pc = subPc ?: return
+        val obs = object : SetSessionDescriptionObserver {
             override fun onSuccess() {
-                try { println("[LiveKit] sub setLocalDescription — OK") } catch (e: Exception) { e.printStackTrace() }
+                println("[LK][SUB] setRemote OK â†’ answer oluÅŸturuluyor")
+                subRemoteSet = true
+                synchronized(subCandBuf) {
+                    if (subCandBuf.isNotEmpty()) {
+                        println("[LK][SUB] ${subCandBuf.size} bekleyen ICE adayÄ± ekleniyor")
+                        subCandBuf.forEach { pc.addIceCandidate(it) }
+                        subCandBuf.clear()
+                    }
+                }
+                scope.launch { sendSubAnswer() }
+            }
+            override fun onFailure(e: String) = println("[LK][SUB] setRemote HATA: $e")
+        }
+        gcJail.add(obs)
+        pc.setRemoteDescription(RTCSessionDescription(RTCSdpType.OFFER, sdp).also { gcJail.add(it) }, obs)
+    }
+
+    private suspend fun sendSubAnswer() {
+        val pc     = subPc ?: return
+        val answer = awaitCreateSdp { obs -> pc.createAnswer(RTCAnswerOptions(), obs) } ?: return
+        val setLocalObs = jailedSetObs("[LK][SUB] setLocal")
+        pc.setLocalDescription(answer, setLocalObs)
+        sig?.sendAnswer(answer.sdp)
+        println("[LK] Answer gÃ¶nderildi")
+    }
+
+    // â”€â”€ ICE trickle â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+    private fun handleTrickle(msg: LKTrickleRequest) {
+        val (sdp, mid, idx) = parseCandidateJson(msg.candidateInit)
+        val c = RTCIceCandidate(mid, idx, sdp).also { gcJail.add(it) }
+        when (msg.target) {
+            0 -> if (pubRemoteSet) {
+                pubPc?.addIceCandidate(c)
+                println("[LK] ICE â†’ pubPc mid=$mid")
+            } else {
+                synchronized(pubCandBuf) { pubCandBuf.add(c) }
+                println("[LK] ICE â†’ pubPc mid=$mid (tamponlandÄ±)")
+            }
+            1 -> if (subRemoteSet) {
+                subPc?.addIceCandidate(c)
+                println("[LK] ICE â†’ subPc mid=$mid")
+            } else {
+                synchronized(subCandBuf) { subCandBuf.add(c) }
+                println("[LK] ICE â†’ subPc mid=$mid (tamponlandÄ±)")
+            }
+            else -> println("[LK] ICE bilinmeyen target=${msg.target}")
+        }
+    }
+
+    // â”€â”€ YardÄ±mcÄ±lar â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+    /** createOffer/createAnswer iÃ§in coroutine wrapper. Observer gcJail'e eklenir. */
+    private suspend fun awaitCreateSdp(
+        create: (CreateSessionDescriptionObserver) -> Unit
+    ): RTCSessionDescription? = suspendCancellableCoroutine { cont ->
+        val obs = object : CreateSessionDescriptionObserver {
+            override fun onSuccess(d: RTCSessionDescription) {
+                gcJail.add(d)
+                cont.resumeWith(Result.success(d))
             }
             override fun onFailure(e: String) {
-                try { println("[LiveKit] sub setLocalDescription — FAILED: $e") } catch (ex: Exception) { ex.printStackTrace() }
+                println("[LK] SDP oluÅŸturma HATA: $e")
+                cont.resumeWith(Result.success(null))
             }
         }
-        val mungedSdp    = mungeOpusSdp(answer.sdp)
-        val mungedAnswer = RTCSessionDescription(RTCSdpType.ANSWER, mungedSdp)
-        gcJail.add(mungedAnswer)
-        pc.setLocalDescription(mungedAnswer, subSetLocalDescObs!!)
-        sig.sendAnswer(mungedSdp)
-        println("[LiveKit] Subscriber answer sent (Opus munged)")
+        gcJail.add(obs)
+        create(obs)
     }
 
-    // =========================================================================
-    // SUSPEND HELPERS
-    // =========================================================================
+    /** setLocalDescription/setRemoteDescription iÃ§in gcJail'e alÄ±nmÄ±ÅŸ observer. */
+    private fun jailedSetObs(tag: String): SetSessionDescriptionObserver =
+        object : SetSessionDescriptionObserver {
+            override fun onSuccess() = println("$tag OK")
+            override fun onFailure(e: String) = println("$tag HATA: $e")
+        }.also { gcJail.add(it) }
 
-    private suspend fun createOffer(pc: RTCPeerConnection): RTCSessionDescription? =
-        suspendCancellableCoroutine { cont ->
-            pubCreateOfferObs = object : CreateSessionDescriptionObserver {
-                override fun onSuccess(d: RTCSessionDescription) {
-                    try {
-                        gcJail.add(d)
-                        pubCreateOfferObs = null
-                        cont.resumeWith(Result.success(d))
-                    } catch (e: Exception) { e.printStackTrace() }
-                }
-                override fun onFailure(e: String) {
-                    try {
-                        println("[LiveKit] createOffer FAILED: $e")
-                        pubCreateOfferObs = null
-                        cont.resumeWith(Result.success(null))
-                    } catch (ex: Exception) { ex.printStackTrace() }
-                }
-            }
-            pc.createOffer(RTCOfferOptions(), pubCreateOfferObs!!)
-        }
-
-    private suspend fun createAnswer(pc: RTCPeerConnection): RTCSessionDescription? =
-        suspendCancellableCoroutine { cont ->
-            subCreateAnswerObs = object : CreateSessionDescriptionObserver {
-                override fun onSuccess(d: RTCSessionDescription) {
-                    try {
-                        gcJail.add(d)
-                        subCreateAnswerObs = null
-                        cont.resumeWith(Result.success(d))
-                    } catch (e: Exception) { e.printStackTrace() }
-                }
-                override fun onFailure(e: String) {
-                    try {
-                        println("[LiveKit] createAnswer FAILED: $e")
-                        subCreateAnswerObs = null
-                        cont.resumeWith(Result.success(null))
-                    } catch (ex: Exception) { ex.printStackTrace() }
-                }
-            }
-            pc.createAnswer(RTCAnswerOptions(), subCreateAnswerObs!!)
-        }
-
-    // =========================================================================
-    // SDP MUNGE — Opus voice quality tuning
-    // DTX=off    → no packet gaps during silence (removes choppiness)
-    // VBR 64kbps → Discord-level quality; VBR lets FEC use extra bits on loss
-    //              (CBR was preventing FEC headroom → glitches on mobile)
-    // FEC=on     → single-packet-loss correction
-    // minptime=10→ 10 ms packet duration (Discord default)
-    // =========================================================================
-    private fun mungeOpusSdp(sdp: String): String {
-        val pt = Regex("""a=rtpmap:(\d+) opus/48000""").find(sdp)
-            ?.groupValues?.get(1)
-            ?: return sdp.also { println("[LiveKit] SDP munge: Opus PT not found") }
-        val newFmtp   = "a=fmtp:$pt minptime=10;useinbandfec=1;usedtx=0;maxaveragebitrate=64000"
-        val fmtpRegex = Regex("""a=fmtp:$pt [^\r\n]*""")
-        return if (fmtpRegex.containsMatchIn(sdp))
-            fmtpRegex.replace(sdp, newFmtp)
-        else
-            Regex("""(a=rtpmap:$pt [^\r\n]*)""").replace(sdp) { "${it.value}\r\n$newFmtp" }
-    }
-
-    // =========================================================================
-    // ICE SERVER HELPER
-    // =========================================================================
     private fun LKICEServer.toRTC(): RTCIceServer {
         val s = RTCIceServer()
         s.urls     = urls
@@ -578,3 +354,4 @@ object LiveKitRoom {
         return s
     }
 }
+
