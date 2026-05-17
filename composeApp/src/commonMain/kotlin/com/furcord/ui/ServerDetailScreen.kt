@@ -26,6 +26,8 @@ import androidx.compose.ui.input.key.*
 import androidx.compose.ui.input.pointer.PointerEventType
 import androidx.compose.ui.input.pointer.isSecondaryPressed
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -439,6 +441,10 @@ private fun MessageRow(
     msg: ChatMessage,
     isSelf: Boolean,
     isGrouped: Boolean = false,  // true → aynı kullanıcı'nın önceki mesajı var (5 dk içinde)
+    isSelected: Boolean = false,
+    inSelectionMode: Boolean = false,
+    onReply: (ChatMessage) -> Unit = {},
+    onSelect: (ChatMessage) -> Unit = {},
 ) {
     val timeStr = remember(msg.timestamp) {
         SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(msg.timestamp))
@@ -446,95 +452,177 @@ private fun MessageRow(
     val interactionSource = remember { MutableInteractionSource() }
     val hovered by interactionSource.collectIsHoveredAsState()
 
-    Row(
+    var showContextMenu by remember { mutableStateOf(false) }
+
+    val bgColor = when {
+        isSelected -> AppColors.Accent.copy(alpha = 0.18f)
+        hovered    -> AppColors.BgElevated.copy(alpha = 0.45f)
+        else       -> Color.Transparent
+    }
+
+    Column(
         modifier = Modifier
             .fillMaxWidth()
             .hoverable(interactionSource)
-            .background(if (hovered) AppColors.BgElevated.copy(alpha = 0.45f) else Color.Transparent)
+            .background(bgColor)
+            .pointerInput(msg.id) {
+                detectTapGestures(
+                    onLongPress = {
+                        if (inSelectionMode) onSelect(msg) else showContextMenu = true
+                    },
+                    onTap = {
+                        if (inSelectionMode) onSelect(msg)
+                    },
+                )
+            }
             .padding(
                 start  = 16.dp,
                 end    = 16.dp,
                 top    = if (isGrouped) 1.dp else 8.dp,
                 bottom = 1.dp,
             ),
-        horizontalArrangement = Arrangement.spacedBy(12.dp),
-        verticalAlignment = Alignment.Top,
     ) {
-        // Avatar alanı — gruplu mesajda boş bırak (indent)
-        if (isGrouped) {
-            Spacer(Modifier.width(36.dp))
-        } else {
-            Box(modifier = Modifier.size(36.dp).padding(top = 2.dp)) {
-                UserAvatar(
-                    displayName = msg.username,
-                    photoURL    = msg.photoURL,
-                    size        = 36,
+        // ── Reply quote block (yanıt alıntısı) ────────────────────────────────
+        if (msg.replyToId.isNotBlank()) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(4.dp))
+                    .background(Color(0xFF1A1B1E))
+                    .padding(horizontal = 8.dp, vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Box(
+                    Modifier
+                        .width(3.dp)
+                        .height(28.dp)
+                        .background(AppColors.Accent),
                 )
-            }
-        }
-
-        Column(
-            modifier             = Modifier.weight(1f),
-            verticalArrangement  = Arrangement.spacedBy(2.dp),
-        ) {
-            // Kullanıcı adı + zaman — sadece grubun ilk mesajında
-            if (!isGrouped) {
-                Row(
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    verticalAlignment     = Alignment.CenterVertically,
-                ) {
+                Spacer(Modifier.width(6.dp))
+                Column {
                     Text(
-                        text       = msg.username,
-                        fontSize   = 14.sp,
+                        text       = msg.replyToUser,
+                        fontSize   = 11.sp,
+                        color      = AppColors.Accent,
                         fontWeight = FontWeight.SemiBold,
-                        color      = if (isSelf) AppColors.SelfName else AppColors.TextPrimary,
                     )
                     Text(
-                        text     = timeStr,
-                        fontSize = 11.sp,
-                        color    = AppColors.TextTimestamp,
+                        text     = msg.replyToText.take(100),
+                        fontSize = 12.sp,
+                        color    = AppColors.TextMuted,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
+            Spacer(Modifier.height(2.dp))
+        }
+
+        // ── Ana mesaj satırı ──────────────────────────────────────────────────
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            verticalAlignment     = Alignment.Top,
+        ) {
+            // Avatar alanı — gruplu mesajda boş bırak (indent)
+            if (isGrouped && msg.replyToId.isBlank()) {
+                Spacer(Modifier.width(36.dp))
+            } else {
+                Box(modifier = Modifier.size(36.dp).padding(top = 2.dp)) {
+                    UserAvatar(
+                        displayName = msg.username,
+                        photoURL    = msg.photoURL,
+                        size        = 36,
                     )
                 }
             }
 
-            // Mesaj metni
-            if (msg.text.isNotBlank()) {
-                Text(
-                    text     = msg.text,
-                    fontSize = 14.sp,
-                    color    = AppColors.TextSecondary,
-                )
+            Column(
+                modifier             = Modifier.weight(1f),
+                verticalArrangement  = Arrangement.spacedBy(2.dp),
+            ) {
+                // Kullanıcı adı + zaman — sadece grubun ilk mesajında (ya da reply varsa hep göster)
+                if (!isGrouped || msg.replyToId.isNotBlank()) {
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalAlignment     = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            text       = msg.username,
+                            fontSize   = 14.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color      = if (isSelf) AppColors.SelfName else AppColors.TextPrimary,
+                        )
+                        Text(
+                            text     = timeStr,
+                            fontSize = 11.sp,
+                            color    = AppColors.TextTimestamp,
+                        )
+                    }
+                }
+
+                // Mesaj metni
+                if (msg.text.isNotBlank()) {
+                    Text(
+                        text     = msg.text,
+                        fontSize = 14.sp,
+                        color    = AppColors.TextSecondary,
+                    )
+                }
+
+                // Resim varsa göster
+                if (msg.imageUrl.isNotBlank()) {
+                    Spacer(Modifier.height(2.dp))
+                    AsyncChatImage(msg.imageUrl)
+                }
             }
 
-            // Resim varsa göster
-            if (msg.imageUrl.isNotBlank()) {
-                Spacer(Modifier.height(2.dp))
-                AsyncChatImage(msg.imageUrl)
+            // Zaman — sadece gruplu mesajlarda hover'da solda görünecek (Discord sitili)
+            if (isGrouped && msg.replyToId.isBlank() && hovered) {
+                Text(
+                    text     = timeStr,
+                    fontSize = 10.sp,
+                    color    = AppColors.TextTimestamp,
+                    modifier = Modifier.align(Alignment.CenterVertically),
+                )
             }
         }
 
-        // Zaman — sadece gruplu mesajlarda hover'da solda görünecek (Discord sitili)
-        if (isGrouped && hovered) {
-            Text(
-                text     = timeStr,
-                fontSize = 10.sp,
-                color    = AppColors.TextTimestamp,
-                modifier = Modifier.align(Alignment.CenterVertically),
+        // ── Sağ tık / uzun basma bağlam menüsü ───────────────────────────────
+        DropdownMenu(
+            expanded         = showContextMenu,
+            onDismissRequest = { showContextMenu = false },
+        ) {
+            DropdownMenuItem(
+                text    = { Text("↩ Yanıtla") },
+                onClick = { showContextMenu = false; onReply(msg) },
+            )
+            DropdownMenuItem(
+                text    = { Text("☑ Seç") },
+                onClick = { showContextMenu = false; onSelect(msg) },
             )
         }
     }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Asenkron resim yükleyici (chat mesajlarında kullanılır)
+// Disk + bellek önbellekli resim yükleyici
 // ─────────────────────────────────────────────────────────────────────────────
+private val imgCacheDir = java.io.File(System.getProperty("user.home"), ".furcord/img_cache")
+    .also { it.mkdirs() }
+
 @Composable
 private fun AsyncChatImage(url: String) {
     var bmp by remember(url) { mutableStateOf<androidx.compose.ui.graphics.ImageBitmap?>(null) }
     LaunchedEffect(url) {
         withContext(Dispatchers.IO) {
             try {
-                val bytes = java.net.URI.create(url).toURL().readBytes()
+                val key  = url.hashCode().toString()
+                val file = java.io.File(imgCacheDir, key)
+                val bytes = if (file.exists()) {
+                    file.readBytes()
+                } else {
+                    java.net.URI.create(url).toURL().readBytes().also { file.writeBytes(it) }
+                }
                 bmp = androidx.compose.ui.res.loadImageBitmap(bytes.inputStream())
             } catch (_: Exception) {}
         }
@@ -719,6 +807,7 @@ fun ServerDetailScreen(
     // Chat state — önbellekten başla, re-entry'de mesajlar kaybolmasın
     var messages      by remember { mutableStateOf(MessageStore.get(serverId)) }
     var messageText   by remember { mutableStateOf("") }
+    var replyingTo    by remember { mutableStateOf<ChatMessage?>(null) }
     var sendingMsg    by remember { mutableStateOf(false) }
     var sendingImage  by remember { mutableStateOf(false) }
     val listState     = rememberLazyListState()
@@ -1087,29 +1176,37 @@ fun ServerDetailScreen(
     fun sendMessage() {
         val txt = messageText.trim()
         if (txt.isEmpty() || sendingMsg) return
+        val reply = replyingTo
         // Optimistic: mesajı hemen listeye ekle
         val now = System.currentTimeMillis()
         val optimistic = ChatMessage(
-            id        = "pending-$now",
-            uid       = currentUser.uid,
-            username  = displayNickname,
-            photoURL  = currentUser.photoURL,
-            text      = txt,
-            timestamp = now,
+            id          = "pending-$now",
+            uid         = currentUser.uid,
+            username    = displayNickname,
+            photoURL    = currentUser.photoURL,
+            text        = txt,
+            timestamp   = now,
+            replyToId   = reply?.id   ?: "",
+            replyToUser = reply?.username ?: "",
+            replyToText = reply?.text ?: "",
         )
         messages = messages + optimistic
         messageText = ""
+        replyingTo  = null
         scope.launch { listState.animateScrollToItem((messages.size - 1).coerceAtLeast(0)) }
         scope.launch {
             sendingMsg = true
             try {
                 FirestoreClient.sendMessage(
-                    serverId  = serverId,
-                    uid       = currentUser.uid,
-                    username  = displayNickname,
-                    photoURL  = currentUser.photoURL,
-                    text      = txt,
-                    idToken   = currentUser.idToken,
+                    serverId    = serverId,
+                    uid         = currentUser.uid,
+                    username    = displayNickname,
+                    photoURL    = currentUser.photoURL,
+                    text        = txt,
+                    idToken     = currentUser.idToken,
+                    replyToId   = reply?.id   ?: "",
+                    replyToUser = reply?.username ?: "",
+                    replyToText = reply?.text?.take(120) ?: "",
                 )
                 // Gönderim başarılı: cache'i hemen güncelle (optimistik mesaj dahil)
                 // Kullanıcı Firestore fetch gelmeden önce ayrılırsa bile mesaj kaybolmaz
@@ -1472,6 +1569,9 @@ fun ServerDetailScreen(
                     onSend          = { sendMessage() },
                     onSendImage     = { sendImage() },
                     sendingImage    = sendingImage,
+                    replyingTo      = replyingTo,
+                    onReply         = { replyingTo = it },
+                    onReplyClear    = { replyingTo = null },
                     modifier        = Modifier.weight(1f).fillMaxWidth(),
                 )
             }
@@ -1643,9 +1743,62 @@ private fun ChatPanel(
     onSend: () -> Unit,
     onSendImage: () -> Unit = {},
     sendingImage: Boolean = false,
+    replyingTo: ChatMessage? = null,
+    onReply: (ChatMessage) -> Unit = {},
+    onReplyClear: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
+    // ── Çoklu seçim durumu (sıfırlamak için Clear basılır) ───────────────────
+    var selectedIds   by remember { mutableStateOf<Set<String>>(emptySet()) }
+    val inSelectionMode = selectedIds.isNotEmpty()
+
     Column(modifier = modifier) {
+        // ── Seçim modu top bar ────────────────────────────────────────────────
+        if (inSelectionMode) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(AppColors.Accent)
+                    .padding(horizontal = 4.dp, vertical = 2.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                IconButton(onClick = { selectedIds = emptySet() }, modifier = Modifier.size(36.dp)) {
+                    Icon(
+                        imageVector        = androidx.compose.material.icons.Icons.Default.Close,
+                        contentDescription = "Seçimi iptal et",
+                        tint               = Color.White,
+                        modifier           = Modifier.size(18.dp),
+                    )
+                }
+                Text(
+                    text     = "${selectedIds.size} mesaj seçildi",
+                    color    = Color.White,
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.Medium,
+                    modifier = Modifier.weight(1f).padding(start = 4.dp),
+                )
+                IconButton(
+                    onClick  = {
+                        val text = messages
+                            .filter  { it.id in selectedIds }
+                            .sortedBy { it.timestamp }
+                            .joinToString("\n") { "[${it.username}] ${it.text}" }
+                        val clipboard = java.awt.Toolkit.getDefaultToolkit().systemClipboard
+                        clipboard.setContents(java.awt.datatransfer.StringSelection(text), null)
+                        selectedIds = emptySet()
+                    },
+                    modifier = Modifier.size(36.dp),
+                ) {
+                    Icon(
+                        imageVector        = androidx.compose.material.icons.Icons.Default.ContentCopy,
+                        contentDescription = "Kopyala",
+                        tint               = Color.White,
+                        modifier           = Modifier.size(18.dp),
+                    )
+                }
+            }
+        }
+
         // Message list
         LazyColumn(
             state   = listState,
@@ -1672,12 +1825,65 @@ private fun ChatPanel(
                 val prev = messages.getOrNull(index - 1)
                 val isGrouped = prev != null &&
                     prev.uid == msg.uid &&
-                    (msg.timestamp - prev.timestamp) < 5 * 60_000L
-                MessageRow(msg = msg, isSelf = msg.uid == currentUser.uid, isGrouped = isGrouped)
+                    (msg.timestamp - prev.timestamp) < 5 * 60_000L &&
+                    msg.replyToId.isBlank()
+                MessageRow(
+                    msg             = msg,
+                    isSelf          = msg.uid == currentUser.uid,
+                    isGrouped       = isGrouped,
+                    isSelected      = msg.id in selectedIds,
+                    inSelectionMode = inSelectionMode,
+                    onReply         = { onReply(it) },
+                    onSelect        = { m ->
+                        selectedIds = if (m.id in selectedIds) selectedIds - m.id else selectedIds + m.id
+                    },
+                )
             }
         }
 
         HorizontalDivider(color = AppColors.Outline)
+
+        // ── Reply önizleme barı ───────────────────────────────────────────────
+        if (replyingTo != null) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(Color(0xFF2B2D31))
+                    .padding(horizontal = 16.dp, vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Box(
+                    Modifier
+                        .width(3.dp)
+                        .height(32.dp)
+                        .background(AppColors.Accent),
+                )
+                Spacer(Modifier.width(8.dp))
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        text       = replyingTo!!.username,
+                        fontSize   = 11.sp,
+                        color      = AppColors.Accent,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                    Text(
+                        text     = replyingTo!!.text.take(60),
+                        fontSize = 12.sp,
+                        color    = AppColors.TextMuted,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+                IconButton(onClick = onReplyClear, modifier = Modifier.size(28.dp)) {
+                    Icon(
+                        imageVector        = androidx.compose.material.icons.Icons.Default.Close,
+                        contentDescription = "Yanıtı iptal et",
+                        tint               = AppColors.TextMuted,
+                        modifier           = Modifier.size(16.dp),
+                    )
+                }
+            }
+        }
 
         // ── Modern pill input ──────────────────────────────────────────────────────────────
         Row(

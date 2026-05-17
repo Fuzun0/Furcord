@@ -23,13 +23,16 @@ data class ActiveUser(
 )
 
 data class ChatMessage(
-    val id:        String,
-    val uid:       String,
-    val username:  String,
-    val photoURL:  String,
-    val text:      String,
-    val timestamp: Long,
-    val imageUrl:  String = "",  // Firebase Storage görsel URL'şi (opsiyonel)
+    val id:           String,
+    val uid:          String,
+    val username:     String,
+    val photoURL:     String,
+    val text:         String,
+    val timestamp:    Long,
+    val imageUrl:     String = "",  // Firebase Storage görsel URL'si (opsiyonel)
+    val replyToId:    String = "",  // Yanıtlanan mesajın Firestore doc ID'si
+    val replyToUser:  String = "",  // Yanıtlanan mesajın yazarı
+    val replyToText:  String = "",  // Yanıtlanan mesajın kısa önizlemesi
 )
 
 /** Ses kanalına bağlı bir eşin bağlantı bilgileri. */
@@ -83,22 +86,27 @@ object MessageStore {
 
     /**
      * Mesajları disk'ten yükler.
-     * Format: id\u0001uid\u0001username\u0001photoURL\u0001timestamp\u0001text (6 alan, limit=6 ile split)
+     * Format v2: id\u0001uid\u0001username\u0001photoURL\u0001timestamp\u0001text\u0001imageUrl\u0001replyToId\u0001replyToUser\u0001replyToText
+     * Eski format (6 alan) da desteklenir.
      */
     fun get(serverId: String): List<ChatMessage> {
         return try {
             val f = file(serverId)
             if (!f.exists()) return emptyList()
             f.readLines().filter { it.isNotBlank() }.mapNotNull { line ->
-                val p = line.split("\u0001", limit = 6)
+                val p = line.split("\u0001", limit = 10)
                 if (p.size < 6) return@mapNotNull null
                 ChatMessage(
-                    id        = p[0],
-                    uid       = p[1],
-                    username  = p[2],
-                    photoURL  = p[3],
-                    timestamp = p[4].toLongOrNull() ?: 0L,
-                    text      = p[5],
+                    id          = p[0],
+                    uid         = p[1],
+                    username    = p[2],
+                    photoURL    = p[3],
+                    timestamp   = p[4].toLongOrNull() ?: 0L,
+                    text        = p[5],
+                    imageUrl    = p.getOrElse(6) { "" },
+                    replyToId   = p.getOrElse(7) { "" },
+                    replyToUser = p.getOrElse(8) { "" },
+                    replyToText = p.getOrElse(9) { "" },
                 )
             }.sortedBy { it.timestamp }
         } catch (_: Exception) { emptyList() }
@@ -108,7 +116,8 @@ object MessageStore {
     fun set(serverId: String, messages: List<ChatMessage>) = try {
         file(serverId).writeText(
             messages.joinToString("\n") { m ->
-                "${m.id}\u0001${m.uid}\u0001${m.username}\u0001${m.photoURL}\u0001${m.timestamp}\u0001${m.text}"
+                "${m.id}\u0001${m.uid}\u0001${m.username}\u0001${m.photoURL}\u0001${m.timestamp}" +
+                "\u0001${m.text}\u0001${m.imageUrl}\u0001${m.replyToId}\u0001${m.replyToUser}\u0001${m.replyToText}"
             }
         )
     } catch (_: Exception) {}
@@ -373,12 +382,19 @@ object FirestoreClient {
         text: String,
         idToken: String,
         imageUrl: String = "",
+        replyToId:   String = "",
+        replyToUser: String = "",
+        replyToText: String = "",
     ) = withContext(Dispatchers.IO) {
         fun String.esc() = replace("\\", "\\\\").replace("\"", "\\\"")
         val ts = System.currentTimeMillis()
-        val imgField = if (imageUrl.isNotBlank())
-            ",\"imageUrl\":{\"stringValue\":\"${imageUrl.esc()}\"}" else ""
-        val body = """{"fields":{"uid":{"stringValue":"${uid.esc()}"},"username":{"stringValue":"${username.esc()}"},"photoURL":{"stringValue":"${photoURL.esc()}"},"text":{"stringValue":"${text.esc()}"},"timestamp":{"integerValue":"$ts"}$imgField}}"""
+        val imgField   = if (imageUrl.isNotBlank())   ",\"imageUrl\":{\"stringValue\":\"${imageUrl.esc()}\"}"   else ""
+        val replyField = if (replyToId.isNotBlank())
+            ",\"replyToId\":{\"stringValue\":\"${replyToId.esc()}\"}" +
+            ",\"replyToUser\":{\"stringValue\":\"${replyToUser.esc()}\"}" +
+            ",\"replyToText\":{\"stringValue\":\"${replyToText.take(120).esc()}\"}"
+        else ""
+        val body = """{"fields":{"uid":{"stringValue":"${uid.esc()}"},"username":{"stringValue":"${username.esc()}"},"photoURL":{"stringValue":"${photoURL.esc()}"},"text":{"stringValue":"${text.esc()}"},"timestamp":{"integerValue":"$ts"}$imgField$replyField}}"""
         val (code, resp) = request("POST", "$BASE/servers/$serverId/messages", body, idToken)
         if (code !in 200..299) throw Exception("Mesaj gönderilemedi ($code): $resp")
     }
@@ -490,13 +506,16 @@ object FirestoreClient {
         // Hem text hem imageUrl boşsa mesaj değildir
         if (f.str("text").isEmpty() && f.str("imageUrl").isEmpty()) return null
         return ChatMessage(
-            id        = doc.name.substringAfterLast("/"),
-            uid       = f.str("uid"),
-            username  = f.str("username"),
-            photoURL  = f.str("photoURL"),
-            text      = f.str("text"),
-            timestamp = f.lng("timestamp"),
-            imageUrl  = f.str("imageUrl"),
+            id          = doc.name.substringAfterLast("/"),
+            uid         = f.str("uid"),
+            username    = f.str("username"),
+            photoURL    = f.str("photoURL"),
+            text        = f.str("text"),
+            timestamp   = f.lng("timestamp"),
+            imageUrl    = f.str("imageUrl"),
+            replyToId   = f.str("replyToId"),
+            replyToUser = f.str("replyToUser"),
+            replyToText = f.str("replyToText"),
         )
     }
 
@@ -565,12 +584,19 @@ object FirestoreClient {
         senderUid: String, senderName: String, senderPhoto: String,
         recipientUid: String, text: String, idToken: String,
         imageUrl: String = "",
+        replyToId:   String = "",
+        replyToUser: String = "",
+        replyToText: String = "",
     ) = withContext(Dispatchers.IO) {
         fun String.esc() = replace("\\", "\\\\").replace("\"", "\\\"")
         val dmId = listOf(senderUid, recipientUid).sorted().joinToString("_")
-        val imgField = if (imageUrl.isNotBlank())
-            ",\"imageUrl\":{\"stringValue\":\"${imageUrl.esc()}\"}" else ""
-        val body = """{"fields":{"uid":{"stringValue":"$senderUid"},"username":{"stringValue":"${senderName.esc()}"},"photoURL":{"stringValue":"${senderPhoto.esc()}"},"text":{"stringValue":"${text.esc()}"},"timestamp":{"integerValue":"${System.currentTimeMillis()}"}$imgField}}"""
+        val imgField   = if (imageUrl.isNotBlank())   ",\"imageUrl\":{\"stringValue\":\"${imageUrl.esc()}\"}"   else ""
+        val replyField = if (replyToId.isNotBlank())
+            ",\"replyToId\":{\"stringValue\":\"${replyToId.esc()}\"}" +
+            ",\"replyToUser\":{\"stringValue\":\"${replyToUser.esc()}\"}" +
+            ",\"replyToText\":{\"stringValue\":\"${replyToText.take(120).esc()}\"}"
+        else ""
+        val body = """{"fields":{"uid":{"stringValue":"$senderUid"},"username":{"stringValue":"${senderName.esc()}"},"photoURL":{"stringValue":"${senderPhoto.esc()}"},"text":{"stringValue":"${text.esc()}"},"timestamp":{"integerValue":"${System.currentTimeMillis()}"}$imgField$replyField}}"""
         request("POST", "$BASE/dm_threads/$dmId/messages", idToken = idToken, body = body)
     }
 

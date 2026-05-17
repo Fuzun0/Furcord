@@ -301,22 +301,26 @@ object LiveKitRoom {
     }
 
     // ── Microphone ───────────────────────────────────────────────────────────
-    // AudioOptions: aggressive voice tuning.
-    // echoCancellation    — AEC (removes speaker echo from mic signal)
-    // noiseSuppression    — NS  (suppresses background noise)
-    // autoGainControl     — AGC (normalises speaking volume automatically)
-    // highpassFilter      — HPF (removes sub-80 Hz rumble / HVAC noise)
-    // typingDetection     — suppresses mechanical keyboard clicks
-    // residualEchoDetector— secondary pass to catch AEC residuals
+    // "Studio Quality" Windows Desktop Audio Profile
+    //
+    // echoCancellation     ON  — AEC prevents speaker bleed into mic
+    // noiseSuppression     ON  — light background noise reduction
+    // autoGainControl      OFF — Windows hardware/driver AGC is superior; WebRTC
+    //                            software AGC causes pumping/distortion on desktop
+    // highpassFilter       OFF — HPF makes desktop mics sound thin, metallic,
+    //                            robotic; low-frequency warmth preserved
+    // typingDetection      OFF — causes extreme volume ducking on keystrokes,
+    //                            leading to choppy/cut-out audio
+    // residualEchoDetector ON  — secondary AEC pass, low overhead
     // ─────────────────────────────────────────────────────────────────────────
     private fun attachMicrophone() {
         try {
             val opts = AudioOptions().apply {
                 echoCancellation     = true
                 noiseSuppression     = true
-                autoGainControl      = true
-                highpassFilter       = true
-                typingDetection      = true
+                autoGainControl      = false
+                highpassFilter       = false
+                typingDetection      = false
                 residualEchoDetector = true
             }
             pubAudioSource = factory.createAudioSource(opts)
@@ -324,7 +328,7 @@ object LiveKitRoom {
             // addTrack returns an RTCRtpSender — jail immediately; GC of sender
             // finalizer calls native delete while the RTP pipeline is active.
             pubPc?.addTrack(pubAudioTrack!!, listOf("microphone"))?.also { gcJail.add(it) }
-            println("[LiveKit] Microphone attached (AEC+NS+AGC+HPF+typing+residualEcho)")
+            println("[LiveKit] Microphone attached (AEC+NS | AGC=off HPF=off Typing=off — Studio Profile)")
         } catch (e: Exception) {
             println("[LiveKit] attachMicrophone FAILED:")
             e.printStackTrace()

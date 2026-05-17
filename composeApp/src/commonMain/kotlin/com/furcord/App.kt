@@ -217,27 +217,28 @@ fun App() {
                     val scope = rememberCoroutineScope()
                     AlertDialog(
                         onDismissRequest = { if (!updating) updateDismissed = true },
-                        title = { Text("🆕 Güncelleme Mevcut") },
+                        title = { Text("� Furcord Yeni Sürüm Yayında!") },
                         text = {
                             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                                 Text("v${UpdateManager.currentVersion}  →  v${info.latestVersion}")
-                                if (info.releaseNotes.isNotBlank()) {
-                                    HorizontalDivider()
-                                    Text("Yenilikler:", style = MaterialTheme.typography.labelMedium)
-                                    // Scrollable release notes box
-                                    Box(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .heightIn(max = 220.dp)
-                                            .verticalScroll(rememberScrollState()),
-                                    ) {
-                                        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                                            info.releaseNotes.lines()
-                                                .map { it.trimStart('-', '*', ' ') }
-                                                .filter { it.isNotBlank() }
-                                                .forEach { line ->
-                                                    Text("• $line", style = MaterialTheme.typography.bodySmall)
-                                                }
+                                HorizontalDivider()
+                                // Scrollable, kullanıcı dostu Türkçe değişiklik listesi
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .heightIn(max = 260.dp)
+                                        .verticalScroll(rememberScrollState()),
+                                ) {
+                                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                        val changelog = listOf(
+                                            "🎙️ Pürüzsüz Ses Deneyimi: Ses altyapımızı tamamen yeniledik. Artık arka plan gürültüsü olmadan, Discord kalitesinde kesintisiz sohbet edebilirsiniz.",
+                                            "💬 Mesaj Yanıtlama: Tıpkı WhatsApp'taki gibi artık önceki mesajları alıntılayıp cevap verebilirsiniz.",
+                                            "📋 Toplu Kopyalama: Birden fazla mesajı seçip tek seferde kopyalama özelliği eklendi.",
+                                            "⚡ Işık Hızında Görseller: Gönderilen resimler artık cihazınıza kaydediliyor. Eskilere dönüp bakarken resimler internet beklemeden anında açılacak!",
+                                            "🛠️ Yayın özelliği, size çok daha iyi bir deneyim sunabilmemiz için kısa süreliğine bakıma alındı.",
+                                        )
+                                        changelog.forEach { line ->
+                                            Text("• $line", style = MaterialTheme.typography.bodySmall)
                                         }
                                     }
                                 }
