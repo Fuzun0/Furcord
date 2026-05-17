@@ -115,6 +115,19 @@ object LiveKitRoom {
     private var subSetRemoteObs:    SetSessionDescriptionObserver?    = null
 
     // =========================================================================
+    // ICE CANDIDATE QUEUES
+    // Trickle ICE adayları setRemoteDescription'dan ÖNCE gelebilir (server,
+    // offer/answer ile paralel olarak aday gönderir).  setRemoteDescription async
+    // olduğundan onSuccess callback'i henüz çağrılmadan addIceCandidate yapılırsa
+    // aday sessizce düşer → ICE sadece relay ile tamamlanır → yüksek gecikme.
+    // Çözüm: setRemoteDescription tamamlanana kadar adayları tamponla, sonra boşalt.
+    // =========================================================================
+    @Volatile private var pubRemoteDescSet = false
+    @Volatile private var subRemoteDescSet = false
+    private val pubCandidateQueue = mutableListOf<RTCIceCandidate>()
+    private val subCandidateQueue = mutableListOf<RTCIceCandidate>()
+
+    // =========================================================================
     // PUBLIC API
     // =========================================================================
 
@@ -156,8 +169,17 @@ object LiveKitRoom {
                         println("[LiveKit] Answer received → pubPc.setRemoteDescription")
                         pubSetRemoteObs = object : SetSessionDescriptionObserver {
                             override fun onSuccess() {
-                                try { println("[LiveKit] pub setRemoteDescription — OK") }
-                                catch (e: Exception) { e.printStackTrace() }
+                                try {
+                                    println("[LiveKit] pub setRemoteDescription — OK")
+                                    pubRemoteDescSet = true
+                                    synchronized(pubCandidateQueue) {
+                                        if (pubCandidateQueue.isNotEmpty()) {
+                                            println("[LiveKit] Draining ${pubCandidateQueue.size} queued ICE candidate(s) → pubPc")
+                                            pubCandidateQueue.forEach { pubPc?.addIceCandidate(it) }
+                                            pubCandidateQueue.clear()
+                                        }
+                                    }
+                                } catch (e: Exception) { e.printStackTrace() }
                             }
                             override fun onFailure(e: String) {
                                 try { println("[LiveKit] pub setRemoteDescription — FAILED: $e") }
@@ -176,6 +198,14 @@ object LiveKitRoom {
                             override fun onSuccess() {
                                 try {
                                     println("[LiveKit] sub setRemoteDescription — OK → creating answer")
+                                    subRemoteDescSet = true
+                                    synchronized(subCandidateQueue) {
+                                        if (subCandidateQueue.isNotEmpty()) {
+                                            println("[LiveKit] Draining ${subCandidateQueue.size} queued ICE candidate(s) → subPc")
+                                            subCandidateQueue.forEach { subPc?.addIceCandidate(it) }
+                                            subCandidateQueue.clear()
+                                        }
+                                    }
                                     scope.launch { subscriberAnswer(sig) }
                                 } catch (e: Exception) { e.printStackTrace() }
                             }
@@ -189,15 +219,27 @@ object LiveKitRoom {
                         subPc?.setRemoteDescription(offerSdp, subSetRemoteObs!!)
                     }
 
-                    // ── ICE trickle — properly routed by target field ─────────────────
+                    // ── ICE trickle — buffered to avoid race with setRemoteDescription ──
                     is LiveKitSignalingClient.Event.TrickleReceived -> {
                         val (sdp, mid, idx) = parseCandidateJson(event.msg.candidateInit)
                         val candidate = RTCIceCandidate(mid, idx, sdp)
                         gcJail.add(candidate)
                         when (event.msg.target) {
-                            0    -> { pubPc?.addIceCandidate(candidate); println("[LiveKit] ICE → pubPc  mid=$mid") }
-                            1    -> { subPc?.addIceCandidate(candidate); println("[LiveKit] ICE → subPc  mid=$mid") }
-                            else ->   println("[LiveKit] ICE unknown target=${event.msg.target}, ignored")
+                            0 -> if (pubRemoteDescSet) {
+                                pubPc?.addIceCandidate(candidate)
+                                println("[LiveKit] ICE → pubPc  mid=$mid")
+                            } else {
+                                synchronized(pubCandidateQueue) { pubCandidateQueue.add(candidate) }
+                                println("[LiveKit] ICE → pubPc  mid=$mid (queued — remote desc pending)")
+                            }
+                            1 -> if (subRemoteDescSet) {
+                                subPc?.addIceCandidate(candidate)
+                                println("[LiveKit] ICE → subPc  mid=$mid")
+                            } else {
+                                synchronized(subCandidateQueue) { subCandidateQueue.add(candidate) }
+                                println("[LiveKit] ICE → subPc  mid=$mid (queued — remote desc pending)")
+                            }
+                            else -> println("[LiveKit] ICE unknown target=${event.msg.target}, ignored")
                         }
                     }
 
@@ -220,6 +262,10 @@ object LiveKitRoom {
      * process will clean them on exit.
      */
     fun leave() {
+        pubRemoteDescSet = false
+        subRemoteDescSet = false
+        synchronized(pubCandidateQueue) { pubCandidateQueue.clear() }
+        synchronized(subCandidateQueue) { subCandidateQueue.clear() }
         try { signalingClient?.disconnect() } catch (_: Exception) {}
         println("[LiveKit] leave(): WebSocket closed — native objects intentionally retained")
     }
