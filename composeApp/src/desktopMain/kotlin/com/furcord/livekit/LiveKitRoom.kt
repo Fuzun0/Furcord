@@ -84,9 +84,8 @@ object LiveKitRoom {
     // =========================================================================
     // SESSION STATE
     // =========================================================================
-    private var pubSig: LiveKitSignalingClient? = null
-    private var subSig: LiveKitSignalingClient? = null
-    private var pubPc:  RTCPeerConnection?      = null
+    private var signalingClient: LiveKitSignalingClient? = null
+    private var pubPc:  RTCPeerConnection?               = null
     private var subPc:  RTCPeerConnection?      = null
     private var iceServers: List<RTCIceServer>  = emptyList()
 
@@ -119,28 +118,42 @@ object LiveKitRoom {
     // PUBLIC API
     // =========================================================================
 
-    fun joinAndPublish(roomName: String, identity: String, displayName: String) {
+    /**
+     * Joins a LiveKit room with a SINGLE WebSocket connection (pub+sub unified).
+     *
+     * LiveKit routes ALL ICE trickle candidates through the one active WebSocket
+     * per participant identity.  The previous dual-WS design silently dropped half
+     * of all candidates (target=1 arrived on pubSig → ignored; target=0 arrived on
+     * subSig → ignored), leaving ICE incomplete and forcing relay-only paths.
+     * Additionally, the second connection attempt with the same identity kicked the
+     * first.  Both issues are eliminated here.
+     */
+    fun join(roomName: String, identity: String, displayName: String) {
         scope.launch {
             val token = LiveKitTokenGenerator.generateToken(
                 apiKey, apiSecret, roomName, identity, displayName,
-                canPublish = true, canSubscribe = false
+                canPublish = true, canSubscribe = true
             )
-            val sig = LiveKitSignalingClient(serverUrl, token).also { pubSig = it }
+            val sig = LiveKitSignalingClient(serverUrl, token).also { signalingClient = it }
             sig.connect()
-            println("[LiveKit] Publisher: connecting to $serverUrl")
+            println("[LiveKit] Connecting (single-WS pub+sub) → $serverUrl  room=$roomName  identity=$identity")
 
             sig.events.collect { event ->
                 when (event) {
+                    // ── Handshake ────────────────────────────────────────────────────
                     is LiveKitSignalingClient.Event.Connected -> {
-                        println("[LiveKit] Publisher: WebSocket connected")
+                        println("[LiveKit] WebSocket connected")
                     }
                     is LiveKitSignalingClient.Event.JoinReceived -> {
-                        println("[LiveKit] Publisher: Join ack — ${event.response.iceServers.size} ICE server(s)")
+                        println("[LiveKit] Join ack — ${event.response.iceServers.size} ICE server(s)")
                         iceServers = event.response.iceServers.map { it.toRTC() }
                         createPublisherPc(sig)
+                        createSubscriberPc(sig)
                     }
+
+                    // ── Publisher path: server sends Answer → pubPc ──────────────────
                     is LiveKitSignalingClient.Event.AnswerReceived -> {
-                        println("[LiveKit] Publisher: Answer received")
+                        println("[LiveKit] Answer received → pubPc.setRemoteDescription")
                         pubSetRemoteObs = object : SetSessionDescriptionObserver {
                             override fun onSuccess() {
                                 try { println("[LiveKit] pub setRemoteDescription — OK") }
@@ -155,49 +168,14 @@ object LiveKitRoom {
                         gcJail.add(answerSdp)
                         pubPc?.setRemoteDescription(answerSdp, pubSetRemoteObs!!)
                     }
-                    is LiveKitSignalingClient.Event.TrickleReceived -> {
-                        if (event.msg.target == 0) {
-                            val (sdp, mid, idx) = parseCandidateJson(event.msg.candidateInit)
-                            val candidate = RTCIceCandidate(mid, idx, sdp)
-                            gcJail.add(candidate)
-                            pubPc?.addIceCandidate(candidate)
-                        }
-                    }
-                    is LiveKitSignalingClient.Event.Disconnected -> {
-                        println("[LiveKit] Publisher: disconnected")
-                    }
-                    else -> {}
-                }
-            }
-        }
-    }
 
-    fun joinAndSubscribe(roomName: String, identity: String, displayName: String) {
-        scope.launch {
-            val token = LiveKitTokenGenerator.generateToken(
-                apiKey, apiSecret, roomName, identity, displayName,
-                canPublish = false, canSubscribe = true
-            )
-            val sig = LiveKitSignalingClient(serverUrl, token).also { subSig = it }
-            sig.connect()
-            println("[LiveKit] Subscriber: connecting to $serverUrl")
-
-            sig.events.collect { event ->
-                when (event) {
-                    is LiveKitSignalingClient.Event.Connected -> {
-                        println("[LiveKit] Subscriber: WebSocket connected")
-                    }
-                    is LiveKitSignalingClient.Event.JoinReceived -> {
-                        println("[LiveKit] Subscriber: Join ack — ${event.response.iceServers.size} ICE server(s)")
-                        iceServers = event.response.iceServers.map { it.toRTC() }
-                        createSubscriberPc(sig)
-                    }
+                    // ── Subscriber path: server sends Offer → subPc → Answer ─────────
                     is LiveKitSignalingClient.Event.OfferReceived -> {
-                        println("[LiveKit] Subscriber: Offer received (${event.sdp.sdp.length} bytes)")
+                        println("[LiveKit] Offer received (${event.sdp.sdp.length} b) → subPc.setRemoteDescription")
                         subSetRemoteObs = object : SetSessionDescriptionObserver {
                             override fun onSuccess() {
                                 try {
-                                    println("[LiveKit] sub setRemoteDescription — OK")
+                                    println("[LiveKit] sub setRemoteDescription — OK → creating answer")
                                     scope.launch { subscriberAnswer(sig) }
                                 } catch (e: Exception) { e.printStackTrace() }
                             }
@@ -210,16 +188,21 @@ object LiveKitRoom {
                         gcJail.add(offerSdp)
                         subPc?.setRemoteDescription(offerSdp, subSetRemoteObs!!)
                     }
+
+                    // ── ICE trickle — properly routed by target field ─────────────────
                     is LiveKitSignalingClient.Event.TrickleReceived -> {
-                        if (event.msg.target == 1) {
-                            val (sdp, mid, idx) = parseCandidateJson(event.msg.candidateInit)
-                            val candidate = RTCIceCandidate(mid, idx, sdp)
-                            gcJail.add(candidate)
-                            subPc?.addIceCandidate(candidate)
+                        val (sdp, mid, idx) = parseCandidateJson(event.msg.candidateInit)
+                        val candidate = RTCIceCandidate(mid, idx, sdp)
+                        gcJail.add(candidate)
+                        when (event.msg.target) {
+                            0    -> { pubPc?.addIceCandidate(candidate); println("[LiveKit] ICE → pubPc  mid=$mid") }
+                            1    -> { subPc?.addIceCandidate(candidate); println("[LiveKit] ICE → subPc  mid=$mid") }
+                            else ->   println("[LiveKit] ICE unknown target=${event.msg.target}, ignored")
                         }
                     }
+
                     is LiveKitSignalingClient.Event.Disconnected -> {
-                        println("[LiveKit] Subscriber: disconnected")
+                        println("[LiveKit] WebSocket disconnected")
                     }
                     else -> {}
                 }
@@ -237,9 +220,8 @@ object LiveKitRoom {
      * process will clean them on exit.
      */
     fun leave() {
-        try { pubSig?.disconnect() } catch (_: Exception) {}
-        try { subSig?.disconnect() } catch (_: Exception) {}
-        println("[LiveKit] leave(): WebSockets closed — native objects intentionally retained")
+        try { signalingClient?.disconnect() } catch (_: Exception) {}
+        println("[LiveKit] leave(): WebSocket closed — native objects intentionally retained")
     }
 
     // =========================================================================
@@ -300,35 +282,27 @@ object LiveKitRoom {
         println("[LiveKit] Publisher PC created")
     }
 
-    // ── Microphone ───────────────────────────────────────────────────────────
-    // "Studio Quality" Windows Desktop Audio Profile
-    //
-    // echoCancellation     ON  — AEC prevents speaker bleed into mic
-    // noiseSuppression     ON  — light background noise reduction
-    // autoGainControl      OFF — Windows hardware/driver AGC is superior; WebRTC
-    //                            software AGC causes pumping/distortion on desktop
-    // highpassFilter       OFF — HPF makes desktop mics sound thin, metallic,
-    //                            robotic; low-frequency warmth preserved
-    // typingDetection      OFF — causes extreme volume ducking on keystrokes,
-    //                            leading to choppy/cut-out audio
-    // residualEchoDetector ON  — secondary AEC pass, low overhead
+    // ── Raw Audio Profile — ALL WebRTC APM processing OFF ────────────────────
+    // AEC/NS/AGC/HPF/TD/RED all disabled — raw PCM fed directly to Opus encoder.
+    // Desktop hardware already does its own audio processing; WebRTC software
+    // APM on top causes gating, pumping, and choppy artifacts.
     // ─────────────────────────────────────────────────────────────────────────
     private fun attachMicrophone() {
         try {
             val opts = AudioOptions().apply {
-                echoCancellation     = true   // AEC açık — geri yankıyı bastırır
-                noiseSuppression     = false  // NS KAPALI — agresif gate kesik ses yapıyordu
+                echoCancellation     = false  // AEC KAPALI — masaüstünde gating kesilmesi yapıyordu
+                noiseSuppression     = false  // NS  KAPALI — agresif gate kesik ses yapıyordu
                 autoGainControl      = false  // AGC KAPALI — hacim dalgalanmalarını önler
                 highpassFilter       = false  // HPF KAPALI — düşük frekans sıcaklığını korur
-                typingDetection      = false  // Typing detection KAPALI — tuş sesinde ses kesmez
-                residualEchoDetector = true   // Artık eko dedektörü açık — düşük maliyetli AEC geçişi
+                typingDetection      = false  // TD  KAPALI — tuş sesinde ses kesmez
+                residualEchoDetector = false  // RED KAPALI — AEC kapalıysa gereksiz
             }
             pubAudioSource = factory.createAudioSource(opts)
             pubAudioTrack  = factory.createAudioTrack("mic_audio", pubAudioSource!!)
             // addTrack returns an RTCRtpSender — jail immediately; GC of sender
             // finalizer calls native delete while the RTP pipeline is active.
             pubPc?.addTrack(pubAudioTrack!!, listOf("microphone"))?.also { gcJail.add(it) }
-            println("[LiveKit] Microphone attached (AEC=on NS=off AGC=off HPF=off — Raw Ungate Profile)")
+            println("[LiveKit] Microphone attached — Raw Profile (AEC=off NS=off AGC=off HPF=off TD=off RED=off)")
         } catch (e: Exception) {
             println("[LiveKit] attachMicrophone FAILED:")
             e.printStackTrace()
@@ -353,7 +327,7 @@ object LiveKitRoom {
         }
         pc.setLocalDescription(mungedOffer, pubSetLocalDescObs!!)
         sig.sendOffer(mungedSdp)
-        println("[LiveKit] Offer sent (Opus DTX=off, 64 kbps, FEC=on)")
+        println("[LiveKit] Offer sent (Opus DTX=off CBR=on FEC=on 128kbps)")
     }
 
     // =========================================================================
@@ -451,9 +425,12 @@ object LiveKitRoom {
                 try { println("[LiveKit] sub setLocalDescription — FAILED: $e") } catch (ex: Exception) { ex.printStackTrace() }
             }
         }
-        pc.setLocalDescription(answer, subSetLocalDescObs!!)
-        sig.sendAnswer(answer.sdp)
-        println("[LiveKit] Subscriber answer sent")
+        val mungedSdp    = mungeOpusSdp(answer.sdp)
+        val mungedAnswer = RTCSessionDescription(RTCSdpType.ANSWER, mungedSdp)
+        gcJail.add(mungedAnswer)
+        pc.setLocalDescription(mungedAnswer, subSetLocalDescObs!!)
+        sig.sendAnswer(mungedSdp)
+        println("[LiveKit] Subscriber answer sent (Opus munged)")
     }
 
     // =========================================================================
@@ -513,7 +490,7 @@ object LiveKitRoom {
         val pt = Regex("""a=rtpmap:(\d+) opus/48000""").find(sdp)
             ?.groupValues?.get(1)
             ?: return sdp.also { println("[LiveKit] SDP munge: Opus PT not found") }
-        val newFmtp   = "a=fmtp:$pt minptime=10;useinbandfec=1;usedtx=0;maxaveragebitrate=128000"
+        val newFmtp   = "a=fmtp:$pt minptime=10;useinbandfec=1;usedtx=0;cbr=1;maxaveragebitrate=128000"
         val fmtpRegex = Regex("""a=fmtp:$pt [^\r\n]*""")
         return if (fmtpRegex.containsMatchIn(sdp))
             fmtpRegex.replace(sdp, newFmtp)
