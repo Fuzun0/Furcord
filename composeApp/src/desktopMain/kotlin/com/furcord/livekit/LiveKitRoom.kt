@@ -72,12 +72,24 @@ object LiveKitRoom {
     // =========================================================================
     // PEER CONNECTION FACTORY
     // Single shared factory — default native ADM+APM (WASAPI on Windows).
-    // Do NOT inject custom AudioDeviceModule; JNI bridge cannot validate lifetime
-    // of Java-constructed objects across native thread boundaries.
+    // kWindowsCoreAudio2 uses a different C++ implementation that does NOT default
+    // to kDefaultCommunicationDevice (eCommunications WASAPI endpoint).
+    // kWindowsCoreAudio (the default) opens both mic and speaker on the
+    // eCommunications endpoint → Windows activates system-level NS/AEC/AGC APOs.
+    // kWindowsCoreAudio2 opens devices on the eConsole/multimedia endpoint → no
+    // Windows voice processing layer, audio quality is preserved as-is.
+    // ADM is kept alive in gcJail (singleton also holds a strong ref) so the
+    // underlying C++ object is never finalised while the factory is active.
     // =========================================================================
+    private val adm: AudioDeviceModule by lazy {
+        AudioDeviceModule(AudioLayer.kWindowsCoreAudio2).also {
+            gcJail.add(it)
+            println("[LiveKit] AudioDeviceModule created (kWindowsCoreAudio2 — eConsole WASAPI)")
+        }
+    }
     private val factory: PeerConnectionFactory by lazy {
-        PeerConnectionFactory().also {
-            println("[LiveKit] PeerConnectionFactory created (native default ADM+APM)")
+        PeerConnectionFactory(adm).also {
+            println("[LiveKit] PeerConnectionFactory created (kWindowsCoreAudio2 ADM, no Windows voice APOs)")
         }
     }
 
