@@ -316,19 +316,19 @@ object LiveKitRoom {
     private fun attachMicrophone() {
         try {
             val opts = AudioOptions().apply {
-                echoCancellation     = true
-                noiseSuppression     = true
-                autoGainControl      = false
-                highpassFilter       = false
-                typingDetection      = false
-                residualEchoDetector = true
+                echoCancellation     = true   // AEC açık — geri yankıyı bastırır
+                noiseSuppression     = false  // NS KAPALI — agresif gate kesik ses yapıyordu
+                autoGainControl      = false  // AGC KAPALI — hacim dalgalanmalarını önler
+                highpassFilter       = false  // HPF KAPALI — düşük frekans sıcaklığını korur
+                typingDetection      = false  // Typing detection KAPALI — tuş sesinde ses kesmez
+                residualEchoDetector = true   // Artık eko dedektörü açık — düşük maliyetli AEC geçişi
             }
             pubAudioSource = factory.createAudioSource(opts)
             pubAudioTrack  = factory.createAudioTrack("mic_audio", pubAudioSource!!)
             // addTrack returns an RTCRtpSender — jail immediately; GC of sender
             // finalizer calls native delete while the RTP pipeline is active.
             pubPc?.addTrack(pubAudioTrack!!, listOf("microphone"))?.also { gcJail.add(it) }
-            println("[LiveKit] Microphone attached (AEC+NS | AGC=off HPF=off Typing=off — Studio Profile)")
+            println("[LiveKit] Microphone attached (AEC=on NS=off AGC=off HPF=off — Raw Ungate Profile)")
         } catch (e: Exception) {
             println("[LiveKit] attachMicrophone FAILED:")
             e.printStackTrace()
@@ -513,7 +513,7 @@ object LiveKitRoom {
         val pt = Regex("""a=rtpmap:(\d+) opus/48000""").find(sdp)
             ?.groupValues?.get(1)
             ?: return sdp.also { println("[LiveKit] SDP munge: Opus PT not found") }
-        val newFmtp   = "a=fmtp:$pt minptime=10;useinbandfec=1;usedtx=0;maxaveragebitrate=64000"
+        val newFmtp   = "a=fmtp:$pt minptime=10;useinbandfec=1;usedtx=0;maxaveragebitrate=128000"
         val fmtpRegex = Regex("""a=fmtp:$pt [^\r\n]*""")
         return if (fmtpRegex.containsMatchIn(sdp))
             fmtpRegex.replace(sdp, newFmtp)

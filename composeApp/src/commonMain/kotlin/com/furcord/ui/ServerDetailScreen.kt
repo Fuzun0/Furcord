@@ -26,8 +26,6 @@ import androidx.compose.ui.input.key.*
 import androidx.compose.ui.input.pointer.PointerEventType
 import androidx.compose.ui.input.pointer.isSecondaryPressed
 import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.foundation.gestures.detectTapGestures
-import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -440,11 +438,9 @@ private fun VoiceConnectedBar(channelName: String, onDisconnect: () -> Unit) {
 private fun MessageRow(
     msg: ChatMessage,
     isSelf: Boolean,
-    isGrouped: Boolean = false,  // true → aynı kullanıcı'nın önceki mesajı var (5 dk içinde)
-    isSelected: Boolean = false,
-    inSelectionMode: Boolean = false,
+    isGrouped: Boolean = false,
     onReply: (ChatMessage) -> Unit = {},
-    onSelect: (ChatMessage) -> Unit = {},
+    onCopy:  (ChatMessage) -> Unit = {},
 ) {
     val timeStr = remember(msg.timestamp) {
         SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(msg.timestamp))
@@ -453,27 +449,32 @@ private fun MessageRow(
     val hovered by interactionSource.collectIsHoveredAsState()
 
     var showContextMenu by remember { mutableStateOf(false) }
-
-    val bgColor = when {
-        isSelected -> AppColors.Accent.copy(alpha = 0.18f)
-        hovered    -> AppColors.BgElevated.copy(alpha = 0.45f)
-        else       -> Color.Transparent
-    }
+    var menuOffset      by remember { mutableStateOf(androidx.compose.ui.unit.DpOffset.Zero) }
 
     Column(
         modifier = Modifier
             .fillMaxWidth()
             .hoverable(interactionSource)
-            .background(bgColor)
+            .background(if (hovered) AppColors.BgElevated.copy(alpha = 0.45f) else Color.Transparent)
             .pointerInput(msg.id) {
-                detectTapGestures(
-                    onLongPress = {
-                        if (inSelectionMode) onSelect(msg) else showContextMenu = true
-                    },
-                    onTap = {
-                        if (inSelectionMode) onSelect(msg)
-                    },
-                )
+                awaitPointerEventScope {
+                    while (true) {
+                        val event = awaitPointerEvent()
+                        // Secondary button = right click
+                        if (event.type == PointerEventType.Press &&
+                            event.buttons.isSecondaryPressed
+                        ) {
+                            val pos = event.changes.firstOrNull()?.position
+                            if (pos != null) {
+                                menuOffset = androidx.compose.ui.unit.DpOffset(
+                                    x = (pos.x / density).dp,
+                                    y = (pos.y / density).dp,
+                                )
+                            }
+                            showContextMenu = true
+                        }
+                    }
+                }
             }
             .padding(
                 start  = 16.dp,
@@ -523,7 +524,6 @@ private fun MessageRow(
             horizontalArrangement = Arrangement.spacedBy(12.dp),
             verticalAlignment     = Alignment.Top,
         ) {
-            // Avatar alanı — gruplu mesajda boş bırak (indent)
             if (isGrouped && msg.replyToId.isBlank()) {
                 Spacer(Modifier.width(36.dp))
             } else {
@@ -540,7 +540,6 @@ private fun MessageRow(
                 modifier             = Modifier.weight(1f),
                 verticalArrangement  = Arrangement.spacedBy(2.dp),
             ) {
-                // Kullanıcı adı + zaman — sadece grubun ilk mesajında (ya da reply varsa hep göster)
                 if (!isGrouped || msg.replyToId.isNotBlank()) {
                     Row(
                         horizontalArrangement = Arrangement.spacedBy(6.dp),
@@ -560,7 +559,6 @@ private fun MessageRow(
                     }
                 }
 
-                // Mesaj metni
                 if (msg.text.isNotBlank()) {
                     Text(
                         text     = msg.text,
@@ -569,14 +567,12 @@ private fun MessageRow(
                     )
                 }
 
-                // Resim varsa göster
                 if (msg.imageUrl.isNotBlank()) {
                     Spacer(Modifier.height(2.dp))
                     AsyncChatImage(msg.imageUrl)
                 }
             }
 
-            // Zaman — sadece gruplu mesajlarda hover'da solda görünecek (Discord sitili)
             if (isGrouped && msg.replyToId.isBlank() && hovered) {
                 Text(
                     text     = timeStr,
@@ -587,18 +583,19 @@ private fun MessageRow(
             }
         }
 
-        // ── Sağ tık / uzun basma bağlam menüsü ───────────────────────────────
+        // ── Sağ-tık bağlam menüsü ─────────────────────────────────────────────
         DropdownMenu(
             expanded         = showContextMenu,
             onDismissRequest = { showContextMenu = false },
+            offset           = menuOffset,
         ) {
             DropdownMenuItem(
                 text    = { Text("↩ Yanıtla") },
                 onClick = { showContextMenu = false; onReply(msg) },
             )
             DropdownMenuItem(
-                text    = { Text("☑ Seç") },
-                onClick = { showContextMenu = false; onSelect(msg) },
+                text    = { Text("📋 Kopyala") },
+                onClick = { showContextMenu = false; onCopy(msg) },
             )
         }
     }
@@ -1748,57 +1745,7 @@ private fun ChatPanel(
     onReplyClear: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
-    // ── Çoklu seçim durumu (sıfırlamak için Clear basılır) ───────────────────
-    var selectedIds   by remember { mutableStateOf<Set<String>>(emptySet()) }
-    val inSelectionMode = selectedIds.isNotEmpty()
-
     Column(modifier = modifier) {
-        // ── Seçim modu top bar ────────────────────────────────────────────────
-        if (inSelectionMode) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .background(AppColors.Accent)
-                    .padding(horizontal = 4.dp, vertical = 2.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                IconButton(onClick = { selectedIds = emptySet() }, modifier = Modifier.size(36.dp)) {
-                    Icon(
-                        imageVector        = androidx.compose.material.icons.Icons.Default.Close,
-                        contentDescription = "Seçimi iptal et",
-                        tint               = Color.White,
-                        modifier           = Modifier.size(18.dp),
-                    )
-                }
-                Text(
-                    text     = "${selectedIds.size} mesaj seçildi",
-                    color    = Color.White,
-                    fontSize = 14.sp,
-                    fontWeight = FontWeight.Medium,
-                    modifier = Modifier.weight(1f).padding(start = 4.dp),
-                )
-                IconButton(
-                    onClick  = {
-                        val text = messages
-                            .filter  { it.id in selectedIds }
-                            .sortedBy { it.timestamp }
-                            .joinToString("\n") { "[${it.username}] ${it.text}" }
-                        val clipboard = java.awt.Toolkit.getDefaultToolkit().systemClipboard
-                        clipboard.setContents(java.awt.datatransfer.StringSelection(text), null)
-                        selectedIds = emptySet()
-                    },
-                    modifier = Modifier.size(36.dp),
-                ) {
-                    Icon(
-                        imageVector        = androidx.compose.material.icons.Icons.Default.ContentCopy,
-                        contentDescription = "Kopyala",
-                        tint               = Color.White,
-                        modifier           = Modifier.size(18.dp),
-                    )
-                }
-            }
-        }
-
         // Message list
         LazyColumn(
             state   = listState,
@@ -1828,14 +1775,13 @@ private fun ChatPanel(
                     (msg.timestamp - prev.timestamp) < 5 * 60_000L &&
                     msg.replyToId.isBlank()
                 MessageRow(
-                    msg             = msg,
-                    isSelf          = msg.uid == currentUser.uid,
-                    isGrouped       = isGrouped,
-                    isSelected      = msg.id in selectedIds,
-                    inSelectionMode = inSelectionMode,
-                    onReply         = { onReply(it) },
-                    onSelect        = { m ->
-                        selectedIds = if (m.id in selectedIds) selectedIds - m.id else selectedIds + m.id
+                    msg       = msg,
+                    isSelf    = msg.uid == currentUser.uid,
+                    isGrouped = isGrouped,
+                    onReply   = { onReply(it) },
+                    onCopy    = { m ->
+                        val cb = java.awt.Toolkit.getDefaultToolkit().systemClipboard
+                        cb.setContents(java.awt.datatransfer.StringSelection(m.text), null)
                     },
                 )
             }
