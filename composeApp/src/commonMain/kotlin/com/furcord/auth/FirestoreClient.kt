@@ -50,7 +50,7 @@ data class DmConversation(
 )
 
 /** Arkadaş listesi kaydı. */
-data class FriendEntry(val uid: String, val displayName: String, val furcordId: String)
+data class FriendEntry(val uid: String, val displayName: String, val furcordId: String, val isOnline: Boolean = false)
 
 /** Firebase Storage REST API upload sonucu. */
 data class StorageUploadResult(val downloadUrl: String)
@@ -772,6 +772,14 @@ object FirestoreClient {
             runCatching { request("DELETE", "$BASE/servers/$serverId/presence/$uid", idToken = idToken) }
         }
 
+    /** Global kullanıcı lastSeen'ini günceller (çevrimiçi kalp atışı). timestamp=0L → çevrimdışı. */
+    suspend fun setUserLastSeen(uid: String, idToken: String, timestamp: Long = System.currentTimeMillis()) =
+        withContext(Dispatchers.IO) {
+            val body = """{"fields":{"lastSeen":{"integerValue":"$timestamp"}}}"""
+            val url  = "$BASE/users/$uid?updateMask.fieldPaths=lastSeen"
+            runCatching { request("PATCH", url, body, idToken) }
+        }
+
     // ── Request helper ────────────────────────────────────────────────────────
 
     /**
@@ -835,7 +843,9 @@ object FirestoreClient {
                 val (uc, ut) = request("GET", "$BASE/users/$uid", idToken = idToken)
                 if (uc !in 200..299) continue
                 val udoc = runCatching { fsJson.decodeFromString<FsDocument>(ut) }.getOrNull() ?: continue
-                entries.add(FriendEntry(uid, udoc.fields.str("nickname").ifEmpty { udoc.fields.str("displayName") }, udoc.fields.str("furcordId")))
+                val lastSeen = udoc.fields.lng("lastSeen")
+                val isOnline = lastSeen > 0L && (System.currentTimeMillis() - lastSeen) < 3 * 60_000L
+                entries.add(FriendEntry(uid, udoc.fields.str("nickname").ifEmpty { udoc.fields.str("displayName") }, udoc.fields.str("furcordId"), isOnline))
             }
             entries
         }

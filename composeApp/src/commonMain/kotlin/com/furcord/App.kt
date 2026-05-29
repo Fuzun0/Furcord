@@ -197,6 +197,34 @@ fun App() {
                     DmRepository.setFocused(windowFocused)
                 }
 
+                // Global çevrimiçi durumu — her 60 sn'de lastSeen güncelle
+                val latestIdToken by rememberUpdatedState(currentUser.idToken)
+                LaunchedEffect(currentUser.uid, "onlineHeartbeat") {
+                    while (true) {
+                        runCatching { FirestoreClient.setUserLastSeen(currentUser.uid, latestIdToken) }
+                        delay(60_000L)
+                    }
+                }
+
+                // Uygulama kapanınca çevrimdışı yap (JVM shutdown hook — runBlocking ile senkron)
+                DisposableEffect(currentUser.uid) {
+                    val uid     = currentUser.uid
+                    val hook    = Thread {
+                        try {
+                            kotlinx.coroutines.runBlocking {
+                                FirestoreClient.setUserLastSeen(uid, latestIdToken, timestamp = 0L)
+                            }
+                        } catch (_: Exception) {}
+                    }
+                    Runtime.getRuntime().addShutdownHook(hook)
+                    onDispose {
+                        runCatching { Runtime.getRuntime().removeShutdownHook(hook) }
+                        kotlinx.coroutines.GlobalScope.launch {
+                            runCatching { FirestoreClient.setUserLastSeen(uid, latestIdToken, timestamp = 0L) }
+                        }
+                    }
+                }
+
                 // Nickname setup dialog
                 if (showNicknameSetup) {
                     NicknameSetupDialog(
@@ -230,13 +258,20 @@ fun App() {
                                         .verticalScroll(rememberScrollState()),
                                 ) {
                                     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                                        val changelog = listOf(
-                                            "🎙️ Daha Net Ses: Gürültü bastırma (NS) kapatıldı — agresif filtre kesik/robotik sesi gideriyor. Bitrate 128kbps'e yükseltildi.",
-                                            "🖱️ Sağ-Tık Menüsü: Mesajlara sağ tıklayarak 'Yanıtla' ve 'Kopyala' seçeneklerine ulaşabilirsiniz.",
-                                            "💬 Masaüstü Deneyimi: Mobil uzun-basma kaldırıldı, yerine native Desktop sağ-tık context menüsü getirildi.",
-                                        )
-                                        changelog.forEach { line ->
-                                            Text("• $line", style = MaterialTheme.typography.bodySmall)
+                                        // GitHub Release body'den gelen notlar — her satır bir madde
+                                        val lines = info.releaseNotes
+                                            .lines()
+                                            .map { it.trimStart('-', '*', '•', ' ').trim() }
+                                            .filter { it.isNotEmpty() }
+                                        if (lines.isNotEmpty()) {
+                                            lines.forEach { line ->
+                                                Text("• $line", style = MaterialTheme.typography.bodySmall)
+                                            }
+                                        } else {
+                                            Text(
+                                                "Bu sürümde çeşitli iyileştirmeler ve hata düzeltmeleri yapıldı.",
+                                                style = MaterialTheme.typography.bodySmall,
+                                            )
                                         }
                                     }
                                 }

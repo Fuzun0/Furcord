@@ -339,7 +339,21 @@ fun ServerLobbyScreen(
                                         verticalAlignment = Alignment.CenterVertically,
                                         horizontalArrangement = Arrangement.spacedBy(10.dp),
                                     ) {
-                                        UserAvatar(displayName = friend.displayName, photoURL = "", size = 28)
+                                        // Avatar + online/offline dot
+                                        Box {
+                                            UserAvatar(displayName = friend.displayName, photoURL = "", size = 28)
+                                            Box(
+                                                Modifier
+                                                    .size(10.dp)
+                                                    .align(Alignment.BottomEnd)
+                                                    .background(BG, shape = androidx.compose.foundation.shape.CircleShape)
+                                                    .padding(2.dp)
+                                                    .background(
+                                                        if (friend.isOnline) GREEN else Color(0xFF72767D),
+                                                        shape = androidx.compose.foundation.shape.CircleShape,
+                                                    ),
+                                            )
+                                        }
                                         Column(Modifier.weight(1f)) {
                                             Text(friend.displayName, color = TEXT, fontSize = 13.sp,
                                                 maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -390,158 +404,196 @@ fun ServerLobbyScreen(
                 modifier = Modifier
                     .weight(1f)
                     .fillMaxHeight()
-                    .padding(40.dp),
+                    .padding(horizontal = 32.dp, vertical = 28.dp),
                 verticalArrangement = Arrangement.Center,
             ) {
-                // Başlık
-                Text(
-                    "Sunucu Lobisi",
-                    fontSize = 26.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = TEXT,
-                )
-                Spacer(Modifier.height(4.dp))
-                Text(
-                    "Mevcut bir sunucuya katıl veya yenisini oluştur.",
-                    fontSize = 14.sp,
-                    color = TEXT2,
-                )
-                Spacer(Modifier.height(32.dp))
 
-                // ── Sunucu Ara (Davet Kodu) ───────────────────────────────────
-                SectionLabel("SUNUCU ARA")
-                Spacer(Modifier.height(10.dp))
-                OutlinedTextField(
-                    value = searchQuery,
-                    onValueChange = { searchQuery = it; searchError = ""; serverResult = null },
-                    placeholder = { Text("Davet kodu girin...", color = MUTED, fontSize = 13.sp) },
-                    modifier = Modifier.fillMaxWidth(),
-                    singleLine = true,
-                    trailingIcon = {
-                        if (searchLoading) CircularProgressIndicator(
-                            modifier = Modifier.size(18.dp),
-                            strokeWidth = 2.dp,
-                            color = MUTED,
-                        )
-                    },
-                    shape = RoundedCornerShape(8.dp),
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedBorderColor      = ACCENT,
-                        unfocusedBorderColor    = OUTLINE,
-                        focusedContainerColor   = SURFACE2,
-                        unfocusedContainerColor = SURFACE2,
-                    ),
-                )
-
-                if (searchError.isNotEmpty()) {
-                    Spacer(Modifier.height(4.dp))
-                    Text(searchError, fontSize = 12.sp, color = MUTED)
-                }
-
-                val sr = serverResult
-                if (sr != null) {
-                    Spacer(Modifier.height(8.dp))
+                // ── Sunucu Ara kartı ─────────────────────────────────────────
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(SURFACE)
+                        .padding(20.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    Text(
+                        "Sunucuya Katıl",
+                        fontSize = 15.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = TEXT,
+                    )
                     Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(8.dp))
-                            .background(SURFACE2)
-                            .padding(horizontal = 12.dp, vertical = 8.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        Text("🏠", fontSize = 18.sp)
-                        Spacer(Modifier.width(8.dp))
-                        Text(
-                            sr.second,
-                            fontSize = 14.sp,
-                            color = TEXT,
+                        OutlinedTextField(
+                            value = searchQuery,
+                            onValueChange = { searchQuery = it; searchError = ""; serverResult = null },
+                            placeholder = { Text("Davet kodu girin...", color = MUTED, fontSize = 13.sp) },
                             modifier = Modifier.weight(1f),
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
+                            singleLine = true,
+                            trailingIcon = {
+                                if (searchLoading) CircularProgressIndicator(
+                                    modifier = Modifier.size(16.dp),
+                                    strokeWidth = 2.dp,
+                                    color = MUTED,
+                                )
+                            },
+                            shape = RoundedCornerShape(8.dp),
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedBorderColor      = ACCENT,
+                                unfocusedBorderColor    = OUTLINE,
+                                focusedContainerColor   = SURFACE2,
+                                unfocusedContainerColor = SURFACE2,
+                            ),
                         )
-                        Spacer(Modifier.width(8.dp))
                         Button(
-                            onClick = { connectToServer(sr.first, sr.second) },
-                            shape = RoundedCornerShape(6.dp),
-                            colors = ButtonDefaults.buttonColors(containerColor = GREEN),
-                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
-                            modifier = Modifier.height(30.dp),
-                        ) { Text("Bağlan", fontSize = 12.sp) }
+                            onClick = {
+                                scope.launch {
+                                    val q = searchQuery.trim()
+                                    if (q.isEmpty()) { searchError = "Lütfen bir davet kodu girin."; return@launch }
+                                    searchLoading = true; searchError = ""; serverResult = null
+                                    try {
+                                        val result = FirestoreClient.getServerByInvite(q.uppercase(), currentUser.idToken)
+                                            ?: FirestoreClient.getServerByInvite(q, currentUser.idToken)
+                                        if (result == null) searchError = "Sunucu bulunamadı."
+                                        else serverResult = result
+                                    } catch (e: Exception) {
+                                        searchError = "Bağlantı hatası: ${e.message}"
+                                    } finally { searchLoading = false }
+                                }
+                            },
+                            enabled = !searchLoading,
+                            shape  = RoundedCornerShape(8.dp),
+                            colors = ButtonDefaults.buttonColors(containerColor = ACCENT),
+                            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 0.dp),
+                            modifier = Modifier.height(52.dp),
+                        ) { Text("Ara", fontWeight = FontWeight.SemiBold) }
+                    }
+                    if (searchError.isNotEmpty()) {
+                        Text(searchError, fontSize = 12.sp, color = MUTED)
+                    }
+                    val sr = serverResult
+                    if (sr != null) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(SURFACE2)
+                                .padding(horizontal = 12.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text("🏠", fontSize = 16.sp)
+                            Spacer(Modifier.width(8.dp))
+                            Text(
+                                sr.second,
+                                fontSize = 13.sp,
+                                color = TEXT,
+                                modifier = Modifier.weight(1f),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            Button(
+                                onClick = { connectToServer(sr.first, sr.second) },
+                                shape = RoundedCornerShape(6.dp),
+                                colors = ButtonDefaults.buttonColors(containerColor = GREEN),
+                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
+                                modifier = Modifier.height(28.dp),
+                            ) { Text("Katıl", fontSize = 12.sp) }
+                        }
                     }
                 }
 
-                Spacer(Modifier.height(28.dp))
+                Spacer(Modifier.height(12.dp))
 
-                // ── Yeni Sunucu Oluştur ──────────────────────────────────────
+                // ── Ayırıcı ─────────────────────────────────────────────────
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
                 ) {
                     HorizontalDivider(modifier = Modifier.weight(1f), color = OUTLINE)
-                    Text("veya", fontSize = 12.sp, color = MUTED)
+                    Text("veya", fontSize = 11.sp, color = MUTED)
                     HorizontalDivider(modifier = Modifier.weight(1f), color = OUTLINE)
                 }
 
-                Spacer(Modifier.height(28.dp))
-                SectionLabel("YENİ SUNUCU OLUŞTUR")
-                Spacer(Modifier.height(10.dp))
-                Row(
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalAlignment = Alignment.Top,
+                Spacer(Modifier.height(12.dp))
+
+                // ── Sunucu Oluştur kartı ─────────────────────────────────────
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(SURFACE)
+                        .padding(20.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
                 ) {
-                    OutlinedTextField(
-                        value = createName,
-                        onValueChange = { createName = it; createError = "" },
-                        placeholder = { Text("Sunucuna bir isim ver", color = MUTED, fontSize = 13.sp) },
-                        modifier = Modifier.weight(1f),
-                        singleLine = true,
-                        isError = createError.isNotEmpty(),
-                        supportingText = if (createError.isNotEmpty()) {
-                            { Text(createError, color = MaterialTheme.colorScheme.error, fontSize = 12.sp) }
-                        } else null,
-                        shape = RoundedCornerShape(8.dp),
-                        colors = OutlinedTextFieldDefaults.colors(
-                            focusedBorderColor   = GREEN,
-                            unfocusedBorderColor = OUTLINE,
-                            focusedContainerColor   = SURFACE2,
-                            unfocusedContainerColor = SURFACE2,
-                        ),
+                    Text(
+                        "Sunucu Oluştur",
+                        fontSize = 15.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = TEXT,
                     )
-                    Button(
-                        onClick = {
-                            scope.launch {
-                                val name = createName.trim()
-                                if (name.isEmpty()) { createError = "Lütfen bir sunucu adı girin."; return@launch }
-                                createLoading = true
-                                try {
-                                    // 1 sunucu limiti: kullanıcının zaten sunucusu var mı?
-                                    val existing = FirestoreClient.getMyServers(currentUser.uid, currentUser.idToken)
-                                    if (existing.isNotEmpty()) {
-                                        createError = "Zaten bir sunucun var: \"${existing.first().second}\""
-                                        return@launch
-                                    }
-                                    val id = FirestoreClient.createServer(name, currentUser.uid, currentUser.idToken)
-                                    FirestoreClient.createVoiceChannel(id, "Genel", 0, currentUser.idToken)
-                                    FirestoreClient.createVoiceChannel(id, "Oyun",  1, currentUser.idToken)
-                                    connectToServer(id, name)
-                                } catch (e: Exception) {
-                                    createError = "Oluşturulamadı: ${e.message}"
-                                } finally {
-                                    createLoading = false
-                                }
-                            }
-                        },
-                        enabled  = !createLoading,
-                        modifier = Modifier.height(56.dp),
-                        shape    = RoundedCornerShape(8.dp),
-                        colors   = ButtonDefaults.buttonColors(containerColor = GREEN),
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        if (createLoading) {
-                            CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp, color = Color.White)
-                        } else {
-                            Text("Oluştur", fontWeight = FontWeight.SemiBold)
+                        OutlinedTextField(
+                            value = createName,
+                            onValueChange = { createName = it; createError = "" },
+                            placeholder = { Text("Sunucuna bir isim ver", color = MUTED, fontSize = 13.sp) },
+                            modifier = Modifier.weight(1f),
+                            singleLine = true,
+                            isError = createError.isNotEmpty(),
+                            shape = RoundedCornerShape(8.dp),
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedBorderColor   = GREEN,
+                                unfocusedBorderColor = OUTLINE,
+                                focusedContainerColor   = SURFACE2,
+                                unfocusedContainerColor = SURFACE2,
+                            ),
+                        )
+                        Button(
+                            onClick = {
+                                scope.launch {
+                                    val name = createName.trim()
+                                    if (name.isEmpty()) { createError = "Lütfen bir sunucu adı girin."; return@launch }
+                                    createLoading = true
+                                    try {
+                                        // 1 sunucu limiti: kullanıcının zaten sunucusu var mı?
+                                        val existing = FirestoreClient.getMyServers(currentUser.uid, currentUser.idToken)
+                                        if (existing.isNotEmpty()) {
+                                            createError = "Zaten bir sunucun var: \"${existing.first().second}\""
+                                            return@launch
+                                        }
+                                        val id = FirestoreClient.createServer(name, currentUser.uid, currentUser.idToken)
+                                        FirestoreClient.createVoiceChannel(id, "Genel", 0, currentUser.idToken)
+                                        FirestoreClient.createVoiceChannel(id, "Oyun",  1, currentUser.idToken)
+                                        connectToServer(id, name)
+                                    } catch (e: Exception) {
+                                        createError = "Oluşturulamadı: ${e.message}"
+                                    } finally {
+                                        createLoading = false
+                                    }
+                                }
+                            },
+                            enabled  = !createLoading,
+                            modifier = Modifier.height(52.dp),
+                            shape    = RoundedCornerShape(8.dp),
+                            colors   = ButtonDefaults.buttonColors(containerColor = GREEN),
+                            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 0.dp),
+                        ) {
+                            if (createLoading) {
+                                CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp, color = Color.White)
+                            } else {
+                                Text("Oluştur", fontWeight = FontWeight.SemiBold)
+                            }
                         }
+                    }
+                    if (createError.isNotEmpty()) {
+                        Text(createError, fontSize = 12.sp, color = Color(0xFFED4245))
                     }
                 }
 

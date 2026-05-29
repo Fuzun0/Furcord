@@ -235,13 +235,21 @@ object VoiceEngine {
             if (read < FRAME_BYTES || isMuted) continue
 
             // Mikrofon kazanç: kullanıcı ayarı, varsayılan 1.0 = saf iletim (bypass)
+            // Soft limiter: hard clip yerine peak normalization — gain > 1.0'da waveform bozulmaz.
             val gain = micGain
             if (gain != 1f) {
                 val bb = java.nio.ByteBuffer.wrap(pcmBuf).order(java.nio.ByteOrder.LITTLE_ENDIAN)
+                val tmp = IntArray(SAMPLES_FRAME)
+                var peak = 0
                 for (i in 0 until SAMPLES_FRAME) {
-                    val s = bb.getShort(i * 2).toInt()
-                    val g = (s * gain).toInt().coerceIn(-32768, 32767)
-                    bb.putShort(i * 2, g.toShort())
+                    val v = (bb.getShort(i * 2).toInt() * gain).toInt()
+                    tmp[i] = v
+                    val av = if (v < 0) -v else v
+                    if (av > peak) peak = av
+                }
+                val scale = if (peak > 32767) 32767f / peak.toFloat() else 1f
+                for (i in 0 until SAMPLES_FRAME) {
+                    bb.putShort(i * 2, (tmp[i] * scale).toInt().coerceIn(-32768, 32767).toShort())
                 }
             }
 

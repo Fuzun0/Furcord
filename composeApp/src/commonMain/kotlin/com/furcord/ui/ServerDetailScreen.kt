@@ -898,6 +898,8 @@ fun ServerDetailScreen(
 
     // ── Poll channels + active users every 3 s ────────────────────────────────
     LaunchedEffect(serverId, "channels") {
+        var prevUsers = mapOf<String, List<ActiveUser>>()
+        var firstPoll = true
         while (true) {
             try {
                 val fetched = FirestoreClient.listVoiceChannels(serverId, currentUser.idToken)
@@ -916,6 +918,19 @@ fun ServerDetailScreen(
                         newUsers[ch.id] = channelUsers[ch.id] ?: emptyList()
                     }
                 }
+                // Join/leave ses efektleri — ilk poll'da ses çalma
+                if (!firstPoll) {
+                    for (chId in newUsers.keys) {
+                        val oldUids = (prevUsers[chId] ?: emptyList()).map { it.uid }.toSet()
+                        val newUids = (newUsers[chId] ?: emptyList()).map { it.uid }.toSet()
+                        val joined  = newUids - oldUids - currentUser.uid
+                        val left    = oldUids - newUids - currentUser.uid
+                        if (joined.isNotEmpty()) com.furcord.platform.SoundEffect.playJoin()
+                        if (left.isNotEmpty())   com.furcord.platform.SoundEffect.playLeave()
+                    }
+                }
+                prevUsers  = newUsers
+                firstPoll  = false
                 channelUsers = newUsers
                 loading = false
             } catch (_: Exception) {
@@ -979,22 +994,25 @@ fun ServerDetailScreen(
     // ── Cleanup on dispose ────────────────────────────────────────────────────
     DisposableEffect(Unit) {
         onDispose {
-            val cid  = latestConnectedId
-            val prev = latestChannelUsers
-            GlobalScope.launch {
+            val cid     = latestConnectedId
+            val prev    = latestChannelUsers
+            val uid     = currentUser.uid
+            val token   = currentUser.idToken
+            VoiceEngine.stop()
+            // runBlocking kullanarak JVM kapanmadan önce cleanup tamamlansın
+            kotlinx.coroutines.runBlocking {
                 if (cid != null) {
-                    try {
+                    runCatching {
                         FirestoreClient.setChannelActiveUsers(
                             serverId, cid,
-                            (prev[cid] ?: emptyList()).filter { it.uid != currentUser.uid },
-                            currentUser.idToken,
+                            (prev[cid] ?: emptyList()).filter { it.uid != uid },
+                            token,
                         )
-                    } catch (_: Exception) {}
-                    runCatching { FirestoreClient.removeVoicePeer(serverId, currentUser.uid, currentUser.idToken) }
+                    }
+                    runCatching { FirestoreClient.removeVoicePeer(serverId, uid, token) }
                 }
-                runCatching { FirestoreClient.deletePresence(serverId, currentUser.uid, currentUser.idToken) }
+                runCatching { FirestoreClient.deletePresence(serverId, uid, token) }
             }
-            VoiceEngine.stop()
         }
     }
 
