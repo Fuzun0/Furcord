@@ -155,20 +155,28 @@ fun App() {
                 var showNicknameSetup by remember { mutableStateOf(currentUser.nickname.isEmpty()) }
 
                 // Güncelleme durumu
-                var pendingUpdate    by remember { mutableStateOf<AppVersionInfo?>(null) }
-                var updateDismissed  by remember { mutableStateOf(false) }
-                var updating         by remember { mutableStateOf(false) }
-                var updateProgress   by remember { mutableStateOf(0f) }
-                var updateError      by remember { mutableStateOf("") }
+                var pendingUpdate       by remember { mutableStateOf<AppVersionInfo?>(null) }
+                var updateDismissed     by remember { mutableStateOf(false) }
+                var updating            by remember { mutableStateOf(false) }
+                var updateProgress      by remember { mutableStateOf(0f) }
+                var updateError         by remember { mutableStateOf("") }
+                // Son sürüm notları — güncelleme olmasa bile "Yama Notları" için saklanır
+                var latestVersionNotes  by remember { mutableStateOf("") }
+                var latestVersionTag    by remember { mutableStateOf("") }
 
                 // Güncelleme kontrolü: başlangıçta hemen + her 30 dakikada bir
                 // GitHub Releases API — kimlik doğrulaması gerektirmez
                 LaunchedEffect(currentUser.uid) {
                     while (true) {
                         val info = runCatching { UpdateManager.checkPublicVersion() }.getOrNull()
-                        if (info != null && UpdateManager.isNewerVersion(info.latestVersion)) {
-                            if (pendingUpdate == null) updateDismissed = false
-                            pendingUpdate = info
+                        if (info != null) {
+                            // Her zaman son sürüm notlarını sakla (popup için)
+                            latestVersionNotes = info.releaseNotes
+                            latestVersionTag   = info.latestVersion
+                            if (UpdateManager.isNewerVersion(info.latestVersion)) {
+                                if (pendingUpdate == null) updateDismissed = false
+                                pendingUpdate = info
+                            }
                         }
                         delay(30 * 60_000L)  // 30 dakika
                     }
@@ -335,9 +343,11 @@ fun App() {
                     when (val ss = serverState) {
                         is AppServerState.None -> {
                             ServerLobbyScreen(
-                                currentUser     = currentUser,
-                                hasUpdate       = pendingUpdate != null && !updateDismissed,
-                                isWindowFocused = windowFocused,
+                                currentUser       = currentUser,
+                                hasUpdate         = pendingUpdate != null && !updateDismissed,
+                                isWindowFocused   = windowFocused,
+                                latestVersionNotes = latestVersionNotes,
+                                latestVersionTag  = latestVersionTag,
                                 onJoinServer    = { id, name ->
                                     serverState = AppServerState.InServer(id, name)
                                 },

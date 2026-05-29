@@ -5,8 +5,10 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.KeyboardArrowDown
@@ -54,6 +56,8 @@ fun ServerLobbyScreen(
     currentUser: AuthUser,
     hasUpdate: Boolean = false,
     isWindowFocused: Boolean = true,
+    latestVersionNotes: String = "",
+    latestVersionTag: String = "",
     onJoinServer: (serverId: String, serverName: String) -> Unit,
     onSignOut: () -> Unit,
     onUserUpdated: (newDisplayName: String, newPhotoURL: String) -> Unit = { _, _ -> },
@@ -74,6 +78,7 @@ fun ServerLobbyScreen(
 
     var showProfileDialog by remember { mutableStateOf(false) }
     var deletingServerId  by remember { mutableStateOf<String?>(null) }
+    var showPatchNotes    by remember { mutableStateOf(false) }
 
     var recentServers    by remember { mutableStateOf(RecentServers.load()) }
     var reconnectLoading by remember { mutableStateOf<String?>(null) }
@@ -157,6 +162,49 @@ fun ServerLobbyScreen(
         )
     }
 
+    // Yama Notları popup
+    if (showPatchNotes) {
+        AlertDialog(
+            onDismissRequest = { showPatchNotes = false },
+            title = {
+                Text(
+                    "📋 Yama Notları  —  v${latestVersionTag.ifEmpty { "?" }}",
+                    fontSize = 15.sp,
+                    fontWeight = FontWeight.Bold,
+                )
+            },
+            text = {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 320.dp)
+                        .verticalScroll(androidx.compose.foundation.rememberScrollState()),
+                ) {
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        val lines = latestVersionNotes
+                            .lines()
+                            .map { it.trimStart('-', '*', '•', ' ').trim() }
+                            .filter { it.isNotEmpty() }
+                        if (lines.isNotEmpty()) {
+                            lines.forEach { line ->
+                                Text("• $line", style = MaterialTheme.typography.bodySmall, color = TEXT2)
+                            }
+                        } else {
+                            Text(
+                                "Bu sürümde çeşitli iyileştirmeler yapıldı.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = TEXT2,
+                            )
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showPatchNotes = false }) { Text("Kapat") }
+            },
+        )
+    }
+
     // ── Root ─────────────────────────────────────────────────────────────────
     Column(modifier = Modifier.fillMaxSize().background(BG)) {
 
@@ -179,6 +227,22 @@ fun ServerLobbyScreen(
                 letterSpacing = 0.3.sp,
             )
             Spacer(Modifier.weight(1f))
+            // Yama Notları butonu
+            if (latestVersionNotes.isNotEmpty()) {
+                TextButton(
+                    onClick = { showPatchNotes = true },
+                    modifier = Modifier
+                        .height(32.dp)
+                        .clip(RoundedCornerShape(8.dp)),
+                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp),
+                ) {
+                    Text(
+                        "📋 Yama Notları",
+                        fontSize = 12.sp,
+                        color = TEXT2,
+                    )
+                }
+            }
             // Profil butonu
             Row(
                 verticalAlignment = Alignment.CenterVertically,
@@ -316,7 +380,7 @@ fun ServerLobbyScreen(
                                 )
                             }
                         } else {
-                            items(friends, key = { it.uid }) { friend ->
+                            items(friends.sortedByDescending { it.isOnline }, key = { it.uid }) { friend ->
                                 var showContextMenu by remember { mutableStateOf(false) }
                                 Box {
                                     Row(
