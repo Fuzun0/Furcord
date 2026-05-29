@@ -226,8 +226,7 @@ fun ServerLobbyScreen(
                 color = TEXT,
                 letterSpacing = 0.3.sp,
             )
-            Spacer(Modifier.weight(1f))
-            // Yama Notları butonu
+            // Yama Notları butonu — Furcord yazısının hemen yanında
             if (latestVersionNotes.isNotEmpty()) {
                 TextButton(
                     onClick = { showPatchNotes = true },
@@ -243,6 +242,7 @@ fun ServerLobbyScreen(
                     )
                 }
             }
+            Spacer(Modifier.weight(1f))
             // Profil butonu
             Row(
                 verticalAlignment = Alignment.CenterVertically,

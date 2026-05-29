@@ -283,6 +283,7 @@ private fun ChannelRow(
     currentUid: String,
     onClick: () -> Unit,
     onUserRightClick: ((ActiveUser) -> Unit)? = null,
+    speakingSet: Set<Int> = emptySet(),
 ) {
     val rowInteraction = remember { MutableInteractionSource() }
     val hovered by rowInteraction.collectIsHoveredAsState()
@@ -829,6 +830,8 @@ fun ServerDetailScreen(
     var presenceUsers     by remember { mutableStateOf<List<ActiveUser>>(emptyList()) }
     // Sunucu kapak görseli URL'si
     var serverImageUrl    by remember { mutableStateOf("") }
+    // Konuşma göstergesi — uidHash kümesi
+    var speakingSet       by remember { mutableStateOf<Set<Int>>(emptySet()) }
 
     val latestConnectedId   by rememberUpdatedState(connectedChannelId)
     val latestChannelUsers  by rememberUpdatedState(channelUsers)
@@ -988,6 +991,30 @@ fun ServerDetailScreen(
                 if (fetched != presenceUsers) presenceUsers = fetched
             }
             delay(5_000)
+        }
+    }
+
+    // ── Konuşma göstergesi — her 100ms güncelle ─────────────────────────────
+    LaunchedEffect(Unit, "speaking") {
+        while (true) {
+            delay(100L)
+            val allHashSet = latestChannelUsers.values.flatten()
+                .map { it.uid.hashCode() }
+                .toMutableSet()
+            allHashSet += currentUser.uid.hashCode()
+            speakingSet = allHashSet.filter { VoiceEngine.isSpeaking(it) }.toSet()
+        }
+    }
+
+    // ── Konuşma göstergesi — her 100ms güncelle ─────────────────────────────
+    LaunchedEffect(Unit, "speaking") {
+        while (true) {
+            delay(100L)
+            val allHashSet = latestChannelUsers.values.flatten()
+                .map { it.uid.hashCode() }
+                .toMutableSet()
+            allHashSet += currentUser.uid.hashCode()
+            speakingSet = allHashSet.filter { VoiceEngine.isSpeaking(it) }.toSet()
         }
     }
 
@@ -1394,6 +1421,7 @@ fun ServerDetailScreen(
                         currentUid       = currentUser.uid,
                         onClick          = { joinChannel(ch) },
                         onUserRightClick = { u -> contextMenuUser = u; showVolumeSlider = false },
+                        speakingSet      = speakingSet,
                     )
                 }
                 if (channels.isEmpty() && !loading) {
@@ -1659,27 +1687,37 @@ fun ServerDetailScreen(
                                         }
                                     } else Modifier,
                                 ) {
-                                    Box(
-                                        modifier = Modifier
-                                            .size(72.dp)
-                                            .clip(CircleShape)
-                                            .then(
-                                                if (isSelf) Modifier.background(Color(0x4023A55A))
-                                                else Modifier
-                                            ),
-                                    ) {
-                                        UserAvatar(
-                                            displayName = u.username,
-                                            photoURL    = u.photoURL,
-                                            size        = 72,
-                                        )
-                                        if (isSelf) {
+                                    val isSpeakingUser = speakingSet.contains(u.uid.hashCode())
+                                    Box(contentAlignment = Alignment.Center) {
+                                        if (isSpeakingUser) {
                                             Box(
                                                 modifier = Modifier
-                                                    .size(72.dp)
-                                                    .clip(CircleShape)
-                                                    .background(Color(0x0023A55A))
+                                                    .size(82.dp)
+                                                    .border(4.dp, Color(0xFF23A55A), CircleShape)
                                             )
+                                        }
+                                        Box(
+                                            modifier = Modifier
+                                                .size(72.dp)
+                                                .clip(CircleShape)
+                                                .then(
+                                                    if (isSelf) Modifier.background(Color(0x4023A55A))
+                                                    else Modifier
+                                                ),
+                                        ) {
+                                            UserAvatar(
+                                                displayName = u.username,
+                                                photoURL    = u.photoURL,
+                                                size        = 72,
+                                            )
+                                            if (isSelf) {
+                                                Box(
+                                                    modifier = Modifier
+                                                        .size(72.dp)
+                                                        .clip(CircleShape)
+                                                        .background(Color(0x0023A55A))
+                                                )
+                                            }
                                         }
                                     }
                                     Text(

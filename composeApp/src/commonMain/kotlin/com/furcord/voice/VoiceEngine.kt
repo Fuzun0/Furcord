@@ -16,6 +16,7 @@ import java.nio.ByteBuffer
 import java.security.SecureRandom
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CountDownLatch
+import kotlin.math.sqrt
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 import javax.sound.sampled.AudioFormat
@@ -39,6 +40,9 @@ object VoiceEngine {
     private const val HEADER_BYTES        = 8
     private const val PACKET_BYTES        = HEADER_BYTES + FRAME_BYTES
     private const val BUFFER_FRAMES       = 20   // max jitter buffer kapasitesi (400ms)
+    private const val VAD_THRESHOLD       = 300f // RMS eşiği — altında sessiz (iletim durdurulur)
+    private const val VAD_HOLD_FRAMES     = 10   // ~200ms hold timer — kelime sonu kesilmesin
+    private const val MAX_PLC_FRAMES      = 3    // PLC: en fazla 3 frame (~60ms) tekrar
 
     private val STUN_SERVERS = listOf(
         "stun.l.google.com"   to 19302,
@@ -75,7 +79,11 @@ object VoiceEngine {
     private val peerBuffers  = ConcurrentHashMap<Int, PeerBuffer>()
     private val peerVolumes  = ConcurrentHashMap<Int, Float>()      // uidHash → 0.0-2.0 (1.0 = normal)
     private val prevPeerVols = ConcurrentHashMap<Int, Float>()      // smooth ramp: previous-frame volume
-    private val seqCounter   = AtomicInteger(0)
+    private val seqCounter        = AtomicInteger(0)
+    private var vadHoldCounter    = 0                                     // VAD hold sayacı
+    private val speakingTimestamps = ConcurrentHashMap<Int, Long>()       // uidHash → son ms
+    private val lastGoodFrames    = ConcurrentHashMap<Int, IntArray>()    // PLC: son iyi frame
+    private val plcCountMap       = ConcurrentHashMap<Int, Int>()         // PLC: tekrar sayısı
 
     // ── Per-peer jitter buffer ────────────────────────────────────────────────
 
@@ -200,7 +208,8 @@ object VoiceEngine {
 
         relayClient?.disconnect(); relayClient = null
         peers.clear(); peerBuffers.clear(); peerVolumes.clear(); prevPeerVols.clear()
-        seqCounter.set(0)
+        speakingTimestamps.clear(); lastGoodFrames.clear(); plcCountMap.clear()
+        seqCounter.set(0); vadHoldCounter = 0
         localPort = 0; localPublicIp = ""
         isMuted = false; isDeafened = false; isRelayMode = false
     }
@@ -212,12 +221,19 @@ object VoiceEngine {
 
     fun getPeerVolume(uid: String): Float = peerVolumes[uid.hashCode()] ?: 1f
 
+    /** uidHash bazlı konuşma göstergesi — son 500ms içinde ses alındıysa true */
+    fun isSpeaking(uidHash: Int): Boolean =
+        (System.currentTimeMillis() - (speakingTimestamps[uidHash] ?: 0L)) < 500L
+
     // ── Peer management ───────────────────────────────────────────────────────
 
     fun updatePeers(newPeers: List<VoicePeer>) {
         val newHashSet = newPeers.map { it.uid.hashCode() }.toSet()
-        peerBuffers.keys.filter  { it !in newHashSet }.forEach { peerBuffers.remove(it) }
-        prevPeerVols.keys.filter { it !in newHashSet }.forEach { prevPeerVols.remove(it) }
+        peerBuffers.keys.filter        { it !in newHashSet }.forEach { peerBuffers.remove(it) }
+        prevPeerVols.keys.filter       { it !in newHashSet }.forEach { prevPeerVols.remove(it) }
+        lastGoodFrames.keys.filter     { it !in newHashSet }.forEach { lastGoodFrames.remove(it) }
+        plcCountMap.keys.filter        { it !in newHashSet }.forEach { plcCountMap.remove(it) }
+        speakingTimestamps.keys.filter { it !in newHashSet }.forEach { speakingTimestamps.remove(it) }
         val added = newPeers.filter { !peers.containsKey(it.uid) }
         peers.clear()
         newPeers.forEach { peers[it.uid] = it; peerBuffers.getOrPut(it.uid.hashCode()) { PeerBuffer() } }
@@ -253,6 +269,21 @@ object VoiceEngine {
                 }
             }
 
+            // VAD: RMS gate + hold timer — kelime ortasında kesmesin
+            val rmsVal = run {
+                val bb = java.nio.ByteBuffer.wrap(pcmBuf).order(java.nio.ByteOrder.LITTLE_ENDIAN)
+                var sum = 0.0
+                for (i in 0 until SAMPLES_FRAME) { val s = bb.getShort(i * 2).toDouble(); sum += s * s }
+                sqrt(sum / SAMPLES_FRAME).toFloat()
+            }
+            if (rmsVal > VAD_THRESHOLD) {
+                vadHoldCounter = VAD_HOLD_FRAMES
+                speakingTimestamps[selfUidHash] = System.currentTimeMillis()
+            } else {
+                if (vadHoldCounter <= 0) continue
+                vadHoldCounter--
+            }
+
             val seq = seqCounter.incrementAndGet()
 
             if (isRelayMode) {
@@ -284,6 +315,7 @@ object VoiceEngine {
             }
             if (dp.length <= HEADER_BYTES || isDeafened) continue
             val uidHash = ByteBuffer.wrap(buf, 4, 4).int
+            speakingTimestamps[uidHash] = System.currentTimeMillis()
             peerBuffers[uidHash]?.write(buf, HEADER_BYTES, dp.length - HEADER_BYTES)
         }
     }
@@ -310,20 +342,28 @@ object VoiceEngine {
                 continue
             }
 
-            val activeEntries = peerBuffers.entries.filter { it.value.hasData() }
-            // Always write to SourceDataLine even when no peer data is available.
-            // Skipping the write causes buffer underrun — the hardware plays stale/garbage
-            // data from its internal buffer which manifests as crackling after ~1 second.
-            if (activeEntries.isEmpty()) {
-                outBuf.fill(0)
-                runCatching { speakerLine?.write(outBuf, 0, FRAME_BYTES) }
-                continue
-            }
+            // PLC: tüm peer'ları gez; veri varsa al+kaydet, yoksa son frame'i yavaşça tekrar et
+            var hasVoice = false
             mixBuf.fill(0)
-
-            for ((hash, buf) in activeEntries) {
+            for ((hash, pbuf) in peerBuffers) {
                 tempBuf.fill(0)
-                buf.read(tempBuf, 0, SAMPLES_FRAME)
+                if (pbuf.hasData()) {
+                    pbuf.read(tempBuf, 0, SAMPLES_FRAME)
+                    lastGoodFrames[hash] = tempBuf.copyOf()
+                    plcCountMap[hash] = 0
+                    hasVoice = true
+                } else {
+                    val lf = lastGoodFrames[hash]
+                    val pc = plcCountMap.getOrDefault(hash, MAX_PLC_FRAMES)
+                    if (lf != null && pc < MAX_PLC_FRAMES) {
+                        val fade = 1f - pc.toFloat() / MAX_PLC_FRAMES
+                        for (i in 0 until SAMPLES_FRAME) tempBuf[i] = (lf[i] * fade).toInt()
+                        plcCountMap[hash] = pc + 1
+                        hasVoice = true
+                    } else {
+                        continue
+                    }
+                }
 
                 // ── Per-peer smooth volume ramp ───────────────────────────────
                 // Linearly interpolate between previous and target volume over the
@@ -349,6 +389,13 @@ object VoiceEngine {
                         mixBuf[i] += (tempBuf[i] * vol).toInt()
                     }
                 }
+            }
+
+            // Veri yoksa sessizlik yaz (buffer underrun önleme)
+            if (!hasVoice) {
+                outBuf.fill(0)
+                runCatching { speakerLine?.write(outBuf, 0, FRAME_BYTES) }
+                continue
             }
 
             // ── Write to speaker with deafen fade + peak normalization ─────────
