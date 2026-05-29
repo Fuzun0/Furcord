@@ -39,7 +39,6 @@ object VoiceEngine {
     private const val HEADER_BYTES        = 8
     private const val PACKET_BYTES        = HEADER_BYTES + FRAME_BYTES
     private const val BUFFER_FRAMES       = 20   // max jitter buffer kapasitesi (400ms)
-    private const val GATE_HOLD_FRAMES    = 10   // noise gate hold süresi (10 × 20ms = 200ms)
 
     private val STUN_SERVERS = listOf(
         "stun.l.google.com"   to 19302,
@@ -60,8 +59,6 @@ object VoiceEngine {
     @Volatile var isRelayMode  = false; private set
     /** Mikrofon giriş kazanç: 0.0 = sessiz, 1.0 = normal, 2.0 = 2x. Disk'e kaydedilir. */
     @Volatile var micGain: Float = AppPrefs.micGain
-    /** Gürültü kapısı eşiği. RMS bu değerin altındaysa frame gönderilmez. 0 = devre dışı. */
-    @Volatile var noiseGateThreshold: Float = 150f
 
     var localPublicIp: String = ""; private set
     var localPort: Int = 0;         private set
@@ -233,12 +230,11 @@ object VoiceEngine {
 
     private fun captureLoop(selfUidHash: Int) {
         val pcmBuf = ByteArray(FRAME_BYTES); val pktBuf = ByteArray(PACKET_BYTES)
-        var gateHold = 0   // noise gate hold sayacı (frame cinsinden)
         while (isActive) {
             val read = try { micLine?.read(pcmBuf, 0, FRAME_BYTES) ?: break } catch (_: Exception) { break }
-            if (read < FRAME_BYTES || isMuted) { gateHold = 0; continue }
+            if (read < FRAME_BYTES || isMuted) continue
 
-            // Mikrofon kazanç: little-endian short başvırusu, sınırlama ile distorsiyonu önle
+            // Mikrofon kazanç: kullanıcı ayarı, varsayılan 1.0 = saf iletim (bypass)
             val gain = micGain
             if (gain != 1f) {
                 val bb = java.nio.ByteBuffer.wrap(pcmBuf).order(java.nio.ByteOrder.LITTLE_ENDIAN)
@@ -246,27 +242,6 @@ object VoiceEngine {
                     val s = bb.getShort(i * 2).toInt()
                     val g = (s * gain).toInt().coerceIn(-32768, 32767)
                     bb.putShort(i * 2, g.toShort())
-                }
-            }
-
-            // Noise gate + hold: konuşma tespitinden sonra GATE_HOLD_FRAMES boyunca açık tut.
-            // Hold olmadan kelimeler arasındaki doğal boşluklar (20-60ms) frame atlamasına
-            // → alıcıda buffer underrun → cümle ortasında kesik/çıtırtı sorununa yol açar.
-            val ngThreshold = noiseGateThreshold
-            if (ngThreshold > 0f) {
-                var sumSq = 0.0
-                val bbNg = java.nio.ByteBuffer.wrap(pcmBuf).order(java.nio.ByteOrder.LITTLE_ENDIAN)
-                for (i in 0 until SAMPLES_FRAME) {
-                    val s = bbNg.getShort(i * 2).toDouble()
-                    sumSq += s * s
-                }
-                val rms = kotlin.math.sqrt(sumSq / SAMPLES_FRAME)
-                if (rms >= ngThreshold) {
-                    gateHold = GATE_HOLD_FRAMES   // konuşma algılandı, sayacı sıfırla
-                } else if (gateHold > 0) {
-                    gateHold--                    // hold süresi devam ediyor, frame gönder
-                } else {
-                    continue                       // gate kapalı, frame atla
                 }
             }
 
