@@ -56,7 +56,7 @@ actual fun PiPStreamWindow(
     val remoteFrame by ScreenShareManager.receiverFrame.collectAsState()
     val frame = if (isSelfView) localFrame else remoteFrame
 
-    var isFullscreen    by remember { mutableStateOf(startInFullscreen) }
+    val isFullscreen    by remember { derivedStateOf { windowState.placement == WindowPlacement.Fullscreen } }
     var showQualityMenu by remember { mutableStateOf(false) }
     var currentQuality  by remember { mutableStateOf(ScreenEngine.quality) }
 
@@ -74,17 +74,6 @@ actual fun PiPStreamWindow(
 
     // KÃ¼Ã§Ã¼k pencerede daima gÃ¶ster, tam ekranda sadece son aktiviteden 5sn iÃ§inde gÃ¶ster
     val showControls = !isFullscreen || showControlsState || frame == null
-
-    // Tam ekran / kÃ¼Ã§Ã¼k pencere geÃ§iÅŸi
-    LaunchedEffect(isFullscreen) {
-        if (isFullscreen) {
-            windowState.placement = WindowPlacement.Fullscreen
-        } else {
-            windowState.placement = WindowPlacement.Floating
-            windowState.size      = DpSize(pipW.dp, pipH.dp)
-            windowState.position  = WindowPosition(posX.dp, posY.dp)
-        }
-    }
 
     Window(
         onCloseRequest = onClose,
@@ -213,9 +202,18 @@ actual fun PiPStreamWindow(
                         }
                     }
 
-                    // Tam ekran / kÃ¼Ã§Ã¼lt butonu
+                    // Tam ekran / küçült butonu
                     IconButton(
-                        onClick  = { isFullscreen = !isFullscreen; showQualityMenu = false },
+                        onClick  = {
+                            if (windowState.placement == WindowPlacement.Fullscreen) {
+                                windowState.placement = WindowPlacement.Floating
+                                windowState.size      = DpSize(pipW.dp, pipH.dp)
+                                windowState.position  = WindowPosition(posX.dp, posY.dp)
+                            } else {
+                                windowState.placement = WindowPlacement.Fullscreen
+                            }
+                            showQualityMenu = false
+                        },
                         modifier = Modifier.size(48.dp),
                     ) {
                         Icon(
