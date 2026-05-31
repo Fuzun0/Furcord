@@ -16,7 +16,6 @@ import java.nio.ByteBuffer
 import java.security.SecureRandom
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CountDownLatch
-import kotlin.math.sqrt
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 import javax.sound.sampled.AudioFormat
@@ -40,8 +39,6 @@ object VoiceEngine {
     private const val HEADER_BYTES        = 8
     private const val PACKET_BYTES        = HEADER_BYTES + FRAME_BYTES
     private const val BUFFER_FRAMES       = 20   // max jitter buffer kapasitesi (400ms)
-    private const val VAD_THRESHOLD       = 300f // RMS eşiği — altında sessiz (iletim durdurulur)
-    private const val VAD_HOLD_FRAMES     = 10   // ~200ms hold timer — kelime sonu kesilmesin
     private const val MAX_PLC_FRAMES      = 5    // PLC: en fazla 5 frame (~100ms) tekrar
     private const val SCREEN_CHUNK_SIZE   = 1_400  // MTU altı (1500B) — IP fragmantasyonu önlenir, ses bozulması giderilir
     private const val SCREEN_MAGIC        = 0x53435200.toInt() // "SCR\0" — ScreenEngine ile eşleşmeli
@@ -89,7 +86,6 @@ object VoiceEngine {
     private val peerVolumes  = ConcurrentHashMap<Int, Float>()      // uidHash → 0.0-2.0 (1.0 = normal)
     private val prevPeerVols = ConcurrentHashMap<Int, Float>()      // smooth ramp: previous-frame volume
     private val seqCounter        = AtomicInteger(0)
-    private var vadHoldCounter    = 0                                     // VAD hold sayacı
     private val speakingTimestamps = ConcurrentHashMap<Int, Long>()       // uidHash → son ms
     private val lastGoodFrames    = ConcurrentHashMap<Int, IntArray>()    // PLC: son iyi frame
     private val plcCountMap       = ConcurrentHashMap<Int, Int>()         // PLC: tekrar sayısı
@@ -218,7 +214,7 @@ object VoiceEngine {
         relayClient?.disconnect(); relayClient = null
         peers.clear(); peerBuffers.clear(); peerVolumes.clear(); prevPeerVols.clear()
         speakingTimestamps.clear(); lastGoodFrames.clear(); plcCountMap.clear()
-        seqCounter.set(0); vadHoldCounter = 0
+        seqCounter.set(0)
         localPort = 0; localPublicIp = ""
         isMuted = false; isDeafened = false; isRelayMode = false
     }
@@ -312,20 +308,7 @@ object VoiceEngine {
                 }
             }
 
-            // VAD: RMS gate + hold timer — kelime ortasında kesmesin
-            val rmsVal = run {
-                val bb = java.nio.ByteBuffer.wrap(pcmBuf).order(java.nio.ByteOrder.LITTLE_ENDIAN)
-                var sum = 0.0
-                for (i in 0 until SAMPLES_FRAME) { val s = bb.getShort(i * 2).toDouble(); sum += s * s }
-                sqrt(sum / SAMPLES_FRAME).toFloat()
-            }
-            if (rmsVal > VAD_THRESHOLD) {
-                vadHoldCounter = VAD_HOLD_FRAMES
-                speakingTimestamps[selfUidHash] = System.currentTimeMillis()
-            } else {
-                if (vadHoldCounter <= 0) continue
-                vadHoldCounter--
-            }
+            speakingTimestamps[selfUidHash] = System.currentTimeMillis()
 
             val seq = seqCounter.incrementAndGet()
 

@@ -951,7 +951,7 @@ fun ServerDetailScreen(
             isSelfView     = isScreenSharing,
             peerVolume     = 1f,
             onVolumeChange = {},
-            onExpand       = { showPiP = false },
+            onExpand       = { showPiP = false; showTextChannel = false },
             onClose        = {
                 showPiP = false
                 if (isScreenSharing) {
