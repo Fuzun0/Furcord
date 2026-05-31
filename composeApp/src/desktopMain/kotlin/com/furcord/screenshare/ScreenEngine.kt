@@ -21,6 +21,12 @@ import javax.imageio.IIOImage
 import javax.imageio.ImageIO
 import javax.imageio.ImageWriteParam
 
+/** Yayın kalitesi seçenekleri — yayıncı tarafında etki eder. */
+enum class StreamQuality(val width: Int, val height: Int, val jpegQuality: Float, val label: String) {
+    Q_480P(854,  480,  0.40f, "480p"),
+    Q_720P(1280, 720,  0.60f, "720p"),
+}
+
 /**
  * P2P ekran paylaşımı motoru — VoiceEngine'in UDP soketi üzerinde çalışır.
  *
@@ -30,16 +36,13 @@ import javax.imageio.ImageWriteParam
  *   [8]    fragIdx  (Byte, 0-based)
  *   [9]    totalFrags (Byte)
  *   [10-11] reserved
- *
- * Çözünürlük: 854×480 (480p), JPEG kalite: 0.40, hedef FPS: 30
  */
 object ScreenEngine {
 
     const val MAGIC            = 0x53435200.toInt()  // VoiceEngine bu sabiti okur
-    private const val TARGET_W      = 854
-    private const val TARGET_H      = 480
-    private const val JPEG_QUALITY  = 0.40f
     private const val TARGET_FPS    = 30
+    @Volatile var quality: StreamQuality = StreamQuality.Q_480P; private set
+    fun setQuality(q: StreamQuality) { quality = q }
     private const val INTERVAL_MS   = 1000L / TARGET_FPS   // ~33ms
     private const val HEADER_SIZE   = 12
     private const val CHUNK_SIZE    = 1_400  // MTU altı — VoiceEngine.SCREEN_CHUNK_SIZE ile eşleşmeli
@@ -177,26 +180,27 @@ object ScreenEngine {
         }
     }
 
-    /** Ekranı yakalar, 854×480'e küçültür, JPEG olarak sıkıştırır. */
+    /** Ekranı yakalar, hedef çözünürlüğe küçültür, JPEG olarak sıkıştırır. */
     private fun captureAndEncode(): ByteArray? {
         val rb = robot ?: return null
         return try {
+            val q          = quality
             val screenSize = Toolkit.getDefaultToolkit().screenSize
             val full       = rb.createScreenCapture(Rectangle(screenSize))
 
             // Hızlı bilinear ölçeklendirme
-            val scaled = BufferedImage(TARGET_W, TARGET_H, BufferedImage.TYPE_INT_RGB)
+            val scaled = BufferedImage(q.width, q.height, BufferedImage.TYPE_INT_RGB)
             val g      = scaled.createGraphics()
             g.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BILINEAR)
-            g.drawImage(full, 0, 0, TARGET_W, TARGET_H, null)
+            g.drawImage(full, 0, 0, q.width, q.height, null)
             g.dispose()
 
-            // JPEG sıkıştırma — kalite 0.40 = iyi-yeterli bant genişliği dengesi
+            // JPEG sıkıştırma
             val baos   = ByteArrayOutputStream(32_000)
             val writer = ImageIO.getImageWritersByFormatName("jpeg").next()
             val param  = writer.defaultWriteParam.apply {
                 compressionMode    = ImageWriteParam.MODE_EXPLICIT
-                compressionQuality = JPEG_QUALITY
+                compressionQuality = q.jpegQuality
             }
             val ios = ImageIO.createImageOutputStream(baos)
             writer.output = ios

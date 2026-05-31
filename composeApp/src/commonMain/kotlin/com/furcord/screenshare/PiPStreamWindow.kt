@@ -13,6 +13,5 @@ expect fun PiPStreamWindow(
     isSelfView:     Boolean,
     peerVolume:     Float,
     onVolumeChange: (Float) -> Unit,
-    onExpand:       () -> Unit,
     onClose:        () -> Unit,
 )
