@@ -136,7 +136,6 @@ object VoiceEngine {
         channelIdHash = if (channelId.isNotBlank()) channelId.hashCode() else selfUidHash
         try {
             socket = DatagramSocket()
-            socket?.setReceiveBufferSize(512 * 1024)  // büyük buffer: ses + ekran paylaşımı paketlerini biriktir
             val stun = stunDiscover()
             if (stun != null) {
                 localPublicIp = stun.first; localPort = stun.second

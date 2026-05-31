@@ -876,13 +876,13 @@ fun ServerDetailScreen(
     var isScreenSharing      by remember { mutableStateOf(false) }
     var showPiP              by remember { mutableStateOf(false) }
     var isAttemptingReceive  by remember { mutableStateOf(false) }
-    val receiverFrame        by ScreenShareManager.receiverFrame.collectAsState()
     val broadcastingUidHash  by ScreenShareManager.broadcastingUidHash.collectAsState()
 
     // Yayın bittiğinde (broadcastingUidHash sıfırlanınca) izleme durumunu temizle
     LaunchedEffect(broadcastingUidHash) {
         if (broadcastingUidHash == 0 && isAttemptingReceive) {
             isAttemptingReceive = false
+            showPiP = false
         }
     }
 
@@ -1672,6 +1672,12 @@ fun ServerDetailScreen(
                         }
                     }
                 }} else null,
+                onWatchStream = if (broadcastingUidHash != 0 && sidebarCtxUser.uid.hashCode() == broadcastingUidHash) {{
+                    contextMenuUser = null
+                    ScreenShareManager.startReceiver()
+                    isAttemptingReceive = true
+                    showPiP = true
+                }} else null,
             )
         }
         }   // end sidebar Box
@@ -1702,31 +1708,6 @@ fun ServerDetailScreen(
                     )
                 }
                 HorizontalDivider(color = Color(0xFF1E1F22))
-                // Yayın bildirimi — metin kanalındayken yayın devam ediyor
-                if (receiverFrame != null || isScreenSharing) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .background(Color(0xFF5865F2))
-                            .padding(horizontal = 16.dp, vertical = 6.dp),
-                        verticalAlignment   = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    ) {
-                        Text(
-                            text     = if (isScreenSharing) "🔴 Ekranınızı paylaşıyorsunuz" else "🖥️ Birisi ekranını paylaşıyor",
-                            color    = Color.White,
-                            fontSize = 13.sp,
-                            fontWeight = FontWeight.SemiBold,
-                            modifier = Modifier.weight(1f),
-                        )
-                        TextButton(onClick = { showPiP = true }) {
-                            Text("📺 Küçük Pencere", color = Color.White, fontSize = 12.sp)
-                        }
-                        TextButton(onClick = { showTextChannel = false }) {
-                            Text("▶ İzle", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                        }
-                    }
-                }
                 ChatPanel(
                     serverId        = serverId,
                     messages        = messages,
@@ -1819,6 +1800,8 @@ fun ServerDetailScreen(
                         modifier       = Modifier.weight(0.55f).fillMaxWidth(),
                     )
                     HorizontalDivider(color = Color(0xFF1E1F22))
+                } else if (showPiP && isAttemptingReceive) {
+                    // PiP modunda izleyici — inline view gizlenir, dönen daire gösterilmez
                 }
 
                 val active = channelUsers[viewChannelId] ?: emptyList()
@@ -1968,7 +1951,7 @@ fun ServerDetailScreen(
                                             contextMenuUser = null
                                             ScreenShareManager.startReceiver()
                                             isAttemptingReceive = true
-                                            showTextChannel = false
+                                            showPiP = true
                                         }} else null,
                                     )
                                 }
