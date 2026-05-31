@@ -10,8 +10,9 @@ import androidx.compose.runtime.Composable
  */
 @Composable
 expect fun PiPStreamWindow(
-    isSelfView:     Boolean,
-    peerVolume:     Float,
-    onVolumeChange: (Float) -> Unit,
-    onClose:        () -> Unit,
+    isSelfView:        Boolean,
+    startInFullscreen: Boolean,
+    peerVolume:        Float,
+    onVolumeChange:    (Float) -> Unit,
+    onClose:           () -> Unit,
 )

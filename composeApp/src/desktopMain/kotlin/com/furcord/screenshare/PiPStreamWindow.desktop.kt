@@ -1,13 +1,10 @@
-package com.furcord.screenshare
+﻿package com.furcord.screenshare
 
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
-import androidx.compose.foundation.hoverable
-import androidx.compose.foundation.interaction.MutableInteractionSource
-import androidx.compose.foundation.interaction.collectIsHoveredAsState
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.window.WindowDraggableArea
 import androidx.compose.material.icons.Icons
@@ -20,6 +17,8 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
@@ -30,13 +29,15 @@ import androidx.compose.ui.window.WindowPosition
 import androidx.compose.ui.window.rememberWindowState
 import java.awt.Dimension
 import java.awt.Toolkit
+import kotlinx.coroutines.delay
 
 @Composable
 actual fun PiPStreamWindow(
-    isSelfView:     Boolean,
-    peerVolume:     Float,
-    onVolumeChange: (Float) -> Unit,
-    onClose:        () -> Unit,
+    isSelfView:        Boolean,
+    startInFullscreen: Boolean,
+    peerVolume:        Float,
+    onVolumeChange:    (Float) -> Unit,
+    onClose:           () -> Unit,
 ) {
     val screenSize: Dimension = Toolkit.getDefaultToolkit().screenSize
     val pipW   = 380
@@ -46,19 +47,35 @@ actual fun PiPStreamWindow(
     val posY   = screenSize.height - pipH - margin - 48
 
     val windowState = rememberWindowState(
-        size     = DpSize(pipW.dp, pipH.dp),
-        position = WindowPosition(posX.dp, posY.dp),
+        placement = if (startInFullscreen) WindowPlacement.Fullscreen else WindowPlacement.Floating,
+        size      = if (startInFullscreen) DpSize(screenSize.width.dp, screenSize.height.dp) else DpSize(pipW.dp, pipH.dp),
+        position  = if (startInFullscreen) WindowPosition(0.dp, 0.dp) else WindowPosition(posX.dp, posY.dp),
     )
 
     val localFrame  by ScreenShareManager.localFrame.collectAsState()
     val remoteFrame by ScreenShareManager.receiverFrame.collectAsState()
     val frame = if (isSelfView) localFrame else remoteFrame
 
-    var isFullscreen    by remember { mutableStateOf(false) }
+    var isFullscreen    by remember { mutableStateOf(startInFullscreen) }
     var showQualityMenu by remember { mutableStateOf(false) }
     var currentQuality  by remember { mutableStateOf(ScreenEngine.quality) }
 
-    // Tam ekran / küçük pencere geçişi
+    // Kontrol gÃ¶rÃ¼nÃ¼rlÃ¼ÄŸÃ¼: fare hareket edince 5 saniye gÃ¶ster
+    var lastActivityMs   by remember { mutableStateOf(System.currentTimeMillis()) }
+    var showControlsState by remember { mutableStateOf(true) }
+
+    LaunchedEffect(lastActivityMs) {
+        showControlsState = true
+        if (isFullscreen) {
+            delay(5_000)
+            showControlsState = false
+        }
+    }
+
+    // KÃ¼Ã§Ã¼k pencerede daima gÃ¶ster, tam ekranda sadece son aktiviteden 5sn iÃ§inde gÃ¶ster
+    val showControls = !isFullscreen || showControlsState || frame == null
+
+    // Tam ekran / kÃ¼Ã§Ã¼k pencere geÃ§iÅŸi
     LaunchedEffect(isFullscreen) {
         if (isFullscreen) {
             windowState.placement = WindowPlacement.Fullscreen
@@ -69,26 +86,28 @@ actual fun PiPStreamWindow(
         }
     }
 
-    val bgInteraction = remember { MutableInteractionSource() }
-    val bgHovered     by bgInteraction.collectIsHoveredAsState()
-    // Küçük pencerede her zaman, tam ekranda hover'da göster
-    val showControls  = !isFullscreen || bgHovered || frame == null
-
     Window(
         onCloseRequest = onClose,
         state          = windowState,
-        title          = if (isSelfView) "Furcord — Ekran Önizleme" else "Furcord — Yayın İzleniyor",
+        title          = if (isSelfView) "Furcord â€” Ekran Ã–nizleme" else "Furcord â€” YayÄ±n Ä°zleniyor",
         alwaysOnTop    = !isFullscreen,
         undecorated    = true,
-        resizable      = true,
+        resizable      = !isFullscreen,
     ) {
         Box(
             modifier = Modifier
                 .fillMaxSize()
                 .background(Color(0xFF111214))
-                .hoverable(bgInteraction),
+                .pointerInput(Unit) {
+                    awaitPointerEventScope {
+                        while (true) {
+                            awaitPointerEvent(PointerEventPass.Main)
+                            lastActivityMs = System.currentTimeMillis()
+                        }
+                    }
+                },
         ) {
-            // ── Video karesi ──────────────────────────────────────────────────
+            // â”€â”€ Video karesi â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
             val bmp = frame
             if (bmp != null) {
                 Image(
@@ -105,55 +124,59 @@ actual fun PiPStreamWindow(
                 )
             }
 
-            // ── Sürükleme alanı (sadece küçük modda) ─────────────────────────
+            // â”€â”€ SÃ¼rÃ¼kleme alanÄ± (sadece kÃ¼Ã§Ã¼k modda) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
             if (!isFullscreen) {
                 WindowDraggableArea(
                     modifier = Modifier
                         .align(Alignment.TopStart)
                         .fillMaxWidth()
-                        .height(32.dp),
+                        .height(40.dp),
                 )
             }
 
-            // ── Kapat butonu — sağ üst, her zaman görünür ────────────────────
-            IconButton(
-                onClick  = onClose,
-                modifier = Modifier
-                    .align(Alignment.TopEnd)
-                    .padding(4.dp)
-                    .size(26.dp),
-            ) {
-                Icon(
-                    imageVector        = Icons.Default.Close,
-                    contentDescription = "Kapat",
-                    tint               = Color(0xFFED4245),
-                    modifier           = Modifier.size(15.dp),
-                )
-            }
-
-            // ── Sağ alt kontroller (tam ekran butonu + ayarlar) ───────────────
+            // â”€â”€ Kapat butonu â€” saÄŸ Ã¼st â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
             AnimatedVisibility(
                 visible  = showControls,
-                modifier = Modifier.align(Alignment.BottomEnd).padding(6.dp),
+                modifier = Modifier.align(Alignment.TopEnd).padding(6.dp),
+                enter    = fadeIn(),
+                exit     = fadeOut(),
+            ) {
+                IconButton(
+                    onClick  = onClose,
+                    modifier = Modifier.size(40.dp),
+                ) {
+                    Icon(
+                        imageVector        = Icons.Default.Close,
+                        contentDescription = "Kapat",
+                        tint               = Color(0xFFED4245),
+                        modifier           = Modifier.size(22.dp),
+                    )
+                }
+            }
+
+            // â”€â”€ SaÄŸ alt kontroller (tam ekran butonu + ayarlar) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+            AnimatedVisibility(
+                visible  = showControls,
+                modifier = Modifier.align(Alignment.BottomEnd).padding(8.dp),
                 enter    = fadeIn(),
                 exit     = fadeOut(),
             ) {
                 Row(
-                    horizontalArrangement = Arrangement.spacedBy(2.dp),
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
                     verticalAlignment     = Alignment.CenterVertically,
                 ) {
-                    // Kalite ayarları (sadece tam ekranda)
-                    if (isFullscreen) {
+                    // Kalite ayarlarÄ± (sadece yayÄ±ncÄ± kendi Ã¶nizlemesindeyken)
+                    if (isSelfView) {
                         Box {
                             IconButton(
                                 onClick  = { showQualityMenu = !showQualityMenu },
-                                modifier = Modifier.size(30.dp),
+                                modifier = Modifier.size(48.dp),
                             ) {
                                 Icon(
                                     imageVector        = Icons.Default.Settings,
                                     contentDescription = "Kalite",
                                     tint               = Color(0xFFB5BAC1),
-                                    modifier           = Modifier.size(16.dp),
+                                    modifier           = Modifier.size(24.dp),
                                 )
                             }
                             DropdownMenu(
@@ -190,39 +213,39 @@ actual fun PiPStreamWindow(
                         }
                     }
 
-                    // Tam ekran / küçült butonu
+                    // Tam ekran / kÃ¼Ã§Ã¼lt butonu
                     IconButton(
                         onClick  = { isFullscreen = !isFullscreen; showQualityMenu = false },
-                        modifier = Modifier.size(30.dp),
+                        modifier = Modifier.size(48.dp),
                     ) {
                         Icon(
                             imageVector        = if (isFullscreen) Icons.Default.FullscreenExit else Icons.Default.Fullscreen,
-                            contentDescription = if (isFullscreen) "Küçült" else "Tam ekran",
+                            contentDescription = if (isFullscreen) "KÃ¼Ã§Ã¼lt" else "Tam ekran",
                             tint               = Color(0xFFB5BAC1),
-                            modifier           = Modifier.size(16.dp),
+                            modifier           = Modifier.size(24.dp),
                         )
                     }
                 }
             }
 
-            // ── Ses slider — sol alt (sadece izleyici) ───────────────────────
+            // â”€â”€ Ses slider â€” sol alt (sadece izleyici) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
             if (!isSelfView) {
                 AnimatedVisibility(
                     visible  = showControls,
-                    modifier = Modifier.align(Alignment.BottomStart).padding(6.dp),
+                    modifier = Modifier.align(Alignment.BottomStart).padding(8.dp),
                     enter    = fadeIn(),
                     exit     = fadeOut(),
                 ) {
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
-                        modifier          = Modifier.width(140.dp),
+                        modifier          = Modifier.width(160.dp),
                     ) {
-                        Text("🔊", fontSize = 11.sp)
+                        Text("\uD83D\uDD0A", fontSize = 14.sp)
                         Slider(
                             value          = peerVolume,
                             onValueChange  = onVolumeChange,
                             valueRange     = 0f..2f,
-                            modifier       = Modifier.weight(1f).height(24.dp),
+                            modifier       = Modifier.weight(1f).height(32.dp),
                             colors         = SliderDefaults.colors(
                                 thumbColor         = Color(0xFF5865F2),
                                 activeTrackColor   = Color(0xFF5865F2),

@@ -312,9 +312,10 @@ object VoiceEngine {
 
             val seq = seqCounter.incrementAndGet()
 
-            if (isRelayMode) {
+            val rc = relayClient
+            if (isRelayMode && rc != null) {
                 // Relay modu: ses verisini TCP relay üzerinden gönder
-                relayClient?.sendFrame(pcmBuf)
+                rc.sendFrame(pcmBuf)
             } else {
                 // Direkt UDP modu
                 ByteBuffer.wrap(pktBuf, 0, HEADER_BYTES).putInt(seq).putInt(selfUidHash)

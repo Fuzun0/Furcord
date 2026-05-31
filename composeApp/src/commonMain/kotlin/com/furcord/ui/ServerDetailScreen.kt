@@ -390,7 +390,7 @@ private fun ChannelRow(
                                 Box(
                                     Modifier
                                         .size(38.dp)
-                                        .border(3.dp, Color(0xFF23A55A), CircleShape)
+                                        .border(1.5.dp, Color(0xFF23A55A), CircleShape)
                                 )
                             }
                             Box(
@@ -948,7 +948,8 @@ fun ServerDetailScreen(
     // PiP (küçük yapışkan pencere) — yayın aktifken her iki sekme görünümünde de erişilebilir
     if (showPiP) {
         PiPStreamWindow(
-            isSelfView     = isScreenSharing,
+            isSelfView       = isScreenSharing,
+            startInFullscreen = !isScreenSharing,
             peerVolume     = 1f,
             onVolumeChange = {},
             onClose        = {
@@ -1851,7 +1852,7 @@ fun ServerDetailScreen(
                                             Box(
                                                 modifier = Modifier
                                                     .size(82.dp)
-                                                    .border(4.dp, Color(0xFF23A55A), CircleShape)
+                                                    .border(2.dp, Color(0xFF23A55A), CircleShape)
                                             )
                                         }
                                         Box(
