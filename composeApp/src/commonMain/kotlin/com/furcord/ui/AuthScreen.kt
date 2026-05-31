@@ -50,7 +50,7 @@ fun AuthScreen(onAuthenticated: (AuthUser) -> Unit) {
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.spacedBy(16.dp),
             ) {
-                Text("🎙️", fontSize = 52.sp)
+                FurcordLogoIcon(size = 64.dp)
                 Text(
                     text       = "Furcord'a Hoş Geldin",
                     style      = MaterialTheme.typography.headlineSmall,

@@ -188,6 +188,7 @@ private fun UserContextMenu(
     onMessage: () -> Unit,
     onAddFriend: () -> Unit,
     onKick: (() -> Unit)?,
+    onWatchStream: (() -> Unit)? = null,
 ) {
     DropdownMenu(
         expanded         = true,
@@ -248,6 +249,13 @@ private fun UserContextMenu(
             DropdownMenuItem(
                 text    = { Text("🔨 Sunucudan At", color = Color(0xFFED4245), fontSize = 13.sp) },
                 onClick = onKick,
+            )
+        }
+        if (onWatchStream != null) {
+            HorizontalDivider(color = Color(0xFF2B2D31))
+            DropdownMenuItem(
+                text    = { Text("📺 Yayını İzle", color = Color(0xFF00B8D4), fontSize = 13.sp) },
+                onClick = onWatchStream,
             )
         }
     }
@@ -865,9 +873,18 @@ fun ServerDetailScreen(
     var connectedSinceMs  by remember { mutableStateOf<Long?>(null) }
     var voiceTimerStr     by remember { mutableStateOf("") }
     // Ekran paylaşımı
-    var isScreenSharing   by remember { mutableStateOf(false) }
-    var showPiP           by remember { mutableStateOf(false) }
-    val receiverFrame     by ScreenShareManager.receiverFrame.collectAsState()
+    var isScreenSharing      by remember { mutableStateOf(false) }
+    var showPiP              by remember { mutableStateOf(false) }
+    var isAttemptingReceive  by remember { mutableStateOf(false) }
+    val receiverFrame        by ScreenShareManager.receiverFrame.collectAsState()
+    val broadcastingUidHash  by ScreenShareManager.broadcastingUidHash.collectAsState()
+
+    // Yayın bittiğinde (broadcastingUidHash sıfırlanınca) izleme durumunu temizle
+    LaunchedEffect(broadcastingUidHash) {
+        if (broadcastingUidHash == 0 && isAttemptingReceive) {
+            isAttemptingReceive = false
+        }
+    }
 
     val latestConnectedId   by rememberUpdatedState(connectedChannelId)
     val latestChannelUsers  by rememberUpdatedState(channelUsers)
@@ -1173,7 +1190,12 @@ fun ServerDetailScreen(
 
     // ── Join channel ──────────────────────────────────────────────────────────
     fun joinChannel(ch: VoiceChannel) {
-        if (connectedChannelId == ch.id) return
+        if (connectedChannelId == ch.id) {
+            // Zaten bu ses kanalında bağlıyız — ses kanalı görünümüne geç
+            showTextChannel = false
+            selectedChannelId = ch.id
+            return
+        }
         scope.launch {
             val prevId = connectedChannelId
             if (prevId != null) {
@@ -1755,6 +1777,7 @@ fun ServerDetailScreen(
                                     ScreenShareManager.stop()
                                     isScreenSharing = false
                                 } else {
+                                    showTextChannel = false  // ses kanalı görünümüne geç
                                     ScreenShareManager.start()
                                     isScreenSharing = true
                                 }
@@ -1778,7 +1801,7 @@ fun ServerDetailScreen(
                 HorizontalDivider(color = Color(0xFF1E1F22))
                 // ── Ekran paylaşımı görünümü (yayıncı ya da izleyici) ─────────
                 // showPiP=true ise inline görünüm gizlenir, PiPStreamWindow devralır
-                if (!showPiP && (isScreenSharing || receiverFrame != null)) {
+                if (!showPiP && (isScreenSharing || receiverFrame != null || isAttemptingReceive)) {
                     StreamViewerComposable(
                         isSelfView     = isScreenSharing,
                         peerVolume     = 1f,
@@ -1789,6 +1812,7 @@ fun ServerDetailScreen(
                                 isScreenSharing = false
                             } else {
                                 ScreenShareManager.stopReceiver()
+                                isAttemptingReceive = false
                             }
                         },
                         onTogglePiP    = { showPiP = true },
@@ -1879,6 +1903,23 @@ fun ServerDetailScreen(
                                         maxLines = 1,
                                         textAlign = TextAlign.Center,
                                     )
+                                    // CANLI rozeti — bu kullanıcı ekran paylaşıyor
+                                    if (broadcastingUidHash != 0 && u.uid.hashCode() == broadcastingUidHash) {
+                                        Box(
+                                            modifier = Modifier
+                                                .clip(RoundedCornerShape(4.dp))
+                                                .background(Color(0xFFED4245))
+                                                .padding(horizontal = 5.dp, vertical = 2.dp),
+                                        ) {
+                                            Text(
+                                                text = "● CANLI",
+                                                fontSize = 9.sp,
+                                                fontWeight = FontWeight.Bold,
+                                                color = Color.White,
+                                                letterSpacing = 0.5.sp,
+                                            )
+                                        }
+                                    }
                                 }
                                 // Sağ tık bağlam menüsü (grid)
                                 if (!isSelf && contextMenuUser?.uid == u.uid) {
@@ -1922,6 +1963,12 @@ fun ServerDetailScreen(
                                                     }
                                                 }
                                             }
+                                        }} else null,
+                                        onWatchStream = if (broadcastingUidHash != 0 && u.uid.hashCode() == broadcastingUidHash) {{
+                                            contextMenuUser = null
+                                            ScreenShareManager.startReceiver()
+                                            isAttemptingReceive = true
+                                            showTextChannel = false
                                         }} else null,
                                     )
                                 }

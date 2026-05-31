@@ -27,4 +27,6 @@ expect object ScreenShareManager {
     fun startReceiver()
     /** Stop receiving and release decoder resources. */
     fun stopReceiver()
+    /** UID hash of the user currently broadcasting screen; 0 if nobody is broadcasting. */
+    val broadcastingUidHash: StateFlow<Int>
 }

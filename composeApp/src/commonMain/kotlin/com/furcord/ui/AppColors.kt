@@ -39,8 +39,8 @@ object AppColors {
     val TextSubtle   = Color(0xFF6D6F78)
 
     // ── Accent / Brand ────────────────────────────────────────────────────────
-    /** Blurple — butonlar, vurgu, seçim */
-    val Accent       = Color(0xFF5865F2)
+    /** Mor-viyole — logo ile uyumlu, butonlar, vurgu, seçim */
+    val Accent       = Color(0xFF7C5CF6)
     /** Yeşil — çevrimiçi, kendin, ses bağlantısı */
     val Online       = Color(0xFF23A55A)
     /** Kırmızı — okunmamış, hata */

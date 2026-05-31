@@ -42,7 +42,7 @@ object ScreenEngine {
     private const val TARGET_FPS    = 30
     private const val INTERVAL_MS   = 1000L / TARGET_FPS   // ~33ms
     private const val HEADER_SIZE   = 12
-    private const val CHUNK_SIZE    = 60_000  // maks. UDP yükü (~UDP limit 65507'nin altında güvenli)
+    private const val CHUNK_SIZE    = 1_400  // MTU altı — VoiceEngine.SCREEN_CHUNK_SIZE ile eşleşmeli
     private const val MAX_PENDING_FRAMES = 32  // fragment reassembly için bellek limiti
 
     // ── Herkese açık durum ────────────────────────────────────────────────────
@@ -54,6 +54,10 @@ object ScreenEngine {
     private val _receiverFrame = MutableStateFlow<ImageBitmap?>(null)
     /** Uzaktaki yayıncıdan gelen kare */
     val receiverFrame: StateFlow<ImageBitmap?> = _receiverFrame
+
+    private val _broadcastingUidHash = MutableStateFlow<Int>(0)
+    /** Ekran paylaşan kullanıcının uid.hashCode()'u; 0 = kimse paylaşmıyor */
+    val broadcastingUidHash: StateFlow<Int> = _broadcastingUidHash
 
     @Volatile var isActive    = false; private set
     @Volatile var isReceiving = false; private set
@@ -123,6 +127,7 @@ object ScreenEngine {
     fun stopReceiver() {
         isReceiving = false
         _receiverFrame.value = null
+        _broadcastingUidHash.value = 0
         if (!isActive) VoiceEngine.onScreenFrame = null
     }
 
@@ -185,8 +190,10 @@ object ScreenEngine {
     /**
      * VoiceEngine.receiveLoop() ekran paylaşımı paketini tespit ettiğinde çağırır.
      * Ham paket baytları verilir (başından sona, magic dahil).
+     * senderUidHash: gönderici kullanıcının uid.hashCode()'u (VoiceEngine peer listesinden türetilir)
      */
-    fun onPacketReceived(raw: ByteArray) {
+    fun onPacketReceived(raw: ByteArray, senderUidHash: Int = 0) {
+        if (senderUidHash != 0) _broadcastingUidHash.value = senderUidHash
         if (raw.size < HEADER_SIZE + 1) return
         val bb         = ByteBuffer.wrap(raw)
         val seq        = bb.getInt(4)

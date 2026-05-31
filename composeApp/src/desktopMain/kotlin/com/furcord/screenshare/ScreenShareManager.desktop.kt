@@ -28,4 +28,7 @@ actual object ScreenShareManager {
 
     actual val receiverFrame: StateFlow<ImageBitmap?>
         get() = ScreenEngine.receiverFrame
+
+    actual val broadcastingUidHash: StateFlow<Int>
+        get() = ScreenEngine.broadcastingUidHash
 }

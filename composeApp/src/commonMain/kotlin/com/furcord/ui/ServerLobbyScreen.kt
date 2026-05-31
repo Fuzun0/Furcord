@@ -218,7 +218,7 @@ fun ServerLobbyScreen(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            Text("🎮", fontSize = 22.sp)
+            FurcordLogoIcon(size = 28.dp)
             Text(
                 "Furcord",
                 fontSize = 17.sp,

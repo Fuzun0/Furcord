@@ -43,7 +43,7 @@ object VoiceEngine {
     private const val VAD_THRESHOLD       = 300f // RMS eşiği — altında sessiz (iletim durdurulur)
     private const val VAD_HOLD_FRAMES     = 10   // ~200ms hold timer — kelime sonu kesilmesin
     private const val MAX_PLC_FRAMES      = 3    // PLC: en fazla 3 frame (~60ms) tekrar
-    private const val SCREEN_CHUNK_SIZE   = 60_000 // ekran paylaşımı fragment boyutu
+    private const val SCREEN_CHUNK_SIZE   = 1_400  // MTU altı (1500B) — IP fragmantasyonu önlenir, ses bozulması giderilir
     private const val SCREEN_MAGIC        = 0x53435200.toInt() // "SCR\0" — ScreenEngine ile eşleşmeli
     private const val MAX_UDP_PAYLOAD     = 65_507 // RFC 768 maks. UDP yükü
 
@@ -64,7 +64,7 @@ object VoiceEngine {
      * Ekran paylaşımı paketi geldiğinde ScreenEngine tarafından atanır.
      * Ses döngüsünden çağrılır — bloklayan iş yapma.
      */
-    var onScreenFrame: ((ByteArray) -> Unit)? = null
+    var onScreenFrame: ((ByteArray, Int) -> Unit)? = null
 
     @Volatile var isMuted      = false
     @Volatile var isDeafened   = false
@@ -136,6 +136,7 @@ object VoiceEngine {
         channelIdHash = if (channelId.isNotBlank()) channelId.hashCode() else selfUidHash
         try {
             socket = DatagramSocket()
+            socket?.setReceiveBufferSize(512 * 1024)  // büyük buffer: ses + ekran paylaşımı paketlerini biriktir
             val stun = stunDiscover()
             if (stun != null) {
                 localPublicIp = stun.first; localPort = stun.second
@@ -359,7 +360,10 @@ object VoiceEngine {
             }
             // Ekran paylaşımı paketlerini magic'e göre ayırt et ve ScreenEngine'e yönlendir
             if (dp.length >= 12 && ByteBuffer.wrap(buf, 0, 4).int == SCREEN_MAGIC) {
-                onScreenFrame?.invoke(buf.copyOfRange(0, dp.length))
+                val senderIp   = dp.address.hostAddress
+                val senderPort = dp.port
+                val senderHash = peers.values.find { it.ip == senderIp && it.port == senderPort }?.uid?.hashCode() ?: 0
+                onScreenFrame?.invoke(buf.copyOfRange(0, dp.length), senderHash)
                 continue
             }
             if (dp.length <= HEADER_BYTES || isDeafened) continue

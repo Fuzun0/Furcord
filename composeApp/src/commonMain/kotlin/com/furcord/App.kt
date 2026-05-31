@@ -56,7 +56,21 @@ private data class DmTarget(val uid: String, val name: String)
 
 @Composable
 fun App() {
-    MaterialTheme(colorScheme = darkColorScheme()) {
+    MaterialTheme(colorScheme = darkColorScheme(
+        primary        = Color(0xFF7C5CF6),
+        onPrimary      = Color(0xFFFFFFFF),
+        primaryContainer   = Color(0xFF3D2472),
+        onPrimaryContainer = Color(0xFFE6DEFF),
+        secondary      = Color(0xFF40C4FF),
+        onSecondary    = Color(0xFF00131C),
+        surface        = Color(0xFF2B2D31),
+        onSurface      = Color(0xFFF2F3F5),
+        surfaceVariant = Color(0xFF313338),
+        background     = Color(0xFF1E1F22),
+        onBackground   = Color(0xFFF2F3F5),
+        error          = Color(0xFFED4245),
+        onError        = Color(0xFFFFFFFF),
+    )) {
         // Pencere odak durumu — polling hızını kontrol eder
         val windowFocused = LocalWindowInfo.current.isWindowFocused
         var authState   by remember { mutableStateOf<AppAuthState>(AppAuthState.Loading) }
