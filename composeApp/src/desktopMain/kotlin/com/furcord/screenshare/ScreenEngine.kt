@@ -4,6 +4,7 @@ import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.toComposeImageBitmap
 import com.furcord.voice.VoiceEngine
 import kotlinx.coroutines.*
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import java.awt.Rectangle
@@ -63,6 +64,25 @@ object ScreenEngine {
     private val scope       = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private var captureJob: Job? = null
     private var robot:      Robot? = null
+
+    /**
+     * VoiceEngine receive thread'inden non-blocking olarak beslenir.
+     * CONFLATED: decoder yetişemezse eski kare düşer, en yeni kare işlenir.
+     * Bu sayede receiveLoop hiç bloklanmaz → ses kaybı olmaz.
+     */
+    @Suppress("DEPRECATION")
+    private val decodeChannel = Channel<ByteArray>(Channel.CONFLATED)
+
+    init {
+        // Kare decode eden ayrı coroutine — VoiceEngine thread'inden bağımsız
+        scope.launch {
+            for (jpeg in decodeChannel) {
+                runCatching {
+                    ImageIO.read(ByteArrayInputStream(jpeg))?.toComposeImageBitmap()
+                }.getOrNull()?.let { _receiverFrame.value = it }
+            }
+        }
+    }
 
     // Fragment birleştirme: frameSeq → [totalFrags] nullable dilimler
     private val fragments   = ConcurrentHashMap<Int, Array<ByteArray?>>()
@@ -204,9 +224,8 @@ object ScreenEngine {
     }
 
     private fun processFrame(jpeg: ByteArray) {
-        val bmp = runCatching {
-            ImageIO.read(ByteArrayInputStream(jpeg))?.toComposeImageBitmap()
-        }.getOrNull() ?: return
-        _receiverFrame.value = bmp
+        // Non-blocking: receive thread'ini asla bloklamaz.
+        // ImageIO.read() decode işi decodeChannel worker'a devredilir.
+        decodeChannel.trySend(jpeg)
     }
 }

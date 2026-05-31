@@ -41,6 +41,7 @@ import com.furcord.auth.VoiceChannel
 import com.furcord.voice.VoiceEngine
 import com.furcord.screenshare.ScreenShareManager
 import com.furcord.screenshare.StreamViewerComposable
+import com.furcord.screenshare.PiPStreamWindow
 import androidx.compose.foundation.Image
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
@@ -865,6 +866,7 @@ fun ServerDetailScreen(
     var voiceTimerStr     by remember { mutableStateOf("") }
     // Ekran paylaşımı
     var isScreenSharing   by remember { mutableStateOf(false) }
+    var showPiP           by remember { mutableStateOf(false) }
     val receiverFrame     by ScreenShareManager.receiverFrame.collectAsState()
 
     val latestConnectedId   by rememberUpdatedState(connectedChannelId)
@@ -922,6 +924,25 @@ fun ServerDetailScreen(
                     onClick = { wasKicked = false; onLeaveServer() },
                     colors  = ButtonDefaults.buttonColors(containerColor = Color(0xFF5865F2)),
                 ) { Text("Tamam", color = Color.White) }
+            },
+        )
+    }
+
+    // PiP (küçük yapışkan pencere) — yayın aktifken her iki sekme görünümünde de erişilebilir
+    if (showPiP) {
+        PiPStreamWindow(
+            isSelfView     = isScreenSharing,
+            peerVolume     = 1f,
+            onVolumeChange = {},
+            onExpand       = { showPiP = false },
+            onClose        = {
+                showPiP = false
+                if (isScreenSharing) {
+                    ScreenShareManager.stop()
+                    isScreenSharing = false
+                } else {
+                    ScreenShareManager.stopReceiver()
+                }
             },
         )
     }
@@ -1139,6 +1160,7 @@ fun ServerDetailScreen(
                             ScreenShareManager.stop()
                             ScreenShareManager.stopReceiver()
                             isScreenSharing = false
+                            showPiP = false
                             VoiceEngine.stop()
                             connectedChannelId = null
                         }
@@ -1218,6 +1240,7 @@ fun ServerDetailScreen(
             ScreenShareManager.stop()
             ScreenShareManager.stopReceiver()
             isScreenSharing = false
+            showPiP = false
             VoiceEngine.stop()
             connectedChannelId = null
         }
@@ -1657,6 +1680,31 @@ fun ServerDetailScreen(
                     )
                 }
                 HorizontalDivider(color = Color(0xFF1E1F22))
+                // Yayın bildirimi — metin kanalındayken yayın devam ediyor
+                if (receiverFrame != null || isScreenSharing) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(Color(0xFF5865F2))
+                            .padding(horizontal = 16.dp, vertical = 6.dp),
+                        verticalAlignment   = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        Text(
+                            text     = if (isScreenSharing) "🔴 Ekranınızı paylaşıyorsunuz" else "🖥️ Birisi ekranını paylaşıyor",
+                            color    = Color.White,
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            modifier = Modifier.weight(1f),
+                        )
+                        TextButton(onClick = { showPiP = true }) {
+                            Text("📺 Küçük Pencere", color = Color.White, fontSize = 12.sp)
+                        }
+                        TextButton(onClick = { showTextChannel = false }) {
+                            Text("▶ İzle", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                        }
+                    }
+                }
                 ChatPanel(
                     serverId        = serverId,
                     messages        = messages,
@@ -1729,7 +1777,8 @@ fun ServerDetailScreen(
                 }
                 HorizontalDivider(color = Color(0xFF1E1F22))
                 // ── Ekran paylaşımı görünümü (yayıncı ya da izleyici) ─────────
-                if (isScreenSharing || receiverFrame != null) {
+                // showPiP=true ise inline görünüm gizlenir, PiPStreamWindow devralır
+                if (!showPiP && (isScreenSharing || receiverFrame != null)) {
                     StreamViewerComposable(
                         isSelfView     = isScreenSharing,
                         peerVolume     = 1f,
@@ -1742,6 +1791,7 @@ fun ServerDetailScreen(
                                 ScreenShareManager.stopReceiver()
                             }
                         },
+                        onTogglePiP    = { showPiP = true },
                         modifier       = Modifier.weight(0.55f).fillMaxWidth(),
                     )
                     HorizontalDivider(color = Color(0xFF1E1F22))
