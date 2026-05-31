@@ -42,7 +42,7 @@ object VoiceEngine {
     private const val BUFFER_FRAMES       = 20   // max jitter buffer kapasitesi (400ms)
     private const val VAD_THRESHOLD       = 300f // RMS eşiği — altında sessiz (iletim durdurulur)
     private const val VAD_HOLD_FRAMES     = 10   // ~200ms hold timer — kelime sonu kesilmesin
-    private const val MAX_PLC_FRAMES      = 3    // PLC: en fazla 3 frame (~60ms) tekrar
+    private const val MAX_PLC_FRAMES      = 5    // PLC: en fazla 5 frame (~100ms) tekrar
     private const val SCREEN_CHUNK_SIZE   = 1_400  // MTU altı (1500B) — IP fragmantasyonu önlenir, ses bozulması giderilir
     private const val SCREEN_MAGIC        = 0x53435200.toInt() // "SCR\0" — ScreenEngine ile eşleşmeli
     private const val MAX_UDP_PAYLOAD     = 65_507 // RFC 768 maks. UDP yükü

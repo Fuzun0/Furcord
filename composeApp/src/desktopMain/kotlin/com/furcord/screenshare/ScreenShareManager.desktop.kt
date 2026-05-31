@@ -23,8 +23,9 @@ actual object ScreenShareManager {
     actual val localFrame: StateFlow<ImageBitmap?>
         get() = ScreenEngine.localFrame
 
-    actual fun startReceiver() = ScreenEngine.startReceiver()
-    actual fun stopReceiver()  = ScreenEngine.stopReceiver()
+    actual fun startReceiver()     = ScreenEngine.startReceiver()
+    actual fun stopReceiver()       = ScreenEngine.stopReceiver()
+    actual fun stopReceiverFull()   = ScreenEngine.stopReceiverFull()
 
     actual val receiverFrame: StateFlow<ImageBitmap?>
         get() = ScreenEngine.receiverFrame

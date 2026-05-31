@@ -1106,7 +1106,7 @@ fun ServerDetailScreen(
             val uid     = currentUser.uid
             val token   = currentUser.idToken
             ScreenShareManager.stop()
-            ScreenShareManager.stopReceiver()
+            ScreenShareManager.stopReceiverFull()
             VoiceEngine.stop()
             // runBlocking kullanarak JVM kapanmadan önce cleanup tamamlansın
             kotlinx.coroutines.runBlocking {
@@ -1175,7 +1175,7 @@ fun ServerDetailScreen(
                                 FirestoreClient.removeVoicePeer(serverId, currentUser.uid, currentUser.idToken)
                             }
                             ScreenShareManager.stop()
-                            ScreenShareManager.stopReceiver()
+                            ScreenShareManager.stopReceiverFull()
                             isScreenSharing = false
                             showPiP = false
                             VoiceEngine.stop()
@@ -1207,7 +1207,7 @@ fun ServerDetailScreen(
                 // Eski kanaldan ses bağlantısını kes
                 runCatching { FirestoreClient.removeVoicePeer(serverId, currentUser.uid, currentUser.idToken) }
                 ScreenShareManager.stop()
-                ScreenShareManager.stopReceiver()
+                ScreenShareManager.stopReceiverFull()
                 VoiceEngine.stop()
             }
             try {
@@ -1260,7 +1260,7 @@ fun ServerDetailScreen(
             } catch (_: Exception) {}
             runCatching { FirestoreClient.removeVoicePeer(serverId, currentUser.uid, currentUser.idToken) }
             ScreenShareManager.stop()
-            ScreenShareManager.stopReceiver()
+            ScreenShareManager.stopReceiverFull()
             isScreenSharing = false
             showPiP = false
             VoiceEngine.stop()
@@ -1801,7 +1801,7 @@ fun ServerDetailScreen(
                 HorizontalDivider(color = Color(0xFF1E1F22))
                 // ── Ekran paylaşımı görünümü (yayıncı ya da izleyici) ─────────
                 // showPiP=true ise inline görünüm gizlenir, PiPStreamWindow devralır
-                if (!showPiP && (isScreenSharing || receiverFrame != null || isAttemptingReceive)) {
+                if (!showPiP && (isScreenSharing || isAttemptingReceive)) {
                     StreamViewerComposable(
                         isSelfView     = isScreenSharing,
                         peerVolume     = 1f,

@@ -148,7 +148,7 @@ compose.desktop {
                 upgradeUuid = "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
                 perUserInstall = true
                 shortcut = true
-                iconFile.set(project.file("src/desktopMain/resources/furcord_logo.png"))
+                iconFile.set(project.file("src/desktopMain/resources/furcord.ico"))
             }
         }
     }

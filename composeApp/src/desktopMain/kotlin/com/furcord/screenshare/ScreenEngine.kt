@@ -68,6 +68,8 @@ object ScreenEngine {
     private val scope       = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private var captureJob: Job? = null
     private var robot:      Robot? = null
+    /** Yayıncıdan son paket alındığı zaman (ms). 0 = hiç alınmadı. */
+    @Volatile private var lastFrameMs = 0L
 
     /**
      * VoiceEngine receive thread'inden non-blocking olarak beslenir.
@@ -84,6 +86,17 @@ object ScreenEngine {
                 runCatching {
                     ImageIO.read(ByteArrayInputStream(jpeg))?.toComposeImageBitmap()
                 }.getOrNull()?.let { _receiverFrame.value = it }
+            }
+        }
+        // Yayın zaman aşımı: 5 saniye paket gelmezse broadcastingUidHash sıfırla
+        scope.launch {
+            while (true) {
+                delay(1_000)
+                val last = lastFrameMs
+                if (last > 0 && System.currentTimeMillis() - last > 5_000) {
+                    _broadcastingUidHash.value = 0
+                    lastFrameMs = 0
+                }
             }
         }
     }
@@ -127,7 +140,17 @@ object ScreenEngine {
     fun stopReceiver() {
         isReceiving = false
         _receiverFrame.value = null
+        // broadcastingUidHash ve VoiceEngine.onScreenFrame kasıtlı olarak temizlenmez:
+        // Yayın bitince zaman aşımı (5s) devreye girer; bu sayede yayıncı
+        // yayını yeniden başlatırsa diğer kullanıcılar otomatik fark eder.
+    }
+
+    /** Ses kanalından tamamen ayrılırken çağrılır — tüm alım durumunu sıfırlar. */
+    fun stopReceiverFull() {
+        isReceiving = false
+        _receiverFrame.value = null
         _broadcastingUidHash.value = 0
+        lastFrameMs = 0
         if (!isActive) VoiceEngine.onScreenFrame = null
     }
 
@@ -193,7 +216,10 @@ object ScreenEngine {
      * senderUidHash: gönderici kullanıcının uid.hashCode()'u (VoiceEngine peer listesinden türetilir)
      */
     fun onPacketReceived(raw: ByteArray, senderUidHash: Int = 0) {
+        lastFrameMs = System.currentTimeMillis()
         if (senderUidHash != 0) _broadcastingUidHash.value = senderUidHash
+        // Badge-only mode: isReceiving=false olduğunda sadece hash güncellenir, decode atlanır
+        if (!isReceiving) return
         if (raw.size < HEADER_SIZE + 1) return
         val bb         = ByteBuffer.wrap(raw)
         val seq        = bb.getInt(4)

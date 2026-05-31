@@ -27,6 +27,8 @@ expect object ScreenShareManager {
     fun startReceiver()
     /** Stop receiving and release decoder resources. */
     fun stopReceiver()
+    /** Ses kanalından tamamen ayrılırken çağrılır — tüm alım durumunu sıfırlar (broadcastingUidHash dahil). */
+    fun stopReceiverFull()
     /** UID hash of the user currently broadcasting screen; 0 if nobody is broadcasting. */
     val broadcastingUidHash: StateFlow<Int>
 }
