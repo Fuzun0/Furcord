@@ -366,15 +366,34 @@ private fun ChannelRow(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(6.dp),
                     ) {
-                        UserAvatar(
-                            displayName = u.username,
-                            photoURL    = u.photoURL,
-                            size        = 20,
-                        )
+                        val isSpeaking = speakingSet.contains(u.uid.hashCode())
+                        Box(contentAlignment = Alignment.Center) {
+                            if (isSpeaking) {
+                                Box(
+                                    Modifier
+                                        .size(38.dp)
+                                        .border(3.dp, Color(0xFF23A55A), CircleShape)
+                                )
+                            }
+                            Box(
+                                modifier = Modifier
+                                    .size(30.dp)
+                                    .clip(CircleShape)
+                            ) {
+                                UserAvatar(
+                                    displayName = u.username,
+                                    photoURL    = u.photoURL,
+                                    size        = 30,
+                                )
+                            }
+                        }
                         Text(
                             text = if (isSelf) "${u.username} (sen)" else u.username,
                             fontSize = 12.sp,
-                            color = if (isSelf) Color(0xFF23A55A) else Color(0xFFB5BAC1),
+                            color = when {
+                                isSelf || isSpeaking -> Color(0xFF23A55A)
+                                else -> Color(0xFFB5BAC1)
+                            },
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
                             modifier = Modifier.weight(1f),
