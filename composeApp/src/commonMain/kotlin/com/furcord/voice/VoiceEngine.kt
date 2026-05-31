@@ -43,6 +43,9 @@ object VoiceEngine {
     private const val VAD_THRESHOLD       = 300f // RMS eşiği — altında sessiz (iletim durdurulur)
     private const val VAD_HOLD_FRAMES     = 10   // ~200ms hold timer — kelime sonu kesilmesin
     private const val MAX_PLC_FRAMES      = 3    // PLC: en fazla 3 frame (~60ms) tekrar
+    private const val SCREEN_CHUNK_SIZE   = 60_000 // ekran paylaşımı fragment boyutu
+    private const val SCREEN_MAGIC        = 0x53435200.toInt() // "SCR\0" — ScreenEngine ile eşleşmeli
+    private const val MAX_UDP_PAYLOAD     = 65_507 // RFC 768 maks. UDP yükü
 
     private val STUN_SERVERS = listOf(
         "stun.l.google.com"   to 19302,
@@ -56,6 +59,12 @@ object VoiceEngine {
      * relay-server/RelayServer.kt dosyasını bir VPS'e deploy edin.
      */
     var relayServer: Pair<String, Int>? = null
+
+    /**
+     * Ekran paylaşımı paketi geldiğinde ScreenEngine tarafından atanır.
+     * Ses döngüsünden çağrılır — bloklayan iş yapma.
+     */
+    var onScreenFrame: ((ByteArray) -> Unit)? = null
 
     @Volatile var isMuted      = false
     @Volatile var isDeafened   = false
@@ -221,6 +230,40 @@ object VoiceEngine {
 
     fun getPeerVolume(uid: String): Float = peerVolumes[uid.hashCode()] ?: 1f
 
+    /**
+     * JPEG karesini parçalara bölerek tüm voice peer'larına gönderir.
+     * Ses soketi üzerinde çalışır; ekstra NAT trafiği yoktur.
+     * @param jpegBytes ham JPEG verisi
+     * @param seq       artan kare numarası (fragment birleştirme için)
+     */
+    fun sendScreenPackets(jpegBytes: ByteArray, seq: Int) {
+        if (!isActive) return
+        val peerList = peers.values.toList()
+        if (peerList.isEmpty()) return
+        val totalFrags = ((jpegBytes.size - 1) / SCREEN_CHUNK_SIZE + 1)
+        var offset = 0
+        var fragIdx = 0
+        while (offset < jpegBytes.size) {
+            val chunkLen = minOf(SCREEN_CHUNK_SIZE, jpegBytes.size - offset)
+            val pkt = ByteArray(12 + chunkLen)
+            ByteBuffer.wrap(pkt).apply {
+                putInt(SCREEN_MAGIC)
+                putInt(seq)
+                put(fragIdx.toByte())
+                put(totalFrags.toByte())
+                put(0); put(0)  // reserved
+            }
+            System.arraycopy(jpegBytes, offset, pkt, 12, chunkLen)
+            for (peer in peerList) {
+                runCatching {
+                    socket?.send(DatagramPacket(pkt, pkt.size, InetAddress.getByName(peer.ip), peer.port))
+                }
+            }
+            offset  += chunkLen
+            fragIdx++
+        }
+    }
+
     /** uidHash bazlı konuşma göstergesi — son 500ms içinde ses alındıysa true */
     fun isSpeaking(uidHash: Int): Boolean =
         (System.currentTimeMillis() - (speakingTimestamps[uidHash] ?: 0L)) < 500L
@@ -301,7 +344,8 @@ object VoiceEngine {
     }
 
     private fun receiveLoop() {
-        val buf = ByteArray(PACKET_BYTES + 64)
+        // Büyük buffer: ses paketleri küçük (648 B), ekran paylaşımı paketleri büyük (≤60012 B)
+        val buf = ByteArray(MAX_UDP_PAYLOAD)
         while (isActive) {
             val dp = DatagramPacket(buf, buf.size)
             try {
@@ -311,6 +355,11 @@ object VoiceEngine {
                 break
             } catch (_: Exception) {
                 if (!isActive) break
+                continue
+            }
+            // Ekran paylaşımı paketlerini magic'e göre ayırt et ve ScreenEngine'e yönlendir
+            if (dp.length >= 12 && ByteBuffer.wrap(buf, 0, 4).int == SCREEN_MAGIC) {
+                onScreenFrame?.invoke(buf.copyOfRange(0, dp.length))
                 continue
             }
             if (dp.length <= HEADER_BYTES || isDeafened) continue

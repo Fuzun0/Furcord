@@ -39,6 +39,8 @@ import com.furcord.auth.MessageStore
 import com.furcord.auth.VoicePeer
 import com.furcord.auth.VoiceChannel
 import com.furcord.voice.VoiceEngine
+import com.furcord.screenshare.ScreenShareManager
+import com.furcord.screenshare.StreamViewerComposable
 import androidx.compose.foundation.Image
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
@@ -284,6 +286,7 @@ private fun ChannelRow(
     onClick: () -> Unit,
     onUserRightClick: ((ActiveUser) -> Unit)? = null,
     speakingSet: Set<Int> = emptySet(),
+    timerStr: String? = null,
 ) {
     val rowInteraction = remember { MutableInteractionSource() }
     val hovered by rowInteraction.collectIsHoveredAsState()
@@ -326,7 +329,13 @@ private fun ChannelRow(
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
-            if (activeUsers.isNotEmpty()) {
+            if (!timerStr.isNullOrEmpty()) {
+                Text(
+                    text = timerStr,
+                    fontSize = 11.sp,
+                    color = AppColors.Online,
+                )
+            } else if (activeUsers.isNotEmpty()) {
                 Text(
                     text = "${activeUsers.size}",
                     fontSize = 11.sp,
@@ -367,7 +376,7 @@ private fun ChannelRow(
                         horizontalArrangement = Arrangement.spacedBy(6.dp),
                     ) {
                         val isSpeaking = speakingSet.contains(u.uid.hashCode())
-                        Box(contentAlignment = Alignment.Center) {
+                        Box(modifier = Modifier.size(38.dp), contentAlignment = Alignment.Center) {
                             if (isSpeaking) {
                                 Box(
                                     Modifier
@@ -851,6 +860,12 @@ fun ServerDetailScreen(
     var serverImageUrl    by remember { mutableStateOf("") }
     // Konuşma göstergesi — uidHash kümesi
     var speakingSet       by remember { mutableStateOf<Set<Int>>(emptySet()) }
+    // Ses kanalı kronometresi
+    var connectedSinceMs  by remember { mutableStateOf<Long?>(null) }
+    var voiceTimerStr     by remember { mutableStateOf("") }
+    // Ekran paylaşımı
+    var isScreenSharing   by remember { mutableStateOf(false) }
+    val receiverFrame     by ScreenShareManager.receiverFrame.collectAsState()
 
     val latestConnectedId   by rememberUpdatedState(connectedChannelId)
     val latestChannelUsers  by rememberUpdatedState(channelUsers)
@@ -1025,15 +1040,23 @@ fun ServerDetailScreen(
         }
     }
 
-    // ── Konuşma göstergesi — her 100ms güncelle ─────────────────────────────
-    LaunchedEffect(Unit, "speaking") {
+    // ── Ses kanalı kronometresi ────────────────────────────────────────
+    LaunchedEffect(connectedChannelId) {
+        if (connectedChannelId != null) {
+            connectedSinceMs = System.currentTimeMillis()
+        } else {
+            connectedSinceMs = null
+            voiceTimerStr = ""
+        }
+    }
+    LaunchedEffect(Unit, "voiceTimer") {
         while (true) {
-            delay(100L)
-            val allHashSet = latestChannelUsers.values.flatten()
-                .map { it.uid.hashCode() }
-                .toMutableSet()
-            allHashSet += currentUser.uid.hashCode()
-            speakingSet = allHashSet.filter { VoiceEngine.isSpeaking(it) }.toSet()
+            delay(1000L)
+            val since = connectedSinceMs
+            if (since != null) {
+                val elapsed = (System.currentTimeMillis() - since) / 1000L
+                voiceTimerStr = "%d:%02d".format(elapsed / 60, elapsed % 60)
+            }
         }
     }
 
@@ -1044,6 +1067,8 @@ fun ServerDetailScreen(
             val prev    = latestChannelUsers
             val uid     = currentUser.uid
             val token   = currentUser.idToken
+            ScreenShareManager.stop()
+            ScreenShareManager.stopReceiver()
             VoiceEngine.stop()
             // runBlocking kullanarak JVM kapanmadan önce cleanup tamamlansın
             kotlinx.coroutines.runBlocking {
@@ -1111,6 +1136,9 @@ fun ServerDetailScreen(
                                 )
                                 FirestoreClient.removeVoicePeer(serverId, currentUser.uid, currentUser.idToken)
                             }
+                            ScreenShareManager.stop()
+                            ScreenShareManager.stopReceiver()
+                            isScreenSharing = false
                             VoiceEngine.stop()
                             connectedChannelId = null
                         }
@@ -1134,6 +1162,8 @@ fun ServerDetailScreen(
                 } catch (_: Exception) {}
                 // Eski kanaldan ses bağlantısını kes
                 runCatching { FirestoreClient.removeVoicePeer(serverId, currentUser.uid, currentUser.idToken) }
+                ScreenShareManager.stop()
+                ScreenShareManager.stopReceiver()
                 VoiceEngine.stop()
             }
             try {
@@ -1168,6 +1198,8 @@ fun ServerDetailScreen(
                     )
                 }
             }
+            // Ekran paylaşımı alıcısını başlat (yayın yoksa boşta kalır)
+            ScreenShareManager.startReceiver()
         }
     }
 
@@ -1183,6 +1215,9 @@ fun ServerDetailScreen(
                 )
             } catch (_: Exception) {}
             runCatching { FirestoreClient.removeVoicePeer(serverId, currentUser.uid, currentUser.idToken) }
+            ScreenShareManager.stop()
+            ScreenShareManager.stopReceiver()
+            isScreenSharing = false
             VoiceEngine.stop()
             connectedChannelId = null
         }
@@ -1441,6 +1476,7 @@ fun ServerDetailScreen(
                         onClick          = { joinChannel(ch) },
                         onUserRightClick = { u -> contextMenuUser = u; showVolumeSlider = false },
                         speakingSet      = speakingSet,
+                        timerStr         = if (connectedChannelId == ch.id) voiceTimerStr else null,
                     )
                 }
                 if (channels.isEmpty() && !loading) {
@@ -1661,9 +1697,55 @@ fun ServerDetailScreen(
                         fontSize = 15.sp,
                         fontWeight = FontWeight.Bold,
                         color = Color(0xFFF2F3F5),
+                        modifier = Modifier.weight(1f),
                     )
+                    // Ekran paylaşımı butonu — sadece bağlı kanaldayken görünür
+                    if (connectedChannelId != null) {
+                        FilledTonalButton(
+                            onClick = {
+                                if (isScreenSharing) {
+                                    ScreenShareManager.stop()
+                                    isScreenSharing = false
+                                } else {
+                                    ScreenShareManager.start()
+                                    isScreenSharing = true
+                                }
+                            },
+                            colors = ButtonDefaults.filledTonalButtonColors(
+                                containerColor = if (isScreenSharing) Color(0xFF3A2022) else Color(0xFF5865F2),
+                                contentColor   = if (isScreenSharing) Color(0xFFED4245) else Color.White,
+                            ),
+                            shape    = RoundedCornerShape(8.dp),
+                            modifier = Modifier.height(32.dp),
+                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp),
+                        ) {
+                            Text(
+                                text       = if (isScreenSharing) "🔴 Paylaşımı Durdur" else "🖥️ Ekranı Paylaş",
+                                fontSize   = 12.sp,
+                                fontWeight = FontWeight.SemiBold,
+                            )
+                        }
+                    }
                 }
                 HorizontalDivider(color = Color(0xFF1E1F22))
+                // ── Ekran paylaşımı görünümü (yayıncı ya da izleyici) ─────────
+                if (isScreenSharing || receiverFrame != null) {
+                    StreamViewerComposable(
+                        isSelfView     = isScreenSharing,
+                        peerVolume     = 1f,
+                        onVolumeChange = {},
+                        onStop         = {
+                            if (isScreenSharing) {
+                                ScreenShareManager.stop()
+                                isScreenSharing = false
+                            } else {
+                                ScreenShareManager.stopReceiver()
+                            }
+                        },
+                        modifier       = Modifier.weight(0.55f).fillMaxWidth(),
+                    )
+                    HorizontalDivider(color = Color(0xFF1E1F22))
+                }
 
                 val active = channelUsers[viewChannelId] ?: emptyList()
                 if (active.isEmpty()) {
@@ -1707,7 +1789,7 @@ fun ServerDetailScreen(
                                     } else Modifier,
                                 ) {
                                     val isSpeakingUser = speakingSet.contains(u.uid.hashCode())
-                                    Box(contentAlignment = Alignment.Center) {
+                                    Box(modifier = Modifier.size(82.dp), contentAlignment = Alignment.Center) {
                                         if (isSpeakingUser) {
                                             Box(
                                                 modifier = Modifier
