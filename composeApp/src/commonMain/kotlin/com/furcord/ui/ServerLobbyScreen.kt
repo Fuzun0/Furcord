@@ -38,6 +38,8 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import androidx.compose.material.icons.filled.Download
+
 
 
 // ─── Renk paleti ─────────────────────────────────────────────────────────────
@@ -62,6 +64,8 @@ fun ServerLobbyScreen(
     onSignOut: () -> Unit,
     onUserUpdated: (newDisplayName: String, newPhotoURL: String) -> Unit = { _, _ -> },
     onOpenDm: ((uid: String, name: String) -> Unit)? = null,
+    onOpenDownloader: () -> Unit = {},
+
 ) {
     val scope = rememberCoroutineScope()
     // rememberUpdatedState: coroutine içinden her iterásyonda güncel değeri okur
@@ -243,6 +247,18 @@ fun ServerLobbyScreen(
                 }
             }
             Spacer(Modifier.weight(1f))
+
+            //mp4 / mp3 indirme butonu
+            IconButton(
+                onClick = onOpenDownloader,
+                modifier = Modifier
+                    .size(36.dp)
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(SURFACE2),
+            ) {
+                Icon(Icons.Default.Download, "Video indirici", tint = TEXT2, modifier = Modifier.size(18.dp))
+            }
+
             // Profil butonu
             Row(
                 verticalAlignment = Alignment.CenterVertically,

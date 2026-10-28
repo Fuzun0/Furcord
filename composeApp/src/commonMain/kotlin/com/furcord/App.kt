@@ -40,6 +40,8 @@ import com.furcord.ui.ServerDetailScreen
 import com.furcord.ui.FloatingDmPanel
 import com.furcord.ui.FloatingDmWindow
 import com.furcord.ui.NicknameSetupDialog
+import com.furcord.ui.DownloaderScreen
+
 
 private sealed class AppAuthState {
     object Loading         : AppAuthState()
@@ -49,6 +51,7 @@ private sealed class AppAuthState {
 
 private sealed class AppServerState {
     object None : AppServerState()
+    object Downloader : AppServerState()
     data class InServer(val serverId: String, val serverName: String) : AppServerState()
 }
 
@@ -381,9 +384,17 @@ fun App() {
                                     DmRepository.markRead(listOf(currentUser.uid, uid).sorted().joinToString("_"))
                                     dmTarget = DmTarget(uid, name)
                                     dmWindowOpen = true
+                                    
                                 },
+                                onOpenDownloader = { serverState = AppServerState.Downloader },
+
                             )
                         }
+
+                         is AppServerState.Downloader -> {
+                            DownloaderScreen(onBack = { serverState = AppServerState.None })
+                        }
+
                         is AppServerState.InServer -> {
                             ServerDetailScreen(
                                 serverId      = ss.serverId,

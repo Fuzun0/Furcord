@@ -91,7 +91,13 @@ compose.desktop {
         val livekitApiSecret = providers.gradleProperty("livekitApiSecret")
             .orElse(providers.environmentVariable("LIVEKIT_API_SECRET")).orNull?.trim()
 
-        val appJvmArgs = mutableListOf("-Xmx512m", "-Dskiko.renderApi=SOFTWARE")
+        val appJvmArgs = mutableListOf(
+            "-Xmx512m",
+            "-Dskiko.renderApi=SOFTWARE",
+            // Java2D'nin Direct3D hattı açılışta ekran kartını (NVIDIA) uyandırmasın
+            "-Dsun.java2d.d3d=false",
+            "-Dsun.java2d.noddraw=true",
+        )
         if (!relayHost.isNullOrEmpty() && relayPort != null) {
             appJvmArgs += "-Dfurcord.relay.host=$relayHost"
             appJvmArgs += "-Dfurcord.relay.port=$relayPort"
