@@ -10,9 +10,9 @@ data class BatteryDevice(val id: String, val name: String, val percent: Int) {
     val kind: DeviceKind get() {
         val n = name.lowercase()
         return when {
-            listOf("headphone", "headset", "buds", "airpods", "kulak", "arctis", "wh-", "wf-").any(n::contains) -> DeviceKind.HEADSET
-            listOf("mouse", "fare", "mx master", "g502", "g305", "pebble").any(n::contains) -> DeviceKind.MOUSE
-            listOf("keyboard", "klavye", "keys", "mx keys", "k380").any(n::contains) -> DeviceKind.KEYBOARD
+            listOf("headphone", "headset", "buds", "airpods", "kulak", "arctis", "wh-", "wf-", "kraken", "barracuda", "blackshark").any(n::contains) -> DeviceKind.HEADSET
+            listOf("mouse", "fare", "mx master", "g502", "g305", "pebble", "basilisk", "deathadder", "viper", "naga", "orochi", "cobra").any(n::contains) -> DeviceKind.MOUSE
+            listOf("keyboard", "klavye", "keys", "mx keys", "k380", "blackwidow", "huntsman", "ornata", "deathstalker").any(n::contains) -> DeviceKind.KEYBOARD
             else -> DeviceKind.OTHER
         }
     }
@@ -38,7 +38,11 @@ object BatteryReader {
         ConvertTo-Json -InputObject @(§out) -Compress
     """.trimIndent().replace('§', '$')
 
-    fun read(): List<BatteryDevice> = try {
+    /** Bluetooth (Windows'un bildirdiği) + Razer 2.4 GHz/kablolu cihazlar. */
+    fun read(): List<BatteryDevice> =
+        (readBluetooth() + RazerHid.read()).distinctBy { it.name }
+
+    private fun readBluetooth(): List<BatteryDevice> = try {
         val encoded = Base64.getEncoder()
             .encodeToString(SCRIPT.toByteArray(Charsets.UTF_16LE))
         val proc = ProcessBuilder(
