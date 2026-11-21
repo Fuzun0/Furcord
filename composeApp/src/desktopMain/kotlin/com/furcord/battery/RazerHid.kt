@@ -8,9 +8,10 @@ import com.sun.jna.platform.win32.WinBase
 import com.sun.jna.platform.win32.WinNT
 import com.sun.jna.ptr.IntByReference
 import com.sun.jna.ptr.PointerByReference
+import com.sun.jna.ptr.ShortByReference
 import com.sun.jna.win32.StdCallLibrary
 
-private interface HidLib : StdCallLibrary {
+internal interface HidLib : StdCallLibrary {
     fun HidD_GetHidGuid(out: Pointer)
     fun HidD_GetAttributes(h: Pointer, attr: Pointer): Boolean
     fun HidD_GetPreparsedData(h: Pointer, out: PointerByReference): Boolean
@@ -19,11 +20,14 @@ private interface HidLib : StdCallLibrary {
     fun HidD_SetFeature(h: Pointer, buf: Pointer, len: Int): Boolean
     fun HidD_GetFeature(h: Pointer, buf: Pointer, len: Int): Boolean
     fun HidD_GetProductString(h: Pointer, buf: Pointer, len: Int): Boolean
+    fun HidD_GetInputReport(h: Pointer, buf: Pointer, len: Int): Boolean
+    fun HidP_GetValueCaps(type: Int, caps: Pointer, len: ShortByReference, p: Pointer): Int
+    fun HidP_GetUsageValue(type: Int, page: Int, link: Int, usage: Int, value: IntByReference, p: Pointer, report: Pointer, reportLen: Int): Int
 
     companion object { val I: HidLib = Native.load("hid", HidLib::class.java) }
 }
 
-private interface SetupLib : StdCallLibrary {
+internal interface SetupLib : StdCallLibrary {
     fun SetupDiGetClassDevsW(guid: Pointer, enumerator: Pointer?, hwnd: Pointer?, flags: Int): Pointer
     fun SetupDiEnumDeviceInterfaces(set: Pointer, info: Pointer?, guid: Pointer, index: Int, data: Pointer): Boolean
     fun SetupDiGetDeviceInterfaceDetailW(
@@ -46,7 +50,7 @@ object RazerHid {
 
     fun read(): List<BatteryDevice> = try {
         val found = LinkedHashMap<String, BatteryDevice>()
-        for (path in razerHidPaths()) {
+        for (path in allHidPaths().filter { it.contains("vid_1532", ignoreCase = true) }) {
             val dev = probe(path) ?: continue
             found.putIfAbsent(dev.name, dev)
         }
@@ -55,7 +59,7 @@ object RazerHid {
         emptyList()
     }
 
-    private fun razerHidPaths(): List<String> {
+    internal fun allHidPaths(): List<String> {
         val hid = HidLib.I
         val setup = SetupLib.I
         val guid = Memory(16).also { hid.HidD_GetHidGuid(it) }

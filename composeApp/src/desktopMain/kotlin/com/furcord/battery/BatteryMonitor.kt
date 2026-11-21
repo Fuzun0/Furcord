@@ -6,14 +6,14 @@ import java.util.concurrent.TimeUnit
 
 enum class DeviceKind { HEADSET, MOUSE, KEYBOARD, OTHER }
 
-data class BatteryDevice(val id: String, val name: String, val percent: Int) {
+data class BatteryDevice(val id: String, val name: String, val percent: Int, val hint: DeviceKind = DeviceKind.OTHER) {
     val kind: DeviceKind get() {
         val n = name.lowercase()
         return when {
             listOf("headphone", "headset", "buds", "airpods", "kulak", "arctis", "wh-", "wf-", "kraken", "barracuda", "blackshark").any(n::contains) -> DeviceKind.HEADSET
             listOf("mouse", "fare", "mx master", "g502", "g305", "pebble", "basilisk", "deathadder", "viper", "naga", "orochi", "cobra").any(n::contains) -> DeviceKind.MOUSE
             listOf("keyboard", "klavye", "keys", "mx keys", "k380", "blackwidow", "huntsman", "ornata", "deathstalker").any(n::contains) -> DeviceKind.KEYBOARD
-            else -> DeviceKind.OTHER
+            else -> hint
         }
     }
 }
@@ -40,7 +40,7 @@ object BatteryReader {
 
     /** Bluetooth (Windows'un bildirdiği) + Razer 2.4 GHz/kablolu cihazlar. */
     fun read(): List<BatteryDevice> =
-        (readBluetooth() + RazerHid.read()).distinctBy { it.name }
+        (readBluetooth() + RazerHid.read() + GenericHid.read() + XInputBattery.read()).distinctBy { it.name }
 
     private fun readBluetooth(): List<BatteryDevice> = try {
         val encoded = Base64.getEncoder()
