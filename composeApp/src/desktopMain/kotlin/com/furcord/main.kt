@@ -18,6 +18,11 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.*
 import java.awt.GraphicsEnvironment
+import com.furcord.battery.BatteryReader
+import com.furcord.battery.BatteryTaskbar
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
 
 fun main() = application {
     val icon = painterResource("furcord_logo.png")
@@ -36,6 +41,17 @@ fun main() = application {
         size      = fullSize,
     )
     var windowVisible by remember { mutableStateOf(true) }
+
+          // ── Kablosuz cihaz pil göstergesi (doğrudan görev çubuğunda) ──────────────
+    val batteryBar = remember { BatteryTaskbar().also { it.start() } }
+    LaunchedEffect(Unit) {
+        while (true) {
+            val devices = withContext(Dispatchers.IO) { BatteryReader.read() }
+            batteryBar.update(devices)
+            delay(60_000)            // 60 saniyede bir yenile
+        }
+    }
+    DisposableEffect(Unit) { onDispose { batteryBar.stop() } }
 
     val isFilled = state.size == fullSize &&
         state.position.x == usable.x.dp && state.position.y == usable.y.dp

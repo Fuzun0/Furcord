@@ -45,6 +45,9 @@ kotlin {
             implementation(compose.desktop.currentOs)
             implementation(libs.kotlinx.coroutines.swing)
 
+             // ── Windows görev çubuğu entegrasyonu (pil göstergesi) ─────────
+            implementation("net.java.dev.jna:jna-platform:5.14.0")
+
             // ── WebRTC (Google libwebrtc via JNI) ─────────────────────────
             implementation(libs.webrtc.java)
             runtimeOnly("dev.onvoid.webrtc:webrtc-java:0.8.0:windows-x86_64")
