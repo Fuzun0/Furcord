@@ -2,6 +2,10 @@ package com.furcord.voice
 
 import com.furcord.auth.VoicePeer
 import com.furcord.auth.AppPrefs
+import io.github.jaredmdobson.concentus.OpusApplication
+import io.github.jaredmdobson.concentus.OpusDecoder
+import io.github.jaredmdobson.concentus.OpusEncoder
+import io.github.jaredmdobson.concentus.OpusSignal
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -11,8 +15,10 @@ import kotlinx.coroutines.withContext
 import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetAddress
+import java.net.InetSocketAddress
 import java.net.SocketException
 import java.nio.ByteBuffer
+import java.nio.ByteOrder
 import java.security.SecureRandom
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CountDownLatch
@@ -26,22 +32,32 @@ import javax.sound.sampled.TargetDataLine
 
 /**
  * Gerçek zamanlı çok kullanıcılı ses motoru.
- * Mixer thread her 20 ms'de tüm buffer'ları toplar → 7-8 kişilik kanal desteklenir.
- * NAT traversal: STUN (RFC 5389) + simültane UDP hole punching.
- * Simetrik NAT tespit edilirse TCP relay moduna geçer.
+ *
+ *  • Codec : Opus (48 kHz, mono, VBR ~48 kbps, in-band FEC + paket kaybı gizleme).
+ *            Eski sürümdeki ham 16 kHz PCM'e göre hem çok daha net hem ~5 kat daha az bant genişliği.
+ *  • Ağ    : UDP (STUN + hole punching); simetrik NAT'ta TCP relay.
+ *  • Alım  : sıra numarasıyla yeniden sıralama, kayıp kareyi FEC/PLC ile kurtarma,
+ *            kısa jitter tamponu; hoparlör saatine kilitli mixer (20 ms'lik Thread.sleep kayması yok).
  * ⚠ Eko önleme yok — kulaklık zorunludur.
  */
 object VoiceEngine {
 
-    private val FORMAT              = AudioFormat(16000f, 16, 1, true, false)
-    private const val SAMPLES_FRAME       = 320
+    private val FORMAT              = AudioFormat(48000f, 16, 1, true, false)
+    private const val SAMPLE_RATE         = 48_000
+    private const val SAMPLES_FRAME       = 960                 // 20 ms @ 48 kHz
     private const val FRAME_BYTES         = SAMPLES_FRAME * 2
-    private const val HEADER_BYTES        = 8
-    private const val PACKET_BYTES        = HEADER_BYTES + FRAME_BYTES
-    private const val BUFFER_FRAMES       = 20   // max jitter buffer kapasitesi (400ms)
-    private const val MAX_PLC_FRAMES      = 5    // PLC: en fazla 5 frame (~100ms) tekrar
-    private const val SCREEN_CHUNK_SIZE   = 1_400  // MTU altı (1500B) — IP fragmantasyonu önlenir, ses bozulması giderilir
+    private const val HEADER_BYTES        = 8                   // [seq:4][uidHash:4]
+    private const val MAX_OPUS_BYTES      = 400
+    private const val BUFFER_FRAMES       = 12                  // en fazla 240 ms jitter tamponu
+    private const val PRIME_FRAMES        = 2                   // tampon boşaldıktan sonra 40 ms birikince çal
+    private const val MAX_PLC_FRAMES      = 5                   // mixer: veri yoksa en fazla ~100 ms tekrar
+    private const val SPEAKER_QUEUE_FRAMES = 3                  // hoparlör hattında tutulacak ~60 ms
+    private const val OPUS_BITRATE        = 48_000
+    private const val RELAY_SEQ           = Int.MIN_VALUE       // relay (TCP, sıralı) paketlerinde seq yok
+
+    private const val SCREEN_CHUNK_SIZE   = 1_400  // MTU altı (1500B) — IP fragmantasyonu önlenir
     private const val SCREEN_MAGIC        = 0x53435200.toInt() // "SCR\0" — ScreenEngine ile eşleşmeli
+    private const val WATCH_MAGIC         = 0x57415443         // "WATC" — izleyici → yayıncı isteği
     private const val MAX_UDP_PAYLOAD     = 65_507 // RFC 768 maks. UDP yükü
 
     private val STUN_SERVERS = listOf(
@@ -52,16 +68,15 @@ object VoiceEngine {
 
     /**
      * Relay sunucusu adresi. null ise relay devre dışı.
-     * Örnek: "relay.example.com" to 8080
      * relay-server/RelayServer.kt dosyasını bir VPS'e deploy edin.
      */
     var relayServer: Pair<String, Int>? = null
 
-    /**
-     * Ekran paylaşımı paketi geldiğinde ScreenEngine tarafından atanır.
-     * Ses döngüsünden çağrılır — bloklayan iş yapma.
-     */
+    /** Ekran paylaşımı paketi geldiğinde ScreenEngine tarafından atanır. Bloklayan iş yapma. */
     var onScreenFrame: ((ByteArray, Int) -> Unit)? = null
+
+    /** Bir izleyici "izliyorum" isteği gönderdiğinde (yayıncı tarafında) çağrılır. Parametre: izleyici uidHash. */
+    var onWatchRequest: ((Int) -> Unit)? = null
 
     @Volatile var isMuted      = false
     @Volatile var isDeafened   = false
@@ -80,9 +95,13 @@ object VoiceEngine {
     private var relayClient:   RelayClient?    = null
     private var shutdownLatch: CountDownLatch? = null
     private var channelIdHash: Int = 0
+    private var encoder:       OpusEncoder?    = null
 
     private val peers        = ConcurrentHashMap<String, VoicePeer>()
+    private val peerAddrs    = ConcurrentHashMap<String, InetSocketAddress>()   // uid → önceden çözülmüş adres
     private val peerBuffers  = ConcurrentHashMap<Int, PeerBuffer>()
+    private val decoders     = ConcurrentHashMap<Int, OpusDecoder>()            // yalnızca receive thread kullanır
+    private val lastSeqs     = ConcurrentHashMap<Int, Int>()
     private val peerVolumes  = ConcurrentHashMap<Int, Float>()      // uidHash → 0.0-2.0 (1.0 = normal)
     private val prevPeerVols = ConcurrentHashMap<Int, Float>()      // smooth ramp: previous-frame volume
     private val seqCounter        = AtomicInteger(0)
@@ -96,18 +115,12 @@ object VoiceEngine {
         private val ring = ShortArray(capacity)
         private var wPos  = 0
         private var count = 0
+        private var primed = false
 
         @Synchronized
-        fun write(src: ByteArray, byteOffset: Int, byteLen: Int) {
-            // AudioFormat(16000, 16, 1, signed, little-endian) — PCM byte pair is LE.
-            // ByteBuffer.asShortBuffer() defaults to BIG-endian which corrupts samples.
-            // Must explicitly use LITTLE_ENDIAN to reconstruct shorts correctly.
-            val bb = ByteBuffer.wrap(src, byteOffset, byteLen)
-                .order(java.nio.ByteOrder.LITTLE_ENDIAN)
-                .asShortBuffer()
-            val frames = byteLen / 2
-            repeat(frames) {
-                if (count < ring.size) { ring[wPos] = bb.get(); wPos = (wPos + 1) % ring.size; count++ }
+        fun writeShorts(src: ShortArray, off: Int, n: Int) {
+            for (i in 0 until n) {
+                if (count < ring.size) { ring[wPos] = src[off + i]; wPos = (wPos + 1) % ring.size; count++ }
             }
         }
 
@@ -118,20 +131,32 @@ object VoiceEngine {
             val avail = minOf(count, length)
             for (i in 0 until avail) { dst[dstOffset + i] += ring[p].toInt(); p = (p + 1) % ring.size }
             count -= avail
+            if (count < SAMPLES_FRAME) primed = false   // boşaldı → tekrar tampon biriktir
         }
 
-        @Synchronized fun hasData() = count >= SAMPLES_FRAME
+        /** Tampon boşaldıktan sonra PRIME_FRAMES kare birikmeden çalmaya başlama (kesik kesik ses önleme). */
+        @Synchronized
+        fun hasData(): Boolean {
+            if (!primed) {
+                if (count >= SAMPLES_FRAME * PRIME_FRAMES) primed = true else return false
+            }
+            return count >= SAMPLES_FRAME
+        }
     }
 
     // ── Start / Stop ──────────────────────────────────────────────────────────
 
     suspend fun start(selfUidHash: Int, channelId: String = ""): Boolean = withContext(Dispatchers.IO) {
-        // Channel switching: fully tear down the previous session before re-opening hardware.
-        // Simply returning true when isActive would leave a zombie session when switching channels.
+        // Kanal değiştirirken önceki oturum tamamen kapatılır.
         if (isActive) stop()
         channelIdHash = if (channelId.isNotBlank()) channelId.hashCode() else selfUidHash
         try {
-            socket = DatagramSocket()
+            socket = DatagramSocket().apply {
+                // Büyük tamponlar: ekran paylaşımı kareleri onlarca paket halinde patlar; varsayılan
+                // 64 KB tampon bu patlamada paket düşürür (hem ekran hem ses bozulur).
+                runCatching { receiveBufferSize = 4 * 1024 * 1024 }
+                runCatching { sendBufferSize    = 2 * 1024 * 1024 }
+            }
             val stun = stunDiscover()
             if (stun != null) {
                 localPublicIp = stun.first; localPort = stun.second
@@ -152,7 +177,7 @@ object VoiceEngine {
                         channelIdHash = channelIdHash,
                         selfUidHash   = selfUidHash,
                         onFrame       = { fromUidHash, data ->
-                            peerBuffers[fromUidHash]?.write(data, 0, data.size)
+                            handleVoicePacket(fromUidHash, RELAY_SEQ, data, 0, data.size)
                         },
                     )
                     rc.connect()
@@ -160,13 +185,23 @@ object VoiceEngine {
                 }
             }
 
+            encoder = OpusEncoder(SAMPLE_RATE, 1, OpusApplication.OPUS_APPLICATION_VOIP).apply {
+                setBitrate(OPUS_BITRATE)
+                setUseVBR(true)
+                setComplexity(5)
+                setSignalType(OpusSignal.OPUS_SIGNAL_VOICE)
+                setUseInbandFEC(true)        // kayıp paketi bir sonraki paketten kurtar
+                setPacketLossPercent(8)
+            }
+
             val micInfo = DataLine.Info(TargetDataLine::class.java, FORMAT)
             if (!AudioSystem.isLineSupported(micInfo)) { stop(); return@withContext false }
-            micLine = (AudioSystem.getLine(micInfo) as TargetDataLine).apply { open(FORMAT); start() }
+            micLine = (AudioSystem.getLine(micInfo) as TargetDataLine).apply { open(FORMAT, FRAME_BYTES * 4); start() }
 
             val spkInfo = DataLine.Info(SourceDataLine::class.java, FORMAT)
             if (!AudioSystem.isLineSupported(spkInfo)) { stop(); return@withContext false }
-            speakerLine = (AudioSystem.getLine(spkInfo) as SourceDataLine).apply { open(FORMAT); start() }
+            // Hat tamponu küçük tutulur → gecikme düşük; mixer hattın doluluğuna göre üretir.
+            speakerLine = (AudioSystem.getLine(spkInfo) as SourceDataLine).apply { open(FORMAT, FRAME_BYTES * 8); start() }
 
             isActive    = true
             val latch   = CountDownLatch(3)
@@ -182,37 +217,29 @@ object VoiceEngine {
     fun stop() {
         isActive = false
 
-        // ── Step 1: Close the DatagramSocket FIRST. ────────────────────────────
-        // This immediately throws SocketException inside receiveLoop's blocking
-        // socket.receive() call, allowing that thread to exit cleanly.
+        // 1) Soketi kapat → receiveLoop'taki bloklu receive() SocketException ile çıkar.
         val sock = socket; socket = null
         runCatching { sock?.close() }
 
-        // ── Step 2: Shut down SourceDataLine (speaker). ────────────────────────
-        // Order: stop() → flush() → close(). Do NOT call drain() — it blocks
-        // indefinitely when the mixerLoop has already stopped feeding data.
+        // 2) Hoparlör hattı: stop → flush → close (drain() asla — mixer durmuşsa sonsuza dek bloklar).
         val sl = speakerLine; speakerLine = null
         runCatching { sl?.stop(); sl?.flush(); sl?.close() }
 
-        // ── Step 3: Shut down TargetDataLine (microphone). ────────────────────
-        // close() forcefully unblocks captureLoop's blocking read() call,
-        // which then catches the exception and exits the while loop.
+        // 3) Mikrofon hattı: close() captureLoop'taki bloklu read()'i serbest bırakır.
         val ml = micLine; micLine = null
         runCatching { ml?.stop(); ml?.flush(); ml?.close() }
 
-        // ── Step 4: Wait for all three loop coroutines to actually finish. ─────
-        // Hardware lines are now closed; loops will exit within one iteration.
-        // The 300 ms timeout is a safety net — in practice this completes in < 50 ms.
-        // This guarantees the OS has released the hardware before start() can
-        // re-open it (prevents the 'mic works on 2nd PC sometimes' resource leak).
+        // 4) Üç döngünün bitmesini bekle (donanımın serbest kaldığından emin ol).
         runCatching { shutdownLatch?.await(300, TimeUnit.MILLISECONDS) }
         shutdownLatch = null
 
-        // ── Step 5: Cancel the coroutine scope (loops are already done). ───────
+        // 5) Coroutine scope'u iptal et.
         engineScope?.cancel(); engineScope = null
 
         relayClient?.disconnect(); relayClient = null
-        peers.clear(); peerBuffers.clear(); peerVolumes.clear(); prevPeerVols.clear()
+        encoder = null
+        peers.clear(); peerAddrs.clear(); peerBuffers.clear(); decoders.clear(); lastSeqs.clear()
+        peerVolumes.clear(); prevPeerVols.clear()
         speakingTimestamps.clear(); lastGoodFrames.clear(); plcCountMap.clear()
         seqCounter.set(0)
         localPort = 0; localPublicIp = ""
@@ -226,17 +253,20 @@ object VoiceEngine {
 
     fun getPeerVolume(uid: String): Float = peerVolumes[uid.hashCode()] ?: 1f
 
+    // ── Ekran paylaşımı taşıma (ses soketini paylaşır) ───────────────────────
+
     /**
-     * JPEG karesini parçalara bölerek tüm voice peer'larına gönderir.
-     * Ses soketi üzerinde çalışır; ekstra NAT trafiği yoktur.
-     * @param jpegBytes ham JPEG verisi
-     * @param seq       artan kare numarası (fragment birleştirme için)
+     * JPEG karesini parçalara bölerek [targetUidHashes] içindeki peer'lara gönderir.
+     * @param seq artan kare numarası (parça birleştirme için)
      */
-    fun sendScreenPackets(jpegBytes: ByteArray, seq: Int) {
+    fun sendScreenPackets(jpegBytes: ByteArray, seq: Int, targetUidHashes: Set<Int>) {
         if (!isActive) return
-        val peerList = peers.values.toList()
-        if (peerList.isEmpty()) return
+        val targets = peers.values.filter { it.uid.hashCode() in targetUidHashes }
+            .mapNotNull { peerAddrs[it.uid] }
+        if (targets.isEmpty()) return
+        val sock = socket ?: return
         val totalFrags = ((jpegBytes.size - 1) / SCREEN_CHUNK_SIZE + 1)
+        if (totalFrags > 255) return
         var offset = 0
         var fragIdx = 0
         while (offset < jpegBytes.size) {
@@ -247,17 +277,33 @@ object VoiceEngine {
                 putInt(seq)
                 put(fragIdx.toByte())
                 put(totalFrags.toByte())
-                put(0); put(0)  // reserved
+                put(0); put(0)
             }
             System.arraycopy(jpegBytes, offset, pkt, 12, chunkLen)
-            for (peer in peerList) {
-                runCatching {
-                    socket?.send(DatagramPacket(pkt, pkt.size, InetAddress.getByName(peer.ip), peer.port))
-                }
-            }
+            for (addr in targets) runCatching { sock.send(DatagramPacket(pkt, pkt.size, addr)) }
             offset  += chunkLen
             fragIdx++
         }
+    }
+
+    /** "Yayın var" duyurusu (veri yok) — izlemeyenlerin de yayını görebilmesi için tüm peer'lara. */
+    fun sendScreenAnnounce(seq: Int) {
+        if (!isActive) return
+        val sock = socket ?: return
+        val pkt = ByteBuffer.allocate(12).apply {
+            putInt(SCREEN_MAGIC); putInt(seq); put(0); put(0); put(0); put(0)
+        }.array()
+        for (addr in peerAddrs.values) runCatching { sock.send(DatagramPacket(pkt, pkt.size, addr)) }
+    }
+
+    /** Yayıncıya "bu yayını izliyorum" isteği gönderir (yayıncı sadece izleyenlere kare yollar). */
+    fun sendWatchRequest(broadcasterUidHash: Int) {
+        if (!isActive) return
+        val sock = socket ?: return
+        val peer = peers.values.find { it.uid.hashCode() == broadcasterUidHash } ?: return
+        val addr = peerAddrs[peer.uid] ?: return
+        val pkt = ByteBuffer.allocate(8).apply { putInt(WATCH_MAGIC); putInt(seqCounter.get()) }.array()
+        runCatching { sock.send(DatagramPacket(pkt, pkt.size, addr)) }
     }
 
     /** uidHash bazlı konuşma göstergesi — son 500ms içinde ses alındıysa true */
@@ -269,90 +315,148 @@ object VoiceEngine {
     fun updatePeers(newPeers: List<VoicePeer>) {
         val newHashSet = newPeers.map { it.uid.hashCode() }.toSet()
         peerBuffers.keys.filter        { it !in newHashSet }.forEach { peerBuffers.remove(it) }
+        decoders.keys.filter           { it !in newHashSet }.forEach { decoders.remove(it) }
+        lastSeqs.keys.filter           { it !in newHashSet }.forEach { lastSeqs.remove(it) }
         prevPeerVols.keys.filter       { it !in newHashSet }.forEach { prevPeerVols.remove(it) }
         lastGoodFrames.keys.filter     { it !in newHashSet }.forEach { lastGoodFrames.remove(it) }
         plcCountMap.keys.filter        { it !in newHashSet }.forEach { plcCountMap.remove(it) }
         speakingTimestamps.keys.filter { it !in newHashSet }.forEach { speakingTimestamps.remove(it) }
         val added = newPeers.filter { !peers.containsKey(it.uid) }
-        peers.clear()
-        newPeers.forEach { peers[it.uid] = it; peerBuffers.getOrPut(it.uid.hashCode()) { PeerBuffer() } }
+        peers.clear(); peerAddrs.clear()
+        newPeers.forEach {
+            peers[it.uid] = it
+            peerBuffers.getOrPut(it.uid.hashCode()) { PeerBuffer() }
+            runCatching { peerAddrs[it.uid] = InetSocketAddress(InetAddress.getByName(it.ip), it.port) }
+        }
         for (peer in added) {
-            runCatching { socket?.send(DatagramPacket(ByteArray(1), 1, InetAddress.getByName(peer.ip), peer.port)) }
+            val addr = peerAddrs[peer.uid] ?: continue
+            runCatching { socket?.send(DatagramPacket(ByteArray(1), 1, addr)) }   // hole punching
         }
     }
 
     // ── Loops ─────────────────────────────────────────────────────────────────
 
     private fun captureLoop(selfUidHash: Int) {
-        val pcmBuf = ByteArray(FRAME_BYTES); val pktBuf = ByteArray(PACKET_BYTES)
+        val pcmBuf  = ByteArray(FRAME_BYTES)
+        val pcm     = ShortArray(SAMPLES_FRAME)
+        val pktBuf  = ByteArray(HEADER_BYTES + MAX_OPUS_BYTES)
+        val pcmBB   = ByteBuffer.wrap(pcmBuf).order(ByteOrder.LITTLE_ENDIAN)
         while (isActive) {
             val read = try { micLine?.read(pcmBuf, 0, FRAME_BYTES) ?: break } catch (_: Exception) { break }
             if (read < FRAME_BYTES || isMuted) continue
 
-            // Mikrofon kazanç: kullanıcı ayarı, varsayılan 1.0 = saf iletim (bypass)
-            // Soft limiter: hard clip yerine peak normalization — gain > 1.0'da waveform bozulmaz.
+            // Mikrofon kazancı + yumuşak sınırlayıcı (hard clip yerine tepe normalizasyonu)
             val gain = micGain
-            if (gain != 1f) {
-                val bb = java.nio.ByteBuffer.wrap(pcmBuf).order(java.nio.ByteOrder.LITTLE_ENDIAN)
-                val tmp = IntArray(SAMPLES_FRAME)
-                var peak = 0
-                for (i in 0 until SAMPLES_FRAME) {
-                    val v = (bb.getShort(i * 2).toInt() * gain).toInt()
-                    tmp[i] = v
+            var peak = 0
+            for (i in 0 until SAMPLES_FRAME) {
+                val v = (pcmBB.getShort(i * 2) * (if (gain != 1f) gain else 1f)).toInt()
+                pcm[i] = v.coerceIn(-32768, 32767).toShort()
+                if (gain != 1f) {
                     val av = if (v < 0) -v else v
                     if (av > peak) peak = av
                 }
-                val scale = if (peak > 32767) 32767f / peak.toFloat() else 1f
+            }
+            if (gain != 1f && peak > 32767) {
+                val scale = 32767f / peak.toFloat()
                 for (i in 0 until SAMPLES_FRAME) {
-                    bb.putShort(i * 2, (tmp[i] * scale).toInt().coerceIn(-32768, 32767).toShort())
+                    pcm[i] = (pcmBB.getShort(i * 2) * gain * scale).toInt().coerceIn(-32768, 32767).toShort()
                 }
             }
 
             speakingTimestamps[selfUidHash] = System.currentTimeMillis()
 
+            val enc = encoder ?: break
             val seq = seqCounter.incrementAndGet()
+            val n = try { enc.encode(pcm, 0, SAMPLES_FRAME, pktBuf, HEADER_BYTES, MAX_OPUS_BYTES) }
+                    catch (_: Exception) { continue }
+            if (n <= 0) continue
 
             val rc = relayClient
             if (isRelayMode && rc != null) {
-                // Relay modu: ses verisini TCP relay üzerinden gönder
-                rc.sendFrame(pcmBuf)
+                rc.sendFrame(pktBuf.copyOfRange(HEADER_BYTES, HEADER_BYTES + n))
             } else {
-                // Direkt UDP modu
                 ByteBuffer.wrap(pktBuf, 0, HEADER_BYTES).putInt(seq).putInt(selfUidHash)
-                System.arraycopy(pcmBuf, 0, pktBuf, HEADER_BYTES, FRAME_BYTES)
-                for (peer in peers.values.toList()) {
-                    runCatching { socket?.send(DatagramPacket(pktBuf, PACKET_BYTES, InetAddress.getByName(peer.ip), peer.port)) }
+                val sock = socket ?: break
+                val len = HEADER_BYTES + n
+                for (addr in peerAddrs.values) {
+                    runCatching { sock.send(DatagramPacket(pktBuf, len, addr)) }
                 }
             }
         }
     }
 
     private fun receiveLoop() {
-        // Büyük buffer: ses paketleri küçük (648 B), ekran paylaşımı paketleri büyük (≤60012 B)
+        // Ses paketleri küçük, ekran paylaşımı parçaları ≤ ~1.4 KB; yine de tam UDP boyutunda tampon
         val buf = ByteArray(MAX_UDP_PAYLOAD)
         while (isActive) {
             val dp = DatagramPacket(buf, buf.size)
             try {
                 socket?.receive(dp) ?: break
             } catch (_: SocketException) {
-                // Socket was closed by stop() — normal, clean shutdown path.
-                break
+                break   // stop() soketi kapattı — normal çıkış
             } catch (_: Exception) {
                 if (!isActive) break
                 continue
             }
-            // Ekran paylaşımı paketlerini magic'e göre ayırt et ve ScreenEngine'e yönlendir
-            if (dp.length >= 12 && ByteBuffer.wrap(buf, 0, 4).int == SCREEN_MAGIC) {
-                val senderIp   = dp.address.hostAddress
-                val senderPort = dp.port
-                val senderHash = peers.values.find { it.ip == senderIp && it.port == senderPort }?.uid?.hashCode() ?: 0
-                onScreenFrame?.invoke(buf.copyOfRange(0, dp.length), senderHash)
-                continue
+            if (dp.length >= 8) {
+                val magic = ByteBuffer.wrap(buf, 0, 4).int
+                // Ekran paylaşımı → ScreenEngine
+                if (dp.length >= 12 && magic == SCREEN_MAGIC) {
+                    onScreenFrame?.invoke(buf.copyOfRange(0, dp.length), senderHashOf(dp))
+                    continue
+                }
+                // İzleyici isteği → yayıncı tarafı
+                if (magic == WATCH_MAGIC && dp.length == 8) {
+                    val h = senderHashOf(dp)
+                    if (h != 0) onWatchRequest?.invoke(h)
+                    continue
+                }
             }
-            if (dp.length <= HEADER_BYTES || isDeafened) continue
+            if (dp.length <= HEADER_BYTES) continue
             val uidHash = ByteBuffer.wrap(buf, 4, 4).int
             speakingTimestamps[uidHash] = System.currentTimeMillis()
-            peerBuffers[uidHash]?.write(buf, HEADER_BYTES, dp.length - HEADER_BYTES)
+            if (isDeafened) continue
+            val seq = ByteBuffer.wrap(buf, 0, 4).int
+            handleVoicePacket(uidHash, seq, buf, HEADER_BYTES, dp.length - HEADER_BYTES)
+        }
+    }
+
+    private fun senderHashOf(dp: DatagramPacket): Int {
+        val ip = dp.address.hostAddress; val port = dp.port
+        return peers.values.find { it.ip == ip && it.port == port }?.uid?.hashCode() ?: 0
+    }
+
+    /**
+     * Bir Opus paketini çözüp peer'ın jitter tamponuna yazar.
+     * Sıra dışı/yinelenen paketler atılır; 1-3 paketlik kayıplar FEC/PLC ile doldurulur.
+     */
+    private fun handleVoicePacket(uidHash: Int, seq: Int, data: ByteArray, off: Int, len: Int) {
+        val pbuf = peerBuffers[uidHash] ?: return
+        if (len <= 0) return
+        val dec = decoders.getOrPut(uidHash) { OpusDecoder(SAMPLE_RATE, 1) }
+        val pcm = ShortArray(SAMPLES_FRAME)
+        try {
+            val last = lastSeqs[uidHash]
+            if (seq != RELAY_SEQ && last != null) {
+                val diff = seq - last
+                if (diff <= 0 && diff > -200) return          // eski ya da yinelenen paket
+                if (diff in 3..4) {                           // 2+ kare kayıp: önce saf PLC
+                    repeat(diff - 2) {
+                        val n = dec.decode(null, 0, 0, pcm, 0, SAMPLES_FRAME, false)
+                        pbuf.writeShorts(pcm, 0, n)
+                    }
+                }
+                if (diff in 2..4) {                           // bir önceki kare: bu paketteki FEC'ten kurtar
+                    val n = dec.decode(data, off, len, pcm, 0, SAMPLES_FRAME, true)
+                    pbuf.writeShorts(pcm, 0, n)
+                }
+            }
+            if (seq != RELAY_SEQ) lastSeqs[uidHash] = seq
+            val n = dec.decode(data, off, len, pcm, 0, SAMPLES_FRAME, false)
+            pbuf.writeShorts(pcm, 0, n)
+        } catch (_: Exception) {
+            decoders.remove(uidHash)    // bozuk durum → decoder'ı yeniden oluştur
+            lastSeqs.remove(uidHash)
         }
     }
 
@@ -360,25 +464,28 @@ object VoiceEngine {
         val mixBuf  = IntArray(SAMPLES_FRAME)
         val tempBuf = IntArray(SAMPLES_FRAME)
         val outBuf  = ByteArray(FRAME_BYTES)
-        // Wrap with LITTLE_ENDIAN once — matches AudioFormat(16000, 16, 1, signed, little-endian).
-        // Using default BE ByteBuffer + manual byte swap is error-prone; LE wrap is canonical.
-        val outBB   = ByteBuffer.wrap(outBuf).order(java.nio.ByteOrder.LITTLE_ENDIAN)
+        val outBB   = ByteBuffer.wrap(outBuf).order(ByteOrder.LITTLE_ENDIAN)
         var outputFade = 1f
         while (isActive) {
-            try { Thread.sleep(20) } catch (_: InterruptedException) { break }
-
-            // ── Smooth deafen fade (≈40ms ramp at 50% per frame) ─────────────
-            val targetFade = if (isDeafened) 0f else 1f
-            outputFade     = outputFade + (targetFade - outputFade) * 0.5f
-
-            // Once fully faded out, write silence to keep the line fed (no underrun pop)
-            if (outputFade < 0.005f) {
-                outBuf.fill(0)
-                runCatching { speakerLine?.write(outBuf, 0, FRAME_BYTES) }
+            // Hoparlör saatine kilitli üretim: hat boşalmaya yaklaşınca bir kare üret.
+            val sl = speakerLine ?: break
+            val queued = try { sl.bufferSize - sl.available() } catch (_: Exception) { break }
+            if (queued >= FRAME_BYTES * SPEAKER_QUEUE_FRAMES) {
+                try { Thread.sleep(3) } catch (_: InterruptedException) { break }
                 continue
             }
 
-            // PLC: tüm peer'ları gez; veri varsa al+kaydet, yoksa son frame'i yavaşça tekrar et
+            // Smooth deafen fade (≈40ms ramp)
+            val targetFade = if (isDeafened) 0f else 1f
+            outputFade     = outputFade + (targetFade - outputFade) * 0.5f
+
+            if (outputFade < 0.005f) {
+                outBuf.fill(0)
+                runCatching { sl.write(outBuf, 0, FRAME_BYTES) }
+                continue
+            }
+
+            // PLC: veri varsa al+kaydet, yoksa son kareyi yavaşça tekrar et
             var hasVoice = false
             mixBuf.fill(0)
             for ((hash, pbuf) in peerBuffers) {
@@ -401,23 +508,18 @@ object VoiceEngine {
                     }
                 }
 
-                // ── Per-peer smooth volume ramp ───────────────────────────────
-                // Linearly interpolate between previous and target volume over the
-                // frame (320 samples ≈ 20ms). Eliminates pops when setPeerVolume
-                // jumps discontinuously (e.g. muting a specific user).
+                // Peer başına yumuşak ses seviyesi geçişi (ses ayarı değişince "pop" olmasın)
                 val targetVol = peerVolumes[hash] ?: 1f
                 val prevVol   = prevPeerVols.getOrDefault(hash, targetVol)
                 prevPeerVols[hash] = targetVol
 
                 if (prevVol == targetVol) {
-                    // No change — fast path, no interpolation needed
                     if (targetVol == 1f) {
                         for (i in 0 until SAMPLES_FRAME) mixBuf[i] += tempBuf[i]
                     } else {
                         for (i in 0 until SAMPLES_FRAME) mixBuf[i] += (tempBuf[i] * targetVol).toInt()
                     }
                 } else {
-                    // Volume changed this frame — ramp to avoid discontinuity
                     val last = SAMPLES_FRAME - 1
                     for (i in 0 until SAMPLES_FRAME) {
                         val t   = i.toFloat() / last
@@ -427,16 +529,13 @@ object VoiceEngine {
                 }
             }
 
-            // Veri yoksa sessizlik yaz (buffer underrun önleme)
             if (!hasVoice) {
                 outBuf.fill(0)
-                runCatching { speakerLine?.write(outBuf, 0, FRAME_BYTES) }
+                runCatching { sl.write(outBuf, 0, FRAME_BYTES) }
                 continue
             }
 
-            // ── Write to speaker with deafen fade + peak normalization ─────────
-            // Normalize the mixed frame to prevent hard-clipping distortion when
-            // multiple peers or high volumes would overflow Short range.
+            // Birden çok konuşmacı / yüksek ses seviyesinde patlamayı önlemek için tepe normalizasyonu
             var peak = 0
             for (v in mixBuf) { val av = if (v < 0) -v else v; if (av > peak) peak = av }
             val normScale = if (peak > 32767) 32767f / peak.toFloat() else 1f
@@ -446,7 +545,7 @@ object VoiceEngine {
                 val s = (mixBuf[i] * outputFade * normScale).toInt().coerceIn(-32768, 32767)
                 outBB.putShort(s.toShort())
             }
-            runCatching { speakerLine?.write(outBuf, 0, FRAME_BYTES) }
+            runCatching { sl.write(outBuf, 0, FRAME_BYTES) }
         }
     }
 
@@ -517,4 +616,3 @@ object VoiceEngine {
         return null
     }
 }
-

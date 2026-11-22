@@ -55,6 +55,7 @@ import androidx.compose.ui.zIndex
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.GlobalScope
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.awt.FileDialog
@@ -65,6 +66,17 @@ import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import androidx.compose.material.icons.outlined.PersonAddAlt
+import androidx.compose.material.icons.outlined.Settings
+import androidx.compose.material.icons.outlined.Mic
+import androidx.compose.material.icons.outlined.MicOff
+import androidx.compose.material.icons.outlined.Headset
+import androidx.compose.material.icons.outlined.HeadsetOff
+import androidx.compose.material.icons.outlined.Image
+import androidx.compose.material.icons.outlined.ContentCopy
+import androidx.compose.material.icons.automirrored.outlined.Reply
+import androidx.compose.material.icons.automirrored.rounded.Send
+
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Invite dialog
@@ -93,9 +105,9 @@ private fun InviteDialog(
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        containerColor   = Color(0xFF2B2D31),
+        containerColor   = AppColors.BgSidebar,
         title = {
-            Text("Sunucuya Davet Et", fontWeight = FontWeight.Bold, color = Color(0xFFF2F3F5))
+            Text("Sunucuya Davet Et", fontWeight = FontWeight.Bold, color = AppColors.TextPrimary)
         },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
@@ -108,15 +120,15 @@ private fun InviteDialog(
                     loading -> Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
                         CircularProgressIndicator(modifier = Modifier.size(28.dp))
                     }
-                    error.isNotEmpty() -> Text(error, color = Color(0xFFF23F43), fontSize = 13.sp)
+                    error.isNotEmpty() -> Text(error, color = AppColors.Danger, fontSize = 13.sp)
                     inviteCode != null -> {
                         val code = inviteCode!!
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .clip(RoundedCornerShape(8.dp))
-                                .background(Color(0xFF1E1F22))
-                                .padding(horizontal = 16.dp, vertical = 12.dp),
+                                .background(AppColors.Outline)
+                                .padding(start = 20.dp, end = 20.dp, bottom = 16.dp, top= 8.dp),
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(12.dp),
                         ) {
@@ -124,7 +136,7 @@ private fun InviteDialog(
                                 text = code,
                                 fontSize = 22.sp,
                                 fontWeight = FontWeight.Bold,
-                                color = Color(0xFF5865F2),
+                                color = AppColors.Accent,
                                 letterSpacing = 4.sp,
                                 modifier = Modifier.weight(1f),
                             )
@@ -139,13 +151,13 @@ private fun InviteDialog(
                                 modifier = Modifier
                                     .size(36.dp)
                                     .clip(RoundedCornerShape(6.dp))
-                                    .background(if (copied) Color(0xFF23A55A) else Color(0xFF5865F2)),
+                                    .background(if (copied) AppColors.Online else AppColors.Accent),
                             ) {
                                 Text(if (copied) "✓" else "📋", fontSize = 14.sp, color = Color.White)
                             }
                         }
                         if (copied) {
-                            Text("Kod panoya kopyalandı!", fontSize = 12.sp, color = Color(0xFF23A55A))
+                            Text("Kod panoya kopyalandı!", fontSize = 12.sp, color = AppColors.Online)
                         }
                     }
                 }
@@ -153,7 +165,7 @@ private fun InviteDialog(
         },
         confirmButton = {
             TextButton(onClick = onDismiss) {
-                Text("Kapat", color = Color(0xFF5865F2))
+                Text("Kapat", color = AppColors.Accent)
             }
         },
     )
@@ -196,25 +208,25 @@ private fun UserContextMenu(
         containerColor   = Color(0xFF111214),
     ) {
         DropdownMenuItem(
-            text    = { Text("💬 Mesaj Gönder", color = Color(0xFFDCDDDE), fontSize = 13.sp) },
+            text    = { Text("💬 Mesaj Gönder", color = AppColors.TextSecondary, fontSize = 13.sp) },
             onClick = onMessage,
         )
-        HorizontalDivider(color = Color(0xFF2B2D31))
+        HorizontalDivider(color = AppColors.BgSidebar)
         DropdownMenuItem(
-            text    = { Text("➕ Arkadaş Ekle", color = Color(0xFFDCDDDE), fontSize = 13.sp) },
+            text    = { Text("➕ Arkadaş Ekle", color = AppColors.TextSecondary, fontSize = 13.sp) },
             onClick = onAddFriend,
         )
-        HorizontalDivider(color = Color(0xFF2B2D31))
+        HorizontalDivider(color = AppColors.BgSidebar)
         // Ses seviyesi
         DropdownMenuItem(
             text = {
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     Text(
                         "🔊 Ses: ${(volume * 100).toInt()}%",
-                        color = Color(0xFFDCDDDE), fontSize = 13.sp,
+                        color = AppColors.TextSecondary, fontSize = 13.sp,
                         modifier = Modifier.weight(1f),
                     )
-                    Text(if (showVolSlider) "▲" else "▼", color = Color(0xFF8E9297), fontSize = 11.sp)
+                    Text(if (showVolSlider) "▲" else "▼", color = AppColors.TextMuted, fontSize = 11.sp)
                 }
             },
             onClick = onToggleVol,
@@ -229,15 +241,15 @@ private fun UserContextMenu(
                             valueRange     = 0f..2f,
                             modifier       = Modifier.fillMaxWidth().height(28.dp),
                             colors         = SliderDefaults.colors(
-                                thumbColor        = Color(0xFF5865F2),
-                                activeTrackColor  = Color(0xFF5865F2),
+                                thumbColor        = AppColors.Accent,
+                                activeTrackColor  = AppColors.Accent,
                                 inactiveTrackColor= Color(0xFF4E5058),
                             ),
                         )
                         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                            Text("0%",   color = Color(0xFF8E9297), fontSize = 10.sp)
-                            Text("100%", color = Color(0xFF8E9297), fontSize = 10.sp)
-                            Text("200%", color = Color(0xFF8E9297), fontSize = 10.sp)
+                            Text("0%",   color = AppColors.TextMuted, fontSize = 10.sp)
+                            Text("100%", color = AppColors.TextMuted, fontSize = 10.sp)
+                            Text("200%", color = AppColors.TextMuted, fontSize = 10.sp)
                         }
                     }
                 },
@@ -245,14 +257,14 @@ private fun UserContextMenu(
             )
         }
         if (onKick != null) {
-            HorizontalDivider(color = Color(0xFF2B2D31))
+            HorizontalDivider(color = AppColors.BgSidebar)
             DropdownMenuItem(
-                text    = { Text("🔨 Sunucudan At", color = Color(0xFFED4245), fontSize = 13.sp) },
+                text    = { Text("🔨 Sunucudan At", color = AppColors.Danger, fontSize = 13.sp) },
                 onClick = onKick,
             )
         }
         if (onWatchStream != null) {
-            HorizontalDivider(color = Color(0xFF2B2D31))
+            HorizontalDivider(color = AppColors.BgSidebar)
             DropdownMenuItem(
                 text    = { Text("📺 Yayını İzle", color = Color(0xFF00B8D4), fontSize = 13.sp) },
                 onClick = onWatchStream,
@@ -270,7 +282,7 @@ private fun UserInitialAvatar(username: String, size: Int = 20) {
         modifier = Modifier
             .size(size.dp)
             .clip(CircleShape)
-            .background(Color(0xFF5865F2)),
+            .background(AppColors.Accent),
         contentAlignment = Alignment.Center,
     ) {
         Text(
@@ -390,7 +402,7 @@ private fun ChannelRow(
                                 Box(
                                     Modifier
                                         .size(38.dp)
-                                        .border(1.5.dp, Color(0xFF23A55A), CircleShape)
+                                        .border(1.5.dp, AppColors.Online, CircleShape)
                                 )
                             }
                             Box(
@@ -409,7 +421,7 @@ private fun ChannelRow(
                             text = if (isSelf) "${u.username} (sen)" else u.username,
                             fontSize = 12.sp,
                             color = when {
-                                isSelf || isSpeaking -> Color(0xFF23A55A)
+                                isSelf || isSpeaking -> AppColors.Online
                                 else -> Color(0xFFB5BAC1)
                             },
                             maxLines = 1,
@@ -431,7 +443,7 @@ private fun VoiceConnectedBar(channelName: String, onDisconnect: () -> Unit) {
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .background(Color(0xFF232428))
+            .background(AppColors.BgDark)
             .padding(horizontal = 12.dp, vertical = 8.dp),
     ) {
         Row(
@@ -447,13 +459,13 @@ private fun VoiceConnectedBar(channelName: String, onDisconnect: () -> Unit) {
                     modifier = Modifier
                         .size(8.dp)
                         .clip(CircleShape)
-                        .background(Color(0xFF23A55A)),
+                        .background(AppColors.Online),
                 )
                 Text(
                     text = "Ses Bağlantısı Kuruldu",
                     fontSize = 12.sp,
                     fontWeight = FontWeight.Bold,
-                    color = Color(0xFF23A55A),
+                    color = AppColors.Online,
                 )
             }
             IconButton(onClick = onDisconnect, modifier = Modifier.size(26.dp)) {
@@ -463,7 +475,7 @@ private fun VoiceConnectedBar(channelName: String, onDisconnect: () -> Unit) {
         Text(
             text = channelName,
             fontSize = 12.sp,
-            color = Color(0xFF8E9297),
+            color = AppColors.TextMuted,
             modifier = Modifier.padding(start = 14.dp, top = 2.dp),
         )
     }
@@ -478,7 +490,7 @@ private fun MessageRow(
     isSelf: Boolean,
     isGrouped: Boolean = false,
     onReply: (ChatMessage) -> Unit = {},
-    onCopy:  (ChatMessage) -> Unit = {},
+    onCopy: (ChatMessage) -> Unit = {},
 ) {
     val timeStr = remember(msg.timestamp) {
         SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(msg.timestamp))
@@ -487,154 +499,118 @@ private fun MessageRow(
     val hovered by interactionSource.collectIsHoveredAsState()
 
     var showContextMenu by remember { mutableStateOf(false) }
-    var menuOffset      by remember { mutableStateOf(androidx.compose.ui.unit.DpOffset.Zero) }
+    var menuOffset by remember { mutableStateOf(androidx.compose.ui.unit.DpOffset.Zero) }
+    val showHeader = !isGrouped || msg.replyToId.isNotBlank()
 
-    Column(
+    // Dış Box: hover + arka plan + sağ tık. Eylem çubuğu bunun üstüne biner.
+    Box(
         modifier = Modifier
             .fillMaxWidth()
             .hoverable(interactionSource)
-            .background(if (hovered) AppColors.BgElevated.copy(alpha = 0.45f) else Color.Transparent)
+            .background(if (hovered) Color.White.copy(alpha = 0.025f) else Color.Transparent)
             .pointerInput(msg.id) {
                 awaitPointerEventScope {
                     while (true) {
                         val event = awaitPointerEvent()
-                        // Secondary button = right click
-                        if (event.type == PointerEventType.Press &&
-                            event.buttons.isSecondaryPressed
-                        ) {
-                            val pos = event.changes.firstOrNull()?.position
-                            if (pos != null) {
+                        if (event.type == PointerEventType.Press && event.buttons.isSecondaryPressed) {
+                            event.changes.firstOrNull()?.position?.let {
                                 menuOffset = androidx.compose.ui.unit.DpOffset(
-                                    x = (pos.x / density).dp,
-                                    y = (pos.y / density).dp,
+                                    (it.x / density).dp, (it.y / density).dp
                                 )
                             }
                             showContextMenu = true
                         }
                     }
                 }
-            }
-            .padding(
-                start  = 16.dp,
-                end    = 16.dp,
-                top    = if (isGrouped) 1.dp else 8.dp,
-                bottom = 1.dp,
-            ),
+            },
     ) {
-        // ── Reply quote block (yanıt alıntısı) ────────────────────────────────
-        if (msg.replyToId.isNotBlank()) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(4.dp))
-                    .background(Color(0xFF1A1B1E))
-                    .padding(horizontal = 8.dp, vertical = 4.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Box(
-                    Modifier
-                        .width(3.dp)
-                        .height(28.dp)
-                        .background(AppColors.Accent),
-                )
-                Spacer(Modifier.width(6.dp))
-                Column {
-                    Text(
-                        text       = msg.replyToUser,
-                        fontSize   = 11.sp,
-                        color      = AppColors.Accent,
-                        fontWeight = FontWeight.SemiBold,
-                    )
-                    Text(
-                        text     = msg.replyToText.take(100),
-                        fontSize = 12.sp,
-                        color    = AppColors.TextMuted,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                }
-            }
-            Spacer(Modifier.height(2.dp))
-        }
-
-        // ── Ana mesaj satırı ──────────────────────────────────────────────────
-        Row(
-            horizontalArrangement = Arrangement.spacedBy(12.dp),
-            verticalAlignment     = Alignment.Top,
+        Column(
+            Modifier.fillMaxWidth().padding(
+                start = 20.dp, end = 20.dp,
+                top = if (showHeader) 10.dp else 1.dp, bottom = 1.dp,
+            )
         ) {
-            if (isGrouped && msg.replyToId.isBlank()) {
-                Spacer(Modifier.width(36.dp))
-            } else {
-                Box(modifier = Modifier.size(36.dp).padding(top = 2.dp)) {
-                    UserAvatar(
-                        displayName = msg.username,
-                        photoURL    = msg.photoURL,
-                        size        = 36,
-                    )
+            // Yanıt alıntısı
+            if (msg.replyToId.isNotBlank()) {
+                Row(
+                    Modifier
+                        .padding(start = 52.dp, bottom = 4.dp)
+                        .clip(RoundedCornerShape(Radius.Small))
+                        .background(AppColors.BgSidebar)
+                        .padding(horizontal = 8.dp, vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    Box(Modifier.width(2.dp).height(22.dp).background(AppColors.Accent))
+                    Text(msg.replyToUser, fontSize = 12.sp, color = AppColors.Accent,
+                        fontWeight = FontWeight.SemiBold)
+                    Text(msg.replyToText.take(80), fontSize = 12.sp, color = AppColors.TextMuted,
+                        maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
             }
 
-            Column(
-                modifier             = Modifier.weight(1f),
-                verticalArrangement  = Arrangement.spacedBy(2.dp),
-            ) {
-                if (!isGrouped || msg.replyToId.isNotBlank()) {
-                    Row(
-                        horizontalArrangement = Arrangement.spacedBy(6.dp),
-                        verticalAlignment     = Alignment.CenterVertically,
-                    ) {
-                        Text(
-                            text       = msg.username,
-                            fontSize   = 14.sp,
-                            fontWeight = FontWeight.SemiBold,
-                            color      = if (isSelf) AppColors.SelfName else AppColors.TextPrimary,
-                        )
-                        Text(
-                            text     = timeStr,
-                            fontSize = 11.sp,
-                            color    = AppColors.TextTimestamp,
-                        )
+            Row(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.Top) {
+                // Avatar sütunu (gruplanmış mesajda hover'da saat gösterir)
+                Box(Modifier.width(40.dp), contentAlignment = Alignment.TopCenter) {
+                    if (showHeader) {
+                        UserAvatar(displayName = msg.username, photoURL = msg.photoURL, size = 40)
+                    } else if (hovered) {
+                        Text(timeStr, fontSize = 10.sp, color = AppColors.TextTimestamp,
+                            modifier = Modifier.padding(top = 3.dp))
                     }
                 }
 
-                if (msg.text.isNotBlank()) {
-                    Text(
-                        text     = msg.text,
-                        fontSize = 14.sp,
-                        color    = AppColors.TextSecondary,
-                    )
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    if (showHeader) {
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalAlignment = Alignment.Bottom) {
+                            Text(msg.username, fontSize = 14.sp, fontWeight = FontWeight.SemiBold,
+                                color = if (isSelf) AppColors.SelfName else AppColors.TextPrimary)
+                            Text(timeStr, fontSize = 11.sp, color = AppColors.TextTimestamp)
+                        }
+                    }
+                    if (msg.text.isNotBlank()) {
+                        Text(msg.text, fontSize = 14.sp, lineHeight = 20.sp,
+                            color = AppColors.TextSecondary)
+                    }
+                    if (msg.imageUrl.isNotBlank()) {
+                        Spacer(Modifier.height(4.dp))
+                        AsyncChatImage(msg.imageUrl)
+                    }
                 }
-
-                if (msg.imageUrl.isNotBlank()) {
-                    Spacer(Modifier.height(2.dp))
-                    AsyncChatImage(msg.imageUrl)
-                }
-            }
-
-            if (isGrouped && msg.replyToId.isBlank() && hovered) {
-                Text(
-                    text     = timeStr,
-                    fontSize = 10.sp,
-                    color    = AppColors.TextTimestamp,
-                    modifier = Modifier.align(Alignment.CenterVertically),
-                )
             }
         }
 
-        // ── Sağ-tık bağlam menüsü ─────────────────────────────────────────────
+        // Hover eylem çubuğu
+        if (hovered) {
+            Row(
+                Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(end = 16.dp, top = 2.dp)
+                    .clip(RoundedCornerShape(Radius.Small))
+                    .background(AppColors.BgElevated)
+                    .padding(2.dp),
+            ) {
+                IconButton(onClick = { onReply(msg) }, Modifier.size(28.dp)) {
+                    Icon(Icons.AutoMirrored.Outlined.Reply, "Yanıtla",
+                        tint = AppColors.TextMuted, modifier = Modifier.size(16.dp))
+                }
+                IconButton(onClick = { onCopy(msg) }, Modifier.size(28.dp)) {
+                    Icon(Icons.Outlined.ContentCopy, "Kopyala",
+                        tint = AppColors.TextMuted, modifier = Modifier.size(16.dp))
+                }
+            }
+        }
+
         DropdownMenu(
-            expanded         = showContextMenu,
+            expanded = showContextMenu,
             onDismissRequest = { showContextMenu = false },
-            offset           = menuOffset,
+            offset = menuOffset,
         ) {
-            DropdownMenuItem(
-                text    = { Text("↩ Yanıtla") },
-                onClick = { showContextMenu = false; onReply(msg) },
-            )
-            DropdownMenuItem(
-                text    = { Text("📋 Kopyala") },
-                onClick = { showContextMenu = false; onCopy(msg) },
-            )
+            DropdownMenuItem(text = { Text("Yanıtla") },
+                onClick = { showContextMenu = false; onReply(msg) })
+            DropdownMenuItem(text = { Text("Kopyala") },
+                onClick = { showContextMenu = false; onCopy(msg) })
         }
     }
 }
@@ -647,21 +623,7 @@ private val imgCacheDir = java.io.File(System.getProperty("user.home"), ".furcor
 
 @Composable
 private fun AsyncChatImage(url: String) {
-    var bmp by remember(url) { mutableStateOf<androidx.compose.ui.graphics.ImageBitmap?>(null) }
-    LaunchedEffect(url) {
-        withContext(Dispatchers.IO) {
-            try {
-                val key  = url.hashCode().toString()
-                val file = java.io.File(imgCacheDir, key)
-                val bytes = if (file.exists()) {
-                    file.readBytes()
-                } else {
-                    java.net.URI.create(url).toURL().readBytes().also { file.writeBytes(it) }
-                }
-                bmp = androidx.compose.ui.res.loadImageBitmap(bytes.inputStream())
-            } catch (_: Exception) {}
-        }
-    }
+    val bmp = rememberCachedImage(url)
     if (bmp != null) {
         androidx.compose.foundation.Image(
             bitmap             = bmp!!,
@@ -671,7 +633,7 @@ private fun AsyncChatImage(url: String) {
             contentScale       = androidx.compose.ui.layout.ContentScale.Fit,
         )
     } else {
-        CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp, color = Color(0xFF5865F2))
+        CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp, color = AppColors.Accent)
     }
 }
 
@@ -681,15 +643,7 @@ private fun AsyncChatImage(url: String) {
 @Composable
 private fun AsyncServerIcon(imageUrl: String, name: String, size: androidx.compose.ui.unit.Dp) {
     if (imageUrl.isNotEmpty()) {
-        var bmp by remember(imageUrl) { mutableStateOf<androidx.compose.ui.graphics.ImageBitmap?>(null) }
-        LaunchedEffect(imageUrl) {
-            withContext(Dispatchers.IO) {
-                runCatching {
-                    val bytes = java.net.URI.create(imageUrl).toURL().readBytes()
-                    bmp = androidx.compose.ui.res.loadImageBitmap(bytes.inputStream())
-                }
-            }
-        }
+        val bmp = rememberCachedImage(imageUrl)
         Box(
             modifier = Modifier.size(size).clip(CircleShape),
             contentAlignment = Alignment.Center,
@@ -751,11 +705,11 @@ private fun ServerSettingsDialog(
 
     AlertDialog(
         onDismissRequest = { if (!saving) onDismiss() },
-        containerColor   = Color(0xFF2B2D31),
-        title = { Text("Sunucu Ayarları", fontWeight = FontWeight.Bold, color = Color(0xFFF2F3F5)) },
+        containerColor   = AppColors.BgSidebar,
+        title = { Text("Sunucu Ayarları", fontWeight = FontWeight.Bold, color = AppColors.TextPrimary) },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                Text("Sunucu: $serverName", fontSize = 13.sp, color = Color(0xFF8E9297))
+                Text("Sunucu: $serverName", fontSize = 13.sp, color = AppColors.TextMuted)
                 // Dosya seç butonu
                 Button(
                     enabled = !saving,
@@ -773,16 +727,12 @@ private fun ServerSettingsDialog(
                                 status = "Yükleniyor..."
                             }
                             try {
-                                val ext   = selectedFile.extension.lowercase().ifEmpty { "jpg" }
-                                val mime  = if (ext == "png") "image/png" else "image/jpeg"
-                                val path  = "server_icons/${serverId}_${System.currentTimeMillis()}.$ext"
-                                val result = FirestoreClient.uploadToStorage(
-                                    storagePath = path,
-                                    fileBytes   = selectedFile.readBytes(),
-                                    mimeType    = mime,
-                                    idToken     = currentUser.idToken,
+                                // Storage yerine küçültülmüş görsel doğrudan Firestore'a yazılır
+                                val dataUrl = com.furcord.auth.ImageData.toDataUrl(
+                                    selectedFile.readBytes(), maxSide = 256, maxBytes = 120_000, square = true,
                                 )
-                                FirestoreClient.updateServerImage(serverId, result.downloadUrl, currentUser.idToken)
+                                FirestoreClient.updateServerImage(serverId, dataUrl, currentUser.idToken)
+                                ServerIcons.urls[serverId] = dataUrl
                                 withContext(kotlinx.coroutines.Dispatchers.Main) { saved = true; status = "" }
                             } catch (e: Exception) {
                                 withContext(kotlinx.coroutines.Dispatchers.Main) { error = "Hata: ${e.message}"; status = "" }
@@ -791,7 +741,7 @@ private fun ServerSettingsDialog(
                             }
                         }
                     },
-                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF5865F2)),
+                    colors = ButtonDefaults.buttonColors(containerColor = AppColors.Accent),
                     modifier = Modifier.fillMaxWidth(),
                 ) {
                     if (saving) {
@@ -802,14 +752,14 @@ private fun ServerSettingsDialog(
                         Text("📁 Görsel Seç ve Yükle", color = Color.White)
                     }
                 }
-                if (saved) Text("✅ Görsel güncellendi!", fontSize = 12.sp, color = Color(0xFF23A55A))
-                if (error.isNotEmpty()) Text(error, fontSize = 12.sp, color = Color(0xFFED4245))
+                if (saved) Text("✅ Görsel güncellendi!", fontSize = 12.sp, color = AppColors.Online)
+                if (error.isNotEmpty()) Text(error, fontSize = 12.sp, color = AppColors.Danger)
             }
         },
         confirmButton = {},
         dismissButton = {
             TextButton(onClick = { if (!saving) onDismiss() }) {
-                Text("Kapat", color = Color(0xFF8E9297))
+                Text("Kapat", color = AppColors.TextMuted)
             }
         },
     )
@@ -866,7 +816,7 @@ fun ServerDetailScreen(
     // Çevrimiçi üyeler (presence)
     var presenceUsers     by remember { mutableStateOf<List<ActiveUser>>(emptyList()) }
     // Sunucu kapak görseli URL'si
-    var serverImageUrl    by remember { mutableStateOf("") }
+    val serverImageUrl = ServerIcons.urls[serverId] ?: ""
     // Konuşma göstergesi — uidHash kümesi
     var speakingSet       by remember { mutableStateOf<Set<Int>>(emptySet()) }
     // Ses kanalı kronometresi
@@ -874,6 +824,7 @@ fun ServerDetailScreen(
     var voiceTimerStr     by remember { mutableStateOf("") }
     // Ekran paylaşımı
     var isScreenSharing      by remember { mutableStateOf(false) }
+    var showSharePicker      by remember { mutableStateOf(false) }
     var showPiP              by remember { mutableStateOf(false) }
     var isAttemptingReceive  by remember { mutableStateOf(false) }
     val broadcastingUidHash  by ScreenShareManager.broadcastingUidHash.collectAsState()
@@ -933,19 +884,43 @@ fun ServerDetailScreen(
     if (wasKicked) {
         AlertDialog(
             onDismissRequest = {},
-            containerColor   = Color(0xFF2B2D31),
-            title = { Text("Sunucudan Atıldın", fontWeight = FontWeight.Bold, color = Color(0xFFED4245)) },
-            text  = { Text("Sunucu sahibi seni bu sunucudan attı.", color = Color(0xFFDCDDDE), fontSize = 14.sp) },
+            containerColor   = AppColors.BgSidebar,
+            title = { Text("Sunucudan Atıldın", fontWeight = FontWeight.Bold, color = AppColors.Danger) },
+            text  = { Text("Sunucu sahibi seni bu sunucudan attı.", color = AppColors.TextSecondary, fontSize = 14.sp) },
             confirmButton = {
                 Button(
                     onClick = { wasKicked = false; onLeaveServer() },
-                    colors  = ButtonDefaults.buttonColors(containerColor = Color(0xFF5865F2)),
+                    colors  = ButtonDefaults.buttonColors(containerColor = AppColors.Accent),
                 ) { Text("Tamam", color = Color.White) }
             },
         )
     }
 
     // PiP (küçük yapışkan pencere) — yayın aktifken her iki sekme görünümünde de erişilebilir
+    // Ekran paylaşımı kaynak/kalite seçici
+    if (showSharePicker) {
+        ScreenSharePickerDialog(
+            onDismiss = { showSharePicker = false },
+            onStart   = { src, q ->
+                showSharePicker = false
+                showTextChannel = false  // ses kanalı görünümüne geç
+                ScreenShareManager.start(src, q)
+                isScreenSharing = true
+            },
+        )
+    }
+
+    // Yakalama kendiliğinden bittiyse (pencere kapandı vb.) paylaşım durumunu sıfırla
+    LaunchedEffect(isScreenSharing) {
+        while (isScreenSharing) {
+            delay(1_000)
+            if (!ScreenShareManager.isActive) {
+                isScreenSharing = false
+                showPiP = false
+            }
+        }
+    }
+
     if (showPiP) {
         PiPStreamWindow(
             isSelfView       = isScreenSharing,
@@ -968,7 +943,7 @@ fun ServerDetailScreen(
     // ── Sunucu görsel URL'si — tek seferlik çekme ────────────────────────────
     LaunchedEffect(serverId, "image") {
         runCatching {
-            serverImageUrl = FirestoreClient.getServerImageUrl(serverId, currentUser.idToken)
+            ServerIcons.urls[serverId] = FirestoreClient.getServerImageUrl(serverId, currentUser.idToken)
         }
     }
 
@@ -1046,6 +1021,7 @@ fun ServerDetailScreen(
         }
     }
 
+// ── Sunucuya girince en son mesajdan başla (görseller/yerleşim oturana dek birkaç kez sabitle) ──    LaunchedEffect(serverId) {        snapshotFlow { messages.size }.first { it > 0 }        repeat(4) {            listState.scrollToItem((messages.size - 1).coerceAtLeast(0))            delay(250)        }    }
     // ── Presence heartbeat — 30s'de bir yaz ─────────────────────────────────
     LaunchedEffect(serverId, currentUser.uid) {
         while (true) {
@@ -1282,15 +1258,8 @@ fun ServerDetailScreen(
             if (!selectedFile.exists()) return@launch
             withContext(Dispatchers.Main) { sendingImage = true }
             try {
-                val ext  = selectedFile.extension.lowercase().ifEmpty { "jpg" }
-                val mime = when (ext) { "png" -> "image/png"; "gif" -> "image/gif"; else -> "image/jpeg" }
-                val path = "chat_images/${serverId}_${System.currentTimeMillis()}.$ext"
-                val result = FirestoreClient.uploadToStorage(
-                    storagePath = path,
-                    fileBytes   = selectedFile.readBytes(),
-                    mimeType    = mime,
-                    idToken     = currentUser.idToken,
-                )
+                // Storage yerine sıkıştırılmış görsel doğrudan mesaja gömülür
+                val result = object { val downloadUrl = com.furcord.auth.ImageData.toDataUrl(selectedFile.readBytes(), maxSide = 1280) }
                 val now = System.currentTimeMillis()
                 val optimistic = ChatMessage(
                     id = "img-pending-$now",
@@ -1382,16 +1351,13 @@ fun ServerDetailScreen(
             modifier = Modifier
                 .width(240.dp)
                 .fillMaxHeight()
-                .background(Color(0xFF2B2D31)),
+                .background(AppColors.BgSidebar),
         ) {
             // Server name header
             Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(48.dp)
-                    .padding(horizontal = 16.dp),
+                modifier = Modifier.fillMaxWidth().height(52.dp).padding(horizontal = 14.dp),
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
             ) {
                 // Sunucu ikonu — görsel varsa daire, yoksa harf fallback
                 AsyncServerIcon(
@@ -1400,35 +1366,32 @@ fun ServerDetailScreen(
                     size     = 30.dp,
                 )
                 Text(
-                    text = serverName,
-                    fontSize = 15.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = Color(0xFFF2F3F5),
-                    modifier = Modifier.weight(1f),
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
+                        text = serverName,
+                        fontSize = 15.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = AppColors.TextPrimary,
+                        modifier = Modifier.weight(1f),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
                 )
                 // Notification bell
                 NotificationBell(
                     currentUser = currentUser,
-                    hasUpdate = hasUpdate,
+                    hasUpdate = hasUpdate
                 )
+             
                 // Invite button
                 IconButton(onClick = { showInviteDialog = true }, modifier = Modifier.size(28.dp)) {
-                    Text("🔗", fontSize = 14.sp)
+                    Icon(Icons.Outlined.PersonAddAlt, "Davet", tint = AppColors.TextMuted, modifier = Modifier.size(18.dp))
                 }
                 // Server settings (only owner)
                 if (isOwner) {
                     IconButton(onClick = { showServerSettingsDialog = true }, modifier = Modifier.size(28.dp)) {
-                        Text("⚙", fontSize = 14.sp, color = Color(0xFF8E9297))
+                        Icon(Icons.Outlined.Settings, "Ayarlar", tint = AppColors.TextMuted, modifier = Modifier.size(18.dp))
                     }
                 }
-                // Leave server button
-                IconButton(onClick = onLeaveServer, modifier = Modifier.size(28.dp)) {
-                    Text("←", fontSize = 16.sp, color = Color(0xFF8E9297))
-                }
             }
-            HorizontalDivider(color = Color(0xFF1E1F22))
+            HorizontalDivider(color = AppColors.Outline)
 
             // "METIN KANALLARI" label
             Row(
@@ -1441,7 +1404,7 @@ fun ServerDetailScreen(
                     text = "METİN KANALLARI",
                     fontSize = 11.sp,
                     fontWeight = FontWeight.Bold,
-                    color = Color(0xFF8E9297),
+                    color = AppColors.TextMuted,
                     modifier = Modifier.weight(1f),
                     letterSpacing = 0.8.sp,
                 )
@@ -1496,7 +1459,7 @@ fun ServerDetailScreen(
                     text = "SES KANALLARI",
                     fontSize = 11.sp,
                     fontWeight = FontWeight.Bold,
-                    color = Color(0xFF8E9297),
+                    color = AppColors.TextMuted,
                     modifier = Modifier.weight(1f),
                     letterSpacing = 0.8.sp,
                 )
@@ -1530,103 +1493,58 @@ fun ServerDetailScreen(
                         Text(
                             text = "Henüz kanal yok.",
                             fontSize = 13.sp,
-                            color = Color(0xFF8E9297),
+                            color = AppColors.TextMuted,
                             modifier = Modifier.padding(8.dp),
                         )
-                    }
-                }
-                // ── Çevrimiçi üyeler (presence) ──────────────────────────────
-                if (presenceUsers.isNotEmpty()) {
-                    item {
-                        Text(
-                            text = "ÇEVRİMİÇİ ÜYELER — ${presenceUsers.size}",
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = Color(0xFF8E9297),
-                            letterSpacing = 0.8.sp,
-                            modifier = Modifier.padding(start = 8.dp, top = 12.dp, bottom = 4.dp),
-                        )
-                    }
-                    items(presenceUsers) { u ->
-                        val isSelf = u.uid == currentUser.uid
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 8.dp, vertical = 2.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        ) {
-                            Box(
-                                modifier = Modifier.size(8.dp)
-                                    .clip(CircleShape)
-                                    .background(Color(0xFF23A55A))
-                            )
-                            UserAvatar(
-                                displayName = u.username,
-                                photoURL    = u.photoURL,
-                                size        = 20,
-                            )
-                            Text(
-                                text = if (isSelf) "${u.username} (sen)" else u.username,
-                                fontSize = 12.sp,
-                                color = if (isSelf) Color(0xFF23A55A) else Color(0xFFB5BAC1),
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                            )
-                        }
                     }
                 }
             }
 
             // Voice connected bar
             if (connectedChannel != null) {
-                HorizontalDivider(color = Color(0xFF1E1F22))
+                HorizontalDivider(color = AppColors.Outline)
                 VoiceConnectedBar(
                     channelName  = connectedChannel.name,
                     onDisconnect = { leaveChannel() },
                 )
             }
 
-            // User panel
-            HorizontalDivider(color = Color(0xFF1E1F22))
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .background(Color(0xFF232428))
-                    .padding(horizontal = 8.dp)
-                    .height(52.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(4.dp),
-            ) {
-                // Clickable avatar – opens profile settings
-                UserAvatar(
-                    displayName = displayName,
-                    photoURL    = currentUser.photoURL,
-                    size        = 32,
-                    modifier    = Modifier.clickable { showProfileDialog = true },
-                )
-                Column(modifier = Modifier.weight(1f).clickable { showProfileDialog = true }) {
-                    Text(
-                        text = displayName,
-                        fontSize = 13.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        color = Color(0xFFF2F3F5),
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                    Text(text = "Çevrimiçi", fontSize = 11.sp, color = Color(0xFF80848E))
-                }
-                PanelIconBtn(
-                    label   = if (isMuted) "🔇" else "🎙️",
-                    tint    = if (isMuted) Color(0xFFF23F43) else Color(0xFFB5BAC1),
-                    onClick = { isMuted = !isMuted },
-                )
-                PanelIconBtn(
-                    label   = if (isDeafened) "🔕" else "🎧",
-                    tint    = if (isDeafened) Color(0xFFF23F43) else Color(0xFFB5BAC1),
-                    onClick = { isDeafened = !isDeafened },
+            // Kullanıcı kartı
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(8.dp)
+                .clip(RoundedCornerShape(Radius.Medium))
+                .background(AppColors.BgDark)
+                .padding(horizontal = 8.dp)
+                .height(48.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            UserAvatar(
+                displayName = displayName, photoURL = currentUser.photoURL, size = 30,
+                modifier = Modifier.clickable { showProfileDialog = true },
+            )
+            Column(Modifier.weight(1f).clickable { showProfileDialog = true }) {
+                Text(displayName, fontSize = 13.sp, fontWeight = FontWeight.SemiBold,
+                    color = AppColors.TextPrimary, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text("Çevrimiçi", fontSize = 11.sp, color = AppColors.Online)
+            }
+            IconButton(onClick = { isMuted = !isMuted }, modifier = Modifier.size(30.dp)) {
+                Icon(
+                    if (isMuted) Icons.Outlined.MicOff else Icons.Outlined.Mic, "Mikrofon",
+                    tint = if (isMuted) AppColors.Danger else AppColors.TextMuted,
+                    modifier = Modifier.size(18.dp),
                 )
             }
+            IconButton(onClick = { isDeafened = !isDeafened }, modifier = Modifier.size(30.dp)) {
+                Icon(
+                    if (isDeafened) Icons.Outlined.HeadsetOff else Icons.Outlined.Headset, "Kulaklık",
+                    tint = if (isDeafened) AppColors.Danger else AppColors.TextMuted,
+                    modifier = Modifier.size(18.dp),
+                )
+            }
+        }
         }   // end sidebar Column
 
         // Sidebar context menu (sidebar'da sağ tıklandığında)
@@ -1690,25 +1608,24 @@ fun ServerDetailScreen(
                 modifier = Modifier
                     .weight(1f)
                     .fillMaxHeight()
-                    .background(Color(0xFF313338)),
+                    .background(AppColors.BgMain),
             ) {
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(48.dp)
+                        .height(52.dp)
                         .padding(horizontal = 16.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
-                    Text("#", fontSize = 18.sp, fontWeight = FontWeight.Bold, color = Color(0xFF8E9297))
+                    Text("#", fontSize = 18.sp, fontWeight = FontWeight.Bold, color = AppColors.TextMuted)
                     Text(
                         text = "genel",
                         fontSize = 15.sp,
                         fontWeight = FontWeight.Bold,
-                        color = Color(0xFFF2F3F5),
+                        color = AppColors.TextPrimary,
                     )
                 }
-                HorizontalDivider(color = Color(0xFF1E1F22))
                 ChatPanel(
                     serverId        = serverId,
                     messages        = messages,
@@ -1725,6 +1642,7 @@ fun ServerDetailScreen(
                     modifier        = Modifier.weight(1f).fillMaxWidth(),
                 )
             }
+            MemberPanel(users = presenceUsers, currentUid = currentUser.uid)
         } else {
             // ── Ses kanalı görünümü — sadece kullanıcı grid, mesaj yok ────────
             val viewChannelId = connectedChannelId ?: selectedChannelId
@@ -1733,12 +1651,12 @@ fun ServerDetailScreen(
                 modifier = Modifier
                     .weight(1f)
                     .fillMaxHeight()
-                    .background(Color(0xFF313338)),
+                    .background(AppColors.BgMain),
             ) {
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(48.dp)
+                        .height(52.dp)
                         .padding(horizontal = 16.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -1748,7 +1666,7 @@ fun ServerDetailScreen(
                         text = viewChannel?.name ?: "—",
                         fontSize = 15.sp,
                         fontWeight = FontWeight.Bold,
-                        color = Color(0xFFF2F3F5),
+                        color = AppColors.TextPrimary,
                         modifier = Modifier.weight(1f),
                     )
                     // Ekran paylaşımı butonu — sadece bağlı kanaldayken görünür
@@ -1759,14 +1677,12 @@ fun ServerDetailScreen(
                                     ScreenShareManager.stop()
                                     isScreenSharing = false
                                 } else {
-                                    showTextChannel = false  // ses kanalı görünümüne geç
-                                    ScreenShareManager.start()
-                                    isScreenSharing = true
+                                    showSharePicker = true   // kaynak + kalite seç
                                 }
                             },
                             colors = ButtonDefaults.filledTonalButtonColors(
-                                containerColor = if (isScreenSharing) Color(0xFF3A2022) else Color(0xFF5865F2),
-                                contentColor   = if (isScreenSharing) Color(0xFFED4245) else Color.White,
+                                containerColor = if (isScreenSharing) Color(0xFF3A2022) else AppColors.Accent,
+                                contentColor   = if (isScreenSharing) AppColors.Danger else Color.White,
                             ),
                             shape    = RoundedCornerShape(8.dp),
                             modifier = Modifier.height(32.dp),
@@ -1780,7 +1696,7 @@ fun ServerDetailScreen(
                         }
                     }
                 }
-                HorizontalDivider(color = Color(0xFF1E1F22))
+                HorizontalDivider(color = AppColors.Outline)
                 // ── Ekran paylaşımı görünümü (yayıncı ya da izleyici) ─────────
                 // showPiP=true ise inline görünüm gizlenir, PiPStreamWindow devralır
                 if (!showPiP && (isScreenSharing || isAttemptingReceive)) {
@@ -1800,7 +1716,7 @@ fun ServerDetailScreen(
                         onTogglePiP    = { showPiP = true },
                         modifier       = Modifier.weight(0.55f).fillMaxWidth(),
                     )
-                    HorizontalDivider(color = Color(0xFF1E1F22))
+                    HorizontalDivider(color = AppColors.Outline)
                 } else if (showPiP && isAttemptingReceive) {
                     // PiP modunda izleyici — inline view gizlenir, dönen daire gösterilmez
                 }
@@ -1814,7 +1730,7 @@ fun ServerDetailScreen(
                         Text(
                             text = "Henüz kimse yok.\nSes kanalına katıl!",
                             fontSize = 14.sp,
-                            color = Color(0xFF8E9297),
+                            color = AppColors.TextMuted,
                             textAlign = TextAlign.Center,
                         )
                     }
@@ -1852,7 +1768,7 @@ fun ServerDetailScreen(
                                             Box(
                                                 modifier = Modifier
                                                     .size(82.dp)
-                                                    .border(2.dp, Color(0xFF23A55A), CircleShape)
+                                                    .border(2.dp, AppColors.Online, CircleShape)
                                             )
                                         }
                                         Box(
@@ -1883,7 +1799,7 @@ fun ServerDetailScreen(
                                         text = if (isSelf) "${u.username} (sen)" else u.username,
                                         fontSize = 12.sp,
                                         fontWeight = FontWeight.SemiBold,
-                                        color = if (isSelf) Color(0xFF23A55A) else Color(0xFFF2F3F5),
+                                        color = if (isSelf) AppColors.Online else AppColors.TextPrimary,
                                         maxLines = 1,
                                         textAlign = TextAlign.Center,
                                     )
@@ -1892,7 +1808,7 @@ fun ServerDetailScreen(
                                         Box(
                                             modifier = Modifier
                                                 .clip(RoundedCornerShape(4.dp))
-                                                .background(Color(0xFFED4245))
+                                                .background(AppColors.Danger)
                                                 .padding(horizontal = 5.dp, vertical = 2.dp),
                                         ) {
                                             Text(
@@ -2024,15 +1940,14 @@ private fun ChatPanel(
                 )
             }
         }
-
-        HorizontalDivider(color = AppColors.Outline)
+  
 
         // ── Reply önizleme barı ───────────────────────────────────────────────
         if (replyingTo != null) {
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .background(Color(0xFF2B2D31))
+                    .background(AppColors.BgSidebar)
                     .padding(horizontal = 16.dp, vertical = 6.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
@@ -2074,14 +1989,14 @@ private fun ChatPanel(
             modifier = Modifier
                 .fillMaxWidth()
                 .background(AppColors.BgMain)
-                .padding(horizontal = 16.dp, vertical = 12.dp),
+                .padding(start = 20.dp, end = 20.dp, bottom = 16.dp, top = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             // Pill-shaped input container
             Row(
                 modifier = Modifier
                     .weight(1f)
-                    .clip(RoundedCornerShape(24.dp))
+                    .clip(RoundedCornerShape(Radius.Large))
                     .background(AppColors.BgInput)
                     .padding(horizontal = 6.dp, vertical = 2.dp),
                 verticalAlignment = Alignment.CenterVertically,
@@ -2095,7 +2010,7 @@ private fun ChatPanel(
                     if (sendingImage) {
                         CircularProgressIndicator(Modifier.size(14.dp), color = AppColors.Accent, strokeWidth = 2.dp)
                     } else {
-                        Text("🖼️", fontSize = 16.sp)
+                        Icon(Icons.Outlined.Image, "Resim", tint = AppColors.TextMuted, modifier = Modifier.size(20.dp))
                     }
                 }
 
@@ -2145,10 +2060,52 @@ private fun ChatPanel(
                             else AppColors.BgElevated
                         ),
                 ) {
+                    Icon(
+                        Icons.AutoMirrored.Rounded.Send, "Gönder",
+                        tint = if (messageText.isNotBlank()) Color.White else AppColors.TextMuted,
+                        modifier = Modifier.size(16.dp),
+                    )
+                }
+            }
+        }
+    }
+}
+@Composable
+private fun MemberPanel(users: List<ActiveUser>, currentUid: String) {
+    Column(
+        Modifier.width(240.dp).fillMaxHeight()
+            .background(AppColors.BgSidebar)
+            .padding(top = 20.dp, start = 12.dp, end = 12.dp)
+    ) {
+        Text(
+            "ÇEVRİMİÇİ — ${users.size}",
+            fontSize = 11.sp, fontWeight = FontWeight.Bold,
+            color = AppColors.TextSubtle, letterSpacing = 0.8.sp,
+            modifier = Modifier.padding(start = 6.dp, bottom = 8.dp),
+        )
+        LazyColumn(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            items(users) { u ->
+                val isSelf = u.uid == currentUid
+                Row(
+                    Modifier.fillMaxWidth()
+                        .clip(RoundedCornerShape(Radius.Small))
+                        .padding(horizontal = 6.dp, vertical = 5.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    Box {
+                        UserAvatar(displayName = u.username, photoURL = u.photoURL, size = 30)
+                        Box(
+                            Modifier.align(Alignment.BottomEnd).size(10.dp)
+                                .clip(CircleShape).background(AppColors.BgSidebar).padding(2.dp)
+                                .clip(CircleShape).background(AppColors.Online)
+                        )
+                    }
                     Text(
-                        text     = "➤",
-                        fontSize = 14.sp,
-                        color    = if (messageText.isNotBlank()) Color.White else AppColors.TextMuted,
+                        if (isSelf) "${u.username} (sen)" else u.username,
+                        fontSize = 13.sp,
+                        color = if (isSelf) AppColors.Online else AppColors.TextSecondary,
+                        maxLines = 1, overflow = TextOverflow.Ellipsis,
                     )
                 }
             }

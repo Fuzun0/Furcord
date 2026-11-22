@@ -246,7 +246,7 @@ private fun MediaRow(m: DownloadManager.MediaFile, onDelete: () -> Unit) {
             containerColor = Color(0xFF111214),
         ) {
             DropdownMenuItem(
-                text = { Text("🗑 Sil", color = Color(0xFFED4245), fontSize = 13.sp) },
+                text = { Text("🗑 Sil", color = AppColors.Danger, fontSize = 13.sp) },
                 onClick = { menuOpen = false; onDelete() },
             )
         }

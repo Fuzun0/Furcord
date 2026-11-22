@@ -37,7 +37,10 @@ import com.furcord.update.UpdateManager
 import kotlinx.coroutines.launch
 import com.furcord.ui.ServerLobbyScreen
 import com.furcord.ui.ServerDetailScreen
-import com.furcord.ui.FloatingDmPanel
+import com.furcord.ui.AppColors
+import com.furcord.ui.ServerRail
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxHeight
 import com.furcord.ui.FloatingDmWindow
 import com.furcord.ui.NicknameSetupDialog
 import com.furcord.ui.DownloaderScreen
@@ -66,10 +69,10 @@ fun App() {
         onPrimaryContainer = Color(0xFFE6DEFF),
         secondary      = Color(0xFF40C4FF),
         onSecondary    = Color(0xFF00131C),
-        surface        = Color(0xFF2B2D31),
+        surface        = AppColors.BgSidebar,
         onSurface      = Color(0xFFF2F3F5),
-        surfaceVariant = Color(0xFF313338),
-        background     = Color(0xFF1E1F22),
+        surfaceVariant = AppColors.BgMain,
+        background     = AppColors.BgMain,
         onBackground   = Color(0xFFF2F3F5),
         error          = Color(0xFFED4245),
         onError        = Color(0xFFFFFFFF),
@@ -357,74 +360,85 @@ fun App() {
                 }
 
                 Box(Modifier.fillMaxSize()) {
-                    when (val ss = serverState) {
-                        is AppServerState.None -> {
-                            ServerLobbyScreen(
-                                currentUser       = currentUser,
-                                hasUpdate         = pendingUpdate != null && !updateDismissed,
-                                isWindowFocused   = windowFocused,
-                                latestVersionNotes = latestVersionNotes,
-                                latestVersionTag  = latestVersionTag,
-                                onJoinServer    = { id, name ->
-                                    serverState = AppServerState.InServer(id, name)
-                                },
-                                onSignOut      = {
-                                    FirebaseAuth.signOut()
-                                    DmRepository.stop()
-                                    serverState = AppServerState.None
-                                    authState   = AppAuthState.Unauthenticated
-                                },
-                                onUserUpdated  = { newName, newPhoto ->
-                                    authState = AppAuthState.Authenticated(
-                                        currentUser.copy(displayName = newName, photoURL = newPhoto)
+                    Row(Modifier.fillMaxSize()) {
+
+                        // ── Sunucu rayı ──
+                        var railServers by remember { mutableStateOf(com.furcord.auth.RecentServers.load()) }
+                        LaunchedEffect(serverState) { railServers = com.furcord.auth.RecentServers.load() }
+
+                        ServerRail(
+                            servers        = railServers,
+                            activeServerId = (serverState as? AppServerState.InServer)?.serverId,
+                            version        = UpdateManager.currentVersion,
+                            onHome         = { serverState = AppServerState.None },
+                            onServerClick  = { id, name -> serverState = AppServerState.InServer(id, name) },
+                            onOpenDm       = { dmWindowOpen = true },
+                            idToken        = currentUser.idToken,
+                        )
+
+                        // ── İçerik ──
+                        Box(Modifier.weight(1f).fillMaxHeight()) {
+                            when (val ss = serverState) {
+                                is AppServerState.None -> {
+                                    ServerLobbyScreen(
+                                        currentUser        = currentUser,
+                                        hasUpdate          = pendingUpdate != null && !updateDismissed,
+                                        isWindowFocused    = windowFocused,
+                                        latestVersionNotes = latestVersionNotes,
+                                        latestVersionTag   = latestVersionTag,
+                                        onJoinServer       = { id, name ->
+                                            serverState = AppServerState.InServer(id, name)
+                                        },
+                                        onSignOut          = {
+                                            FirebaseAuth.signOut()
+                                            DmRepository.stop()
+                                            serverState = AppServerState.None
+                                            authState   = AppAuthState.Unauthenticated
+                                        },
+                                        onUserUpdated      = { newName, newPhoto ->
+                                            authState = AppAuthState.Authenticated(
+                                                currentUser.copy(displayName = newName, photoURL = newPhoto)
+                                            )
+                                            FirebaseAuth.saveProfile(newName, newPhoto)
+                                        },
+                                        onOpenDm           = { uid, name ->
+                                            DmRepository.markRead(listOf(currentUser.uid, uid).sorted().joinToString("_"))
+                                            dmTarget = DmTarget(uid, name)
+                                            dmWindowOpen = true
+                                        },
+                                        onOpenDownloader   = { serverState = AppServerState.Downloader },
                                     )
-                                    FirebaseAuth.saveProfile(newName, newPhoto)
-                                },
-                                onOpenDm       = { uid, name ->
-                                    DmRepository.markRead(listOf(currentUser.uid, uid).sorted().joinToString("_"))
-                                    dmTarget = DmTarget(uid, name)
-                                    dmWindowOpen = true
-                                    
-                                },
-                                onOpenDownloader = { serverState = AppServerState.Downloader },
+                                }
 
-                            )
-                        }
+                                is AppServerState.Downloader -> {
+                                    DownloaderScreen(onBack = { serverState = AppServerState.None })
+                                }
 
-                         is AppServerState.Downloader -> {
-                            DownloaderScreen(onBack = { serverState = AppServerState.None })
-                        }
-
-                        is AppServerState.InServer -> {
-                            ServerDetailScreen(
-                                serverId      = ss.serverId,
-                                serverName    = ss.serverName,
-                                currentUser   = currentUser,
-                                hasUpdate     = pendingUpdate != null && !updateDismissed,
-                                onLeaveServer = {
-                                    serverState = AppServerState.None
-                                },
-                                onUserUpdated = { newName, newPhoto ->
-                                    authState = AppAuthState.Authenticated(
-                                        currentUser.copy(displayName = newName, photoURL = newPhoto)
-                                    )
-                                    FirebaseAuth.saveProfile(newName, newPhoto)
-                                },
-                                onOpenDm = { uid, name ->
-                                    DmRepository.markRead(listOf(currentUser.uid, uid).sorted().joinToString("_"))
-                                    dmTarget = DmTarget(uid, name)
-                                    dmWindowOpen = true
-                                },
-                            )
+                                is AppServerState.InServer -> {
+                                    key(ss.serverId) {
+                                        ServerDetailScreen(
+                                            serverId      = ss.serverId,
+                                            serverName    = ss.serverName,
+                                            currentUser   = currentUser,
+                                            hasUpdate     = pendingUpdate != null && !updateDismissed,
+                                            onLeaveServer = { serverState = AppServerState.None },
+                                            onUserUpdated = { newName, newPhoto ->
+                                                authState = AppAuthState.Authenticated(
+                                                    currentUser.copy(displayName = newName, photoURL = newPhoto)
+                                                )
+                                                FirebaseAuth.saveProfile(newName, newPhoto)
+                                            },
+                                            onOpenDm = { uid, name ->
+                                                DmRepository.markRead(listOf(currentUser.uid, uid).sorted().joinToString("_"))
+                                                dmTarget = DmTarget(uid, name)
+                                                dmWindowOpen = true
+                                            },
+                                        )
+                                    }
+                                }
+                            }
                         }
                     }
-
-                    FloatingDmPanel(
-                        currentUser    = currentUser,
-                        myUid          = currentUser.uid,
-                        bottomOffset   = 0.dp,
-                        onDmWindowOpen = { dmWindowOpen = true },
-                    )
 
                     // ── Kayan DM penceresi overlay (ses bağlantısını kesmez) ───────────
                     if (dmWindowOpen) {
@@ -435,16 +449,6 @@ fun App() {
                             onClose              = { dmWindowOpen = false; dmTarget = null },
                         )
                     }
-
-                    // Sol altta her zaman görünür sürüm etiketi (en üst katman)
-                    Text(
-                        text = "v${UpdateManager.currentVersion}",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = Color.White.copy(alpha = 0.6f),
-                        modifier = Modifier
-                            .align(Alignment.BottomStart)
-                            .padding(start = 8.dp, bottom = 8.dp)
-                    )
                 }
             }
         }

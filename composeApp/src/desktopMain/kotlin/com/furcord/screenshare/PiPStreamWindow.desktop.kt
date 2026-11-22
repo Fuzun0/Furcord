@@ -58,7 +58,7 @@ actual fun PiPStreamWindow(
 
     val isFullscreen    by remember { derivedStateOf { windowState.placement == WindowPlacement.Fullscreen } }
     var showQualityMenu by remember { mutableStateOf(false) }
-    var currentQuality  by remember { mutableStateOf(ScreenEngine.quality) }
+    val currentQuality  by ScreenEngine.quality.collectAsState()
 
     // Kontrol gÃ¶rÃ¼nÃ¼rlÃ¼ÄŸÃ¼: fare hareket edince 5 saniye gÃ¶ster
     var lastActivityMs   by remember { mutableStateOf(System.currentTimeMillis()) }
@@ -172,32 +172,20 @@ actual fun PiPStreamWindow(
                                 expanded         = showQualityMenu,
                                 onDismissRequest = { showQualityMenu = false },
                             ) {
-                                DropdownMenuItem(
-                                    text    = {
-                                        Text(
-                                            "720p",
-                                            color = if (currentQuality == StreamQuality.Q_720P) Color(0xFF5865F2) else Color.Unspecified,
-                                        )
-                                    },
-                                    onClick = {
-                                        ScreenEngine.setQuality(StreamQuality.Q_720P)
-                                        currentQuality = StreamQuality.Q_720P
-                                        showQualityMenu = false
-                                    },
-                                )
-                                DropdownMenuItem(
-                                    text    = {
-                                        Text(
-                                            "480p",
-                                            color = if (currentQuality == StreamQuality.Q_480P) Color(0xFF5865F2) else Color.Unspecified,
-                                        )
-                                    },
-                                    onClick = {
-                                        ScreenEngine.setQuality(StreamQuality.Q_480P)
-                                        currentQuality = StreamQuality.Q_480P
-                                        showQualityMenu = false
-                                    },
-                                )
+                                StreamQuality.entries.forEach { q ->
+                                    DropdownMenuItem(
+                                        text    = {
+                                            Text(
+                                                "${q.label}  ·  ${q.desc}",
+                                                color = if (currentQuality == q) Color(0xFF7C5CF6) else Color.Unspecified,
+                                            )
+                                        },
+                                        onClick = {
+                                            ScreenEngine.setQuality(q)
+                                            showQualityMenu = false
+                                        },
+                                    )
+                                }
                             }
                         }
                     }

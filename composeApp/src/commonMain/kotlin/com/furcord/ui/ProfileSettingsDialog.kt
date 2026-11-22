@@ -47,7 +47,7 @@ fun UserAvatar(
         modifier = modifier
             .size(size.dp)
             .clip(CircleShape)
-            .background(Color(0xFF5865F2)),
+            .background(AppColors.Accent),
         contentAlignment = Alignment.Center,
     ) {
         if (bitmap != null) {
@@ -106,7 +106,7 @@ fun ProfileSettingsDialog(
     Dialog(onDismissRequest = onDismiss) {
         Surface(
             shape          = RoundedCornerShape(12.dp),
-            color          = Color(0xFF2B2D31),
+            color          = AppColors.BgSidebar,
             tonalElevation = 8.dp,
             modifier       = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
         ) {
@@ -118,7 +118,7 @@ fun ProfileSettingsDialog(
                     text       = "Profil Ayarlari",
                     fontSize   = 18.sp,
                     fontWeight = FontWeight.Bold,
-                    color      = Color(0xFFF2F3F5),
+                    color      = AppColors.TextPrimary,
                 )
                 HorizontalDivider(color = Color(0xFF3F4147))
 
@@ -133,7 +133,7 @@ fun ProfileSettingsDialog(
                         modifier = Modifier
                             .size(80.dp)
                             .clip(CircleShape)
-                            .background(Color(0xFF5865F2))
+                            .background(AppColors.Accent)
                             .clickable(enabled = !pickingPhoto) {
                                 scope.launch {
                                     pickingPhoto = true
@@ -190,7 +190,7 @@ fun ProfileSettingsDialog(
                         Text(if (pickingPhoto) "Seciliyor..." else "Dosyadan Sec", fontSize = 13.sp)
                     }
                     if (photoMsg.isNotEmpty()) {
-                        Text(text = photoMsg, fontSize = 12.sp, color = Color(0xFF23A55A))
+                        Text(text = photoMsg, fontSize = 12.sp, color = AppColors.Online)
                     }
                 }
 
@@ -200,7 +200,7 @@ fun ProfileSettingsDialog(
                         text          = "KULLANICI ADI",
                         fontSize      = 11.sp,
                         fontWeight    = FontWeight.Bold,
-                        color         = Color(0xFF8E9297),
+                        color         = AppColors.TextMuted,
                         letterSpacing = 0.8.sp,
                     )
                     OutlinedTextField(
@@ -211,12 +211,12 @@ fun ProfileSettingsDialog(
                         modifier      = Modifier.fillMaxWidth().focusRequester(focusRequester),
                         shape         = RoundedCornerShape(8.dp),
                         colors = OutlinedTextFieldDefaults.colors(
-                            focusedBorderColor      = Color(0xFF5865F2),
+                            focusedBorderColor      = AppColors.Accent,
                             unfocusedBorderColor    = Color(0xFF3F4147),
-                            focusedTextColor        = Color(0xFFF2F3F5),
-                            unfocusedTextColor      = Color(0xFFF2F3F5),
-                            focusedContainerColor   = Color(0xFF1E1F22),
-                            unfocusedContainerColor = Color(0xFF1E1F22),
+                            focusedTextColor        = AppColors.TextPrimary,
+                            unfocusedTextColor      = AppColors.TextPrimary,
+                            focusedContainerColor   = AppColors.Outline,
+                            unfocusedContainerColor = AppColors.Outline,
                         ),
                     )
                 }
@@ -233,23 +233,23 @@ fun ProfileSettingsDialog(
                                 text          = "FURCORD ID",
                                 fontSize      = 11.sp,
                                 fontWeight    = FontWeight.Bold,
-                                color         = Color(0xFF8E9297),
+                                color         = AppColors.TextMuted,
                                 letterSpacing = 0.8.sp,
                             )
-                            Text(currentUser.furcordId, color = Color(0xFFDCDDDE), fontSize = 14.sp)
+                            Text(currentUser.furcordId, color = AppColors.TextSecondary, fontSize = 14.sp)
                         }
                         TextButton(onClick = {
                             val clip = java.awt.Toolkit.getDefaultToolkit().systemClipboard
                             clip.setContents(java.awt.datatransfer.StringSelection(currentUser.furcordId), null)
                             copyDone = true
                         }) {
-                            Text(if (copyDone) "Kopyalandı!" else "Kopyala", color = Color(0xFF5865F2), fontSize = 12.sp)
+                            Text(if (copyDone) "Kopyalandı!" else "Kopyala", color = AppColors.Accent, fontSize = 12.sp)
                         }
                     }
                 }
 
-                if (error.isNotEmpty()) Text(text = error, fontSize = 12.sp, color = Color(0xFFF23F43))
-                if (success)            Text(text = "Profil guncellendi!", fontSize = 12.sp, color = Color(0xFF23A55A))
+                if (error.isNotEmpty()) Text(text = error, fontSize = 12.sp, color = AppColors.Danger)
+                if (success)            Text(text = "Profil guncellendi!", fontSize = 12.sp, color = AppColors.Online)
 
                 HorizontalDivider(color = Color(0xFF3F4147))
 
@@ -260,14 +260,14 @@ fun ProfileSettingsDialog(
                             text          = "MİKROFON SEVİYESİ",
                             fontSize      = 11.sp,
                             fontWeight    = FontWeight.Bold,
-                            color         = Color(0xFF8E9297),
+                            color         = AppColors.TextMuted,
                             letterSpacing = 0.8.sp,
                             modifier      = Modifier.weight(1f),
                         )
                         Text(
                             text      = "${(micGain * 100).toInt()}%",
                             fontSize  = 12.sp,
-                            color     = Color(0xFFDCDDDE),
+                            color     = AppColors.TextSecondary,
                             fontWeight = FontWeight.SemiBold,
                         )
                     }
@@ -281,8 +281,8 @@ fun ProfileSettingsDialog(
                         valueRange    = 0f..4f,
                         steps         = 79,   // 0.05 adım
                         colors        = SliderDefaults.colors(
-                            thumbColor       = Color(0xFF5865F2),
-                            activeTrackColor = Color(0xFF5865F2),
+                            thumbColor       = AppColors.Accent,
+                            activeTrackColor = AppColors.Accent,
                         ),
                         modifier = Modifier.fillMaxWidth(),
                     )
@@ -330,7 +330,7 @@ fun ProfileSettingsDialog(
                         },
                         enabled = !saving && !pickingPhoto,
                         shape   = RoundedCornerShape(8.dp),
-                        colors  = ButtonDefaults.buttonColors(containerColor = Color(0xFF5865F2)),
+                        colors  = ButtonDefaults.buttonColors(containerColor = AppColors.Accent),
                     ) {
                         Text(if (saving) "Kaydediliyor..." else "Kaydet", fontWeight = FontWeight.SemiBold)
                     }

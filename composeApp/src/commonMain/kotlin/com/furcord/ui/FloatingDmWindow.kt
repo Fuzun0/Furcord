@@ -18,6 +18,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.key.*
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -37,15 +39,15 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-private val FwBg      = Color(0xFF2B2D31)
-private val FwSidebar = Color(0xFF232428)
-private val FwHeader  = Color(0xFF1E1F22)
+private val FwBg      = AppColors.BgSidebar
+private val FwSidebar = AppColors.BgDark
+private val FwHeader  = AppColors.Outline
 private val FwInput   = Color(0xFF383A40)
-private val FwAccent  = Color(0xFF5865F2)
-private val FwText    = Color(0xFFDCDDDE)
+private val FwAccent  = AppColors.Accent
+private val FwText    = AppColors.TextSecondary
 private val FwSub     = Color(0xFF96989D)
 private val FwOutline = Color(0xFF3F4147)
-private val FwUnread  = Color(0xFFED4245)
+private val FwUnread  = AppColors.Danger
 
 /**
  * LoL tarzı bölünmüş DM penceresi.
@@ -97,6 +99,16 @@ fun FloatingDmWindow(
         }
     }
 
+    // Pencerenin dışına tıklayınca kapanır (iç kısım tıklamaları yutar)
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .clickable(
+                indication = null,
+                interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
+                onClick = onClose,
+            ),
+    ) {
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -104,7 +116,8 @@ fun FloatingDmWindow(
         contentAlignment = Alignment.BottomEnd,
     ) {
         Surface(
-            modifier        = Modifier.width(580.dp).heightIn(max = 460.dp),
+            modifier        = Modifier.width(580.dp).heightIn(max = 460.dp)
+                .pointerInput(Unit) { detectTapGestures { } },
             shape           = RoundedCornerShape(12.dp),
             color           = FwBg,
             shadowElevation = 16.dp,
@@ -306,6 +319,7 @@ fun FloatingDmWindow(
             }
         }
     }
+    }   // dış tıklama katmanı
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -380,15 +394,8 @@ private fun DmChatPane(
             if (!selectedFile.exists()) return@launch
             withContext(Dispatchers.Main) { sendingImage = true }
             try {
-                val ext  = selectedFile.extension.lowercase().ifEmpty { "jpg" }
-                val mime = when (ext) { "png" -> "image/png"; "gif" -> "image/gif"; else -> "image/jpeg" }
                 val senderNick = currentUser.nickname.ifBlank { currentUser.displayName.ifBlank { currentUser.email } }
-                val result = FirestoreClient.uploadToStorage(
-                    storagePath = "chat_images/dm_${currentUser.uid}_${System.currentTimeMillis()}.$ext",
-                    fileBytes   = selectedFile.readBytes(),
-                    mimeType    = mime,
-                    idToken     = currentUser.idToken,
-                )
+                val result = object { val downloadUrl = com.furcord.auth.ImageData.toDataUrl(selectedFile.readBytes(), maxSide = 1280) }
                 FirestoreClient.sendDm(
                     senderUid    = currentUser.uid,
                     senderName   = senderNick,
@@ -465,15 +472,7 @@ private fun DmChatPane(
                         Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                             if (msg.text.isNotBlank()) Text(msg.text, color = FwText, fontSize = 13.sp)
                             if (msg.imageUrl.isNotBlank()) {
-                                var bmp by remember(msg.imageUrl) { mutableStateOf<androidx.compose.ui.graphics.ImageBitmap?>(null) }
-                                LaunchedEffect(msg.imageUrl) {
-                                    withContext(Dispatchers.IO) {
-                                        try {
-                                            val bytes = java.net.URI.create(msg.imageUrl).toURL().readBytes()
-                                            bmp = androidx.compose.ui.res.loadImageBitmap(bytes.inputStream())
-                                        } catch (_: Exception) {}
-                                    }
-                                }
+                                val bmp = rememberCachedImage(msg.imageUrl)
                                 if (bmp != null) {
                                     androidx.compose.foundation.Image(
                                         bitmap             = bmp!!,

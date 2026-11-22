@@ -39,6 +39,9 @@ kotlin {
             implementation(libs.androidx.lifecycle.viewmodel.compose)
             implementation(libs.androidx.lifecycle.runtime.compose)
             implementation(libs.kotlinx.serialization.json)
+
+            // ── Opus ses codec (saf Java) ──────────────────────────────────
+            implementation("io.github.jaredmdobson:concentus:1.0.2")
         }
 
         desktopMain.dependencies {

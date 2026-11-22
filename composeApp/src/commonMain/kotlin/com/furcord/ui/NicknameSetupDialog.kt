@@ -16,13 +16,13 @@ import androidx.compose.ui.window.DialogProperties
 import com.furcord.auth.FirestoreClient
 import kotlinx.coroutines.launch
 
-private val AccentN  = Color(0xFF5865F2)
-private val BgDialN  = Color(0xFF2B2D31)
+private val AccentN  = AppColors.Accent
+private val BgDialN  = AppColors.BgSidebar
 private val InputBgN = Color(0xFF383A40)
-private val TxtN     = Color(0xFFDCDDDE)
+private val TxtN     = AppColors.TextSecondary
 private val TxtSubN  = Color(0xFF96989D)
 private val GreenN   = Color(0xFF57F287)
-private val RedN     = Color(0xFFED4245)
+private val RedN     = AppColors.Danger
 
 /**
  * Yeni kullanıcı için E\u015fsiz Kullanıcı Ad\u0131 (Nickname) setup dialog'u.

@@ -5,20 +5,28 @@ import kotlinx.coroutines.flow.StateFlow
 
 /**
  * Desktop actual — ScreenEngine'i wrap eder.
- * P2P UDP üzerinde 854×480 JPEG@30fps ekran paylaşımı.
+ * Ekran / pencere yakalama + UDP üzerinden JPEG akışı.
  */
 actual object ScreenShareManager {
-    /** Peer (ip, port) listesi — VoiceEngine peer'ları ile aynı adresler kullanılır. */
-    actual fun setPeers(peers: List<Pair<String, Int>>) {
-        // ScreenEngine VoiceEngine.peers'ı doğrudan kullandığından
-        // ayrı peer listesi gerektirmez. Şimdilik no-op.
-    }
+    /** Peer listesi VoiceEngine'den doğrudan okunur; ayrı liste gerekmez. */
+    actual fun setPeers(peers: List<Pair<String, Int>>) {}
 
-    actual fun start()  = ScreenEngine.start()
+    actual fun start()  = ScreenEngine.start(null, ScreenEngine.quality.value)
+    actual fun start(source: ShareSource, quality: StreamQuality) = ScreenEngine.start(source, quality)
     actual fun stop()   = ScreenEngine.stop()
 
     actual val isActive: Boolean
         get() = ScreenEngine.isActive
+
+    actual fun listSources(): List<ShareSource> = ScreenEngine.listSources()
+    actual fun thumbnail(source: ShareSource): ImageBitmap? = ScreenEngine.thumbnail(source)
+
+    actual val quality: StateFlow<StreamQuality>
+        get() = ScreenEngine.quality
+    actual fun setQuality(q: StreamQuality) = ScreenEngine.setQuality(q)
+
+    actual val sourceTitle: StateFlow<String>
+        get() = ScreenEngine.sourceTitle
 
     actual val localFrame: StateFlow<ImageBitmap?>
         get() = ScreenEngine.localFrame

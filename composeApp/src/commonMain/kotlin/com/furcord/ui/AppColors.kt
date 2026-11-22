@@ -1,53 +1,37 @@
 package com.furcord.ui
 
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.unit.dp
 
-/**
- * Furcord Discord-inspired dark color palette.
- * Tüm UI bileşenlerinde bu sabitler kullanılmalıdır.
- */
 object AppColors {
-    // ── Backgrounds ───────────────────────────────────────────────────────────
-    /** En koyu arka plan — sunucu listesi, başlık çubuğu */
-    val BgDeepest    = Color(0xFF1E1F22)
-    /** Sidebar arka planı — kanal listesi, arkadaş listesi */
-    val BgSidebar    = Color(0xFF2B2D31)
-    /** Ana içerik alanı — sohbet ekranı, lobi */
-    val BgMain       = Color(0xFF313338)
-    /** Hafif vurgu arka planı — hover, seçili alan */
-    val BgElevated   = Color(0xFF35373C)
-    /** Aktif / seçili öğe arka planı */
-    val BgActive     = Color(0xFF404249)
-    /** Input alanı arka planı */
-    val BgInput      = Color(0xFF383A40)
-    /** Daha koyu sidebar varyantı (FloatingDm sol panel) */
-    val BgDark       = Color(0xFF232428)
+    // Arka planlar: koyudan açığa
+    val BgDeepest     = Color(0xFF0F1013)   // sunucu rayı
+    val BgDark        = Color(0xFF141519)   // alt kullanıcı kartı
+    val BgSidebar     = Color(0xFF191A1E)   // kanal listesi, üye paneli
+    val BgMain        = Color(0xFF1E1F24)   // sohbet alanı
+    val BgElevated    = Color(0xFF26272D)   // hover
+    val BgActive      = Color(0xFF2F3139)   // seçili öğe
+    val BgInput       = Color(0xFF25262C)   // mesaj kutusu
 
-    // ── Borders / Dividers ────────────────────────────────────────────────────
-    val Outline      = Color(0xFF3F4147)
+    val Outline       = Color(0xFF2A2B31)
 
-    // ── Text ─────────────────────────────────────────────────────────────────
-    /** Birincil metin — kullanıcı adları, kanal adları */
-    val TextPrimary  = Color(0xFFF2F3F5)
-    /** İkincil metin — mesaj içerikleri */
-    val TextSecondary = Color(0xFFDCDDDE)
-    /** Soluk metin — timestamp, etiketler, placeholder */
-    val TextMuted    = Color(0xFF8E9297)
-    /** Çok soluk metin — zaman damgası */
-    val TextTimestamp = Color(0xFF949BA4)
-    /** Devre dışı / ek bilgi */
-    val TextSubtle   = Color(0xFF6D6F78)
+    val TextPrimary   = Color(0xFFF2F3F5)
+    val TextSecondary = Color(0xFFD4D6DA)
+    val TextMuted     = Color(0xFF8E9297)
+    val TextTimestamp = Color(0xFF7D828A)
+    val TextSubtle    = Color(0xFF666A72)
 
-    // ── Accent / Brand ────────────────────────────────────────────────────────
-    /** Mor-viyole — logo ile uyumlu, butonlar, vurgu, seçim */
-    val Accent       = Color(0xFF7C5CF6)
-    /** Yeşil — çevrimiçi, kendin, ses bağlantısı */
-    val Online       = Color(0xFF23A55A)
-    /** Kırmızı — okunmamış, hata */
-    val Danger       = Color(0xFFED4245)
-    /** Sarı — uyarı */
-    val Warning      = Color(0xFFFAA81A)
+    // Tek vurgu rengi (logoyla uyumlu mor)
+    val Accent        = Color(0xFF7C5CF6)
+    val Online        = Color(0xFF23A55A)   // sadece çevrimiçi / başarı
+    val Danger        = Color(0xFFED4245)   // sadece sil / hata
+    val Warning       = Color(0xFFFAA81A)
+    val SelfName      = Color(0xFF23A55A)
+}
 
-    // ── Self message name color ───────────────────────────────────────────────
-    val SelfName     = Color(0xFF23A55A)
+/** Tüm uygulamada aynı köşe yarıçapları */
+object Radius {
+    val Small  = 6.dp
+    val Medium = 10.dp
+    val Large  = 14.dp
 }

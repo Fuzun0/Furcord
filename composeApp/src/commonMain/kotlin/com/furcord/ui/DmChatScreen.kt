@@ -35,10 +35,10 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 // ── Renkler ───────────────────────────────────────────────────────────────────
-private val BgDark    = Color(0xFF1E1F22)
-private val BgMid     = Color(0xFF2B2D31)
-private val Accent    = Color(0xFF5865F2)
-private val TextLight = Color(0xFFDCDDDE)
+private val BgDark    = AppColors.Outline
+private val BgMid     = AppColors.BgSidebar
+private val Accent    = AppColors.Accent
+private val TextLight = AppColors.TextSecondary
 private val TextSub   = Color(0xFF96989D)
 private val InputBg   = Color(0xFF383A40)
 private val QuoteBg   = Color(0xFF1A1B1E)
@@ -49,18 +49,7 @@ private val dmImgCacheDir = java.io.File(System.getProperty("user.home"), ".furc
 
 @Composable
 private fun DmAsyncImage(url: String) {
-    var bmp by remember(url) { mutableStateOf<androidx.compose.ui.graphics.ImageBitmap?>(null) }
-    LaunchedEffect(url) {
-        withContext(Dispatchers.IO) {
-            try {
-                val key  = url.hashCode().toString()
-                val file = java.io.File(dmImgCacheDir, key)
-                val bytes = if (file.exists()) file.readBytes()
-                            else java.net.URI.create(url).toURL().readBytes().also { file.writeBytes(it) }
-                bmp = androidx.compose.ui.res.loadImageBitmap(bytes.inputStream())
-            } catch (_: Exception) {}
-        }
-    }
+    val bmp = rememberCachedImage(url)
     if (bmp != null) {
         androidx.compose.foundation.Image(
             bitmap             = bmp!!,

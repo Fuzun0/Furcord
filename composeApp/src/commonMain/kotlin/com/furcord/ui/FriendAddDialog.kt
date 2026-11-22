@@ -16,13 +16,13 @@ import com.furcord.auth.AuthUser
 import com.furcord.auth.FirestoreClient
 import kotlinx.coroutines.launch
 
-private val AccentF  = Color(0xFF5865F2)
-private val BgDialF  = Color(0xFF2B2D31)
+private val AccentF  = AppColors.Accent
+private val BgDialF  = AppColors.BgSidebar
 private val InputBgF = Color(0xFF383A40)
-private val TxtF     = Color(0xFFDCDDDE)
+private val TxtF     = AppColors.TextSecondary
 private val TxtSubF  = Color(0xFF96989D)
-private val GreenF   = Color(0xFF23A55A)
-private val RedF     = Color(0xFFED4245)
+private val GreenF   = AppColors.Online
+private val RedF     = AppColors.Danger
 
 /**
  * Nickname veya Furcord ID girerek kullanıcı arama, arkadaşlık isteği gönderme

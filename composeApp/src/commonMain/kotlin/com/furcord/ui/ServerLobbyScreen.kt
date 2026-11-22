@@ -39,19 +39,21 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.outlined.Delete
+import androidx.compose.material.icons.outlined.PowerSettingsNew
 
 
 
 // ─── Renk paleti ─────────────────────────────────────────────────────────────
-private val BG           = Color(0xFF1E1F22)
-private val SURFACE      = Color(0xFF2B2D31)
-private val SURFACE2     = Color(0xFF313338)
-private val OUTLINE      = Color(0xFF3F4147)
-private val MUTED        = Color(0xFF8E9297)
-private val TEXT         = Color(0xFFF2F3F5)
-private val TEXT2        = Color(0xFFB5BAC1)
-private val ACCENT       = Color(0xFF5865F2)
-private val GREEN        = Color(0xFF23A55A)
+private val BG           = AppColors.BgMain
+private val SURFACE      = AppColors.BgSidebar
+private val SURFACE2     = AppColors.BgElevated
+private val OUTLINE      = AppColors.Outline
+private val MUTED        = AppColors.TextMuted
+private val TEXT         = AppColors.TextPrimary
+private val TEXT2        = AppColors.TextSecondary
+private val ACCENT       = AppColors.Accent
+private val GREEN        = AppColors.Online
 
 @Composable
 fun ServerLobbyScreen(
@@ -71,14 +73,6 @@ fun ServerLobbyScreen(
     // rememberUpdatedState: coroutine içinden her iterásyonda güncel değeri okur
     val latestFocused by rememberUpdatedState(isWindowFocused)
 
-    var searchQuery   by remember { mutableStateOf("") }
-    var searchLoading by remember { mutableStateOf(false) }
-    var serverResult  by remember { mutableStateOf<Pair<String, String>?>(null) }  // (id, name)
-    var searchError   by remember { mutableStateOf("") }
-
-    var createName    by remember { mutableStateOf("") }
-    var createError   by remember { mutableStateOf("") }
-    var createLoading by remember { mutableStateOf(false) }
 
     var showProfileDialog by remember { mutableStateOf(false) }
     var deletingServerId  by remember { mutableStateOf<String?>(null) }
@@ -87,7 +81,7 @@ fun ServerLobbyScreen(
     var recentServers    by remember { mutableStateOf(RecentServers.load()) }
     var reconnectLoading by remember { mutableStateOf<String?>(null) }
     // Sunucu ID → görsel URL önbelleği (reaktif — UI otomatik güncellenir)
-    val serverImages  = remember { mutableStateMapOf<String, String>() }
+    val serverImages  = ServerIcons.urls
 
     // Sol panel — arkadaş listesi
     var friends       by remember { mutableStateOf<List<FriendEntry>>(emptyList()) }
@@ -135,24 +129,35 @@ fun ServerLobbyScreen(
         onJoinServer(id, name)
     }
 
-    // ── Sunucu ara: davet kodu → sunucu ──────────────────────────────────────
-    LaunchedEffect(searchQuery) {
-        serverResult = null
-        searchError  = ""
-        val trimmed = searchQuery.trim()
-        if (trimmed.length < 4) return@LaunchedEffect
-        delay(400L) // debounce
-        searchLoading = true
-        runCatching {
-            val result = FirestoreClient.getServerByInvite(trimmed.uppercase(), currentUser.idToken)
-                ?: FirestoreClient.getServerByInvite(trimmed, currentUser.idToken)
-            if (result != null) {
-                serverResult = result
-            } else {
-                searchError = "Sunucu bulunamadı. Davet kodunu kontrol edin."
-            }
-        }.onFailure { searchError = "Bağlantı hatası: ${it.message}" }
-        searchLoading = false
+    var showAddServer by remember { mutableStateOf(false) }
+
+    // ── Sunucu ekle penceresi (oluştur / katıl) ──────────────────────────────
+    if (showAddServer) {
+        AddServerDialog(
+            onDismiss = { showAddServer = false },
+            onSearch  = { code ->
+                FirestoreClient.getServerByInvite(code.uppercase(), currentUser.idToken)
+                    ?: FirestoreClient.getServerByInvite(code, currentUser.idToken)
+            },
+            onCreate  = { name ->
+                try {
+                    // 1 sunucu limiti: kullanıcının zaten sunucusu var mı?
+                    val existing = FirestoreClient.getMyServers(currentUser.uid, currentUser.idToken)
+                    if (existing.isNotEmpty()) {
+                        "Zaten bir sunucun var: \"${existing.first().second}\""
+                    } else {
+                        val id = FirestoreClient.createServer(name, currentUser.uid, currentUser.idToken)
+                        FirestoreClient.createVoiceChannel(id, "Genel", 0, currentUser.idToken)
+                        FirestoreClient.createVoiceChannel(id, "Oyun",  1, currentUser.idToken)
+                        connectToServer(id, name)
+                        null
+                    }
+                } catch (e: Exception) {
+                    "Oluşturulamadı: ${e.message}"
+                }
+            },
+            onJoin    = { id, name -> showAddServer = false; connectToServer(id, name) },
+        )
     }
 
     if (showProfileDialog) {
@@ -240,7 +245,7 @@ fun ServerLobbyScreen(
                     contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp),
                 ) {
                     Text(
-                        "📋 Yama Notları",
+                        "Yama Notları",
                         fontSize = 12.sp,
                         color = TEXT2,
                     )
@@ -311,7 +316,7 @@ fun ServerLobbyScreen(
                     .clip(RoundedCornerShape(8.dp))
                     .background(SURFACE2),
             ) {
-                Text("⏻", fontSize = 15.sp, color = TEXT2)
+                Icon(Icons.Outlined.PowerSettingsNew, "Çıkış", tint = TEXT2, modifier = Modifier.size(18.dp))
             }
         }
 
@@ -426,10 +431,10 @@ fun ServerLobbyScreen(
                                                 Modifier
                                                     .size(10.dp)
                                                     .align(Alignment.BottomEnd)
-                                                    .background(BG, shape = androidx.compose.foundation.shape.CircleShape)
+                                                    .background(SURFACE, shape = androidx.compose.foundation.shape.CircleShape)
                                                     .padding(2.dp)
                                                     .background(
-                                                        if (friend.isOnline) GREEN else Color(0xFF72767D),
+                                                        if (friend.isOnline) GREEN else AppColors.TextSubtle,
                                                         shape = androidx.compose.foundation.shape.CircleShape,
                                                     ),
                                             )
@@ -443,18 +448,18 @@ fun ServerLobbyScreen(
                                     DropdownMenu(
                                         expanded         = showContextMenu,
                                         onDismissRequest = { showContextMenu = false },
-                                        containerColor   = Color(0xFF111214),
+                                        containerColor   = AppColors.BgDeepest,
                                     ) {
                                         DropdownMenuItem(
-                                            text    = { Text("💬 Mesaj Gönder", color = Color(0xFFDCDDDE), fontSize = 13.sp) },
+                                            text    = { Text("Mesaj Gönder", color = AppColors.TextSecondary, fontSize = 13.sp) },
                                             onClick = {
                                                 onOpenDm?.invoke(friend.uid, friend.displayName)
                                                 showContextMenu = false
                                             },
                                         )
-                                        HorizontalDivider(color = Color(0xFF2B2D31))
+                                        HorizontalDivider(color = AppColors.BgSidebar)
                                         DropdownMenuItem(
-                                            text    = { Text("🗑 Arkadaşı Kaldır", color = Color(0xFFED4245), fontSize = 13.sp) },
+                                            text    = { Text("🗑 Arkadaşı Kaldır", color = AppColors.Danger, fontSize = 13.sp) },
                                             onClick = {
                                                 showContextMenu = false
                                                 scope.launch {
@@ -476,268 +481,57 @@ fun ServerLobbyScreen(
 
                 }
             }
-
             Box(Modifier.width(1.dp).fillMaxHeight().background(OUTLINE))
-
-            // ── Orta panel — eylemler ────────────────────────────────────────
+            // ── Orta panel — sunucularım ─────────────────────────────────────
             Column(
                 modifier = Modifier
                     .weight(1f)
                     .fillMaxHeight()
                     .padding(horizontal = 32.dp, vertical = 28.dp),
-                verticalArrangement = Arrangement.Center,
             ) {
-
-                // ── Sunucu Ara kartı ─────────────────────────────────────────
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(SURFACE)
-                        .padding(20.dp),
-                    verticalArrangement = Arrangement.spacedBy(10.dp),
-                ) {
-                    Text(
-                        "Sunucuya Katıl",
-                        fontSize = 15.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        color = TEXT,
-                    )
-                    Row(
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        OutlinedTextField(
-                            value = searchQuery,
-                            onValueChange = { searchQuery = it; searchError = ""; serverResult = null },
-                            placeholder = { Text("Davet kodu girin...", color = MUTED, fontSize = 13.sp) },
-                            modifier = Modifier.weight(1f),
-                            singleLine = true,
-                            trailingIcon = {
-                                if (searchLoading) CircularProgressIndicator(
-                                    modifier = Modifier.size(16.dp),
-                                    strokeWidth = 2.dp,
-                                    color = MUTED,
-                                )
-                            },
-                            shape = RoundedCornerShape(8.dp),
-                            colors = OutlinedTextFieldDefaults.colors(
-                                focusedBorderColor      = ACCENT,
-                                unfocusedBorderColor    = OUTLINE,
-                                focusedContainerColor   = SURFACE2,
-                                unfocusedContainerColor = SURFACE2,
-                            ),
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("Sunucularım", fontSize = 22.sp, fontWeight = FontWeight.SemiBold, color = TEXT)
+                        Text(
+                            if (recentServers.isEmpty()) "Henüz bir sunucun yok" else "${recentServers.size} sunucu",
+                            fontSize = 13.sp, color = MUTED,
                         )
-                        Button(
-                            onClick = {
-                                scope.launch {
-                                    val q = searchQuery.trim()
-                                    if (q.isEmpty()) { searchError = "Lütfen bir davet kodu girin."; return@launch }
-                                    searchLoading = true; searchError = ""; serverResult = null
-                                    try {
-                                        val result = FirestoreClient.getServerByInvite(q.uppercase(), currentUser.idToken)
-                                            ?: FirestoreClient.getServerByInvite(q, currentUser.idToken)
-                                        if (result == null) searchError = "Sunucu bulunamadı."
-                                        else serverResult = result
-                                    } catch (e: Exception) {
-                                        searchError = "Bağlantı hatası: ${e.message}"
-                                    } finally { searchLoading = false }
-                                }
-                            },
-                            enabled = !searchLoading,
-                            shape  = RoundedCornerShape(8.dp),
-                            colors = ButtonDefaults.buttonColors(containerColor = ACCENT),
-                            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 0.dp),
-                            modifier = Modifier.height(52.dp),
-                        ) { Text("Ara", fontWeight = FontWeight.SemiBold) }
                     }
-                    if (searchError.isNotEmpty()) {
-                        Text(searchError, fontSize = 12.sp, color = MUTED)
-                    }
-                    val sr = serverResult
-                    if (sr != null) {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clip(RoundedCornerShape(8.dp))
-                                .background(SURFACE2)
-                                .padding(horizontal = 12.dp, vertical = 8.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            Text("🏠", fontSize = 16.sp)
-                            Spacer(Modifier.width(8.dp))
-                            Text(
-                                sr.second,
-                                fontSize = 13.sp,
-                                color = TEXT,
-                                modifier = Modifier.weight(1f),
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                            )
-                            Spacer(Modifier.width(8.dp))
-                            Button(
-                                onClick = { connectToServer(sr.first, sr.second) },
-                                shape = RoundedCornerShape(6.dp),
-                                colors = ButtonDefaults.buttonColors(containerColor = GREEN),
-                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
-                                modifier = Modifier.height(28.dp),
-                            ) { Text("Katıl", fontSize = 12.sp) }
-                        }
-                    }
-                }
-
-                Spacer(Modifier.height(12.dp))
-
-                // ── Ayırıcı ─────────────────────────────────────────────────
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(10.dp),
-                ) {
-                    HorizontalDivider(modifier = Modifier.weight(1f), color = OUTLINE)
-                    Text("veya", fontSize = 11.sp, color = MUTED)
-                    HorizontalDivider(modifier = Modifier.weight(1f), color = OUTLINE)
-                }
-
-                Spacer(Modifier.height(12.dp))
-
-                // ── Sunucu Oluştur kartı ─────────────────────────────────────
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(SURFACE)
-                        .padding(20.dp),
-                    verticalArrangement = Arrangement.spacedBy(10.dp),
-                ) {
-                    Text(
-                        "Sunucu Oluştur",
-                        fontSize = 15.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        color = TEXT,
-                    )
-                    Row(
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalAlignment = Alignment.CenterVertically,
+                    Button(
+                        onClick = { showAddServer = true },
+                        shape = RoundedCornerShape(Radius.Medium),
+                        colors = ButtonDefaults.buttonColors(containerColor = ACCENT),
+                        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 0.dp),
+                        modifier = Modifier.height(40.dp),
                     ) {
-                        OutlinedTextField(
-                            value = createName,
-                            onValueChange = { createName = it; createError = "" },
-                            placeholder = { Text("Sunucuna bir isim ver", color = MUTED, fontSize = 13.sp) },
-                            modifier = Modifier.weight(1f),
-                            singleLine = true,
-                            isError = createError.isNotEmpty(),
-                            shape = RoundedCornerShape(8.dp),
-                            colors = OutlinedTextFieldDefaults.colors(
-                                focusedBorderColor   = GREEN,
-                                unfocusedBorderColor = OUTLINE,
-                                focusedContainerColor   = SURFACE2,
-                                unfocusedContainerColor = SURFACE2,
-                            ),
-                        )
-                        Button(
-                            onClick = {
-                                scope.launch {
-                                    val name = createName.trim()
-                                    if (name.isEmpty()) { createError = "Lütfen bir sunucu adı girin."; return@launch }
-                                    createLoading = true
-                                    try {
-                                        // 1 sunucu limiti: kullanıcının zaten sunucusu var mı?
-                                        val existing = FirestoreClient.getMyServers(currentUser.uid, currentUser.idToken)
-                                        if (existing.isNotEmpty()) {
-                                            createError = "Zaten bir sunucun var: \"${existing.first().second}\""
-                                            return@launch
-                                        }
-                                        val id = FirestoreClient.createServer(name, currentUser.uid, currentUser.idToken)
-                                        FirestoreClient.createVoiceChannel(id, "Genel", 0, currentUser.idToken)
-                                        FirestoreClient.createVoiceChannel(id, "Oyun",  1, currentUser.idToken)
-                                        connectToServer(id, name)
-                                    } catch (e: Exception) {
-                                        createError = "Oluşturulamadı: ${e.message}"
-                                    } finally {
-                                        createLoading = false
-                                    }
-                                }
-                            },
-                            enabled  = !createLoading,
-                            modifier = Modifier.height(52.dp),
-                            shape    = RoundedCornerShape(8.dp),
-                            colors   = ButtonDefaults.buttonColors(containerColor = GREEN),
-                            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 0.dp),
-                        ) {
-                            if (createLoading) {
-                                CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp, color = Color.White)
-                            } else {
-                                Text("Oluştur", fontWeight = FontWeight.SemiBold)
-                            }
-                        }
-                    }
-                    if (createError.isNotEmpty()) {
-                        Text(createError, fontSize = 12.sp, color = Color(0xFFED4245))
+                        Icon(Icons.Default.Add, null, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text("Sunucu ekle", fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
                     }
                 }
 
-            }
-
-            // ── Sağ panel — son sunucular ────────────────────────────────────
-            Box(Modifier.width(1.dp).fillMaxHeight().background(OUTLINE))
-            Column(
-                modifier = Modifier
-                    .width(300.dp)
-                    .fillMaxHeight()
-                    .background(SURFACE),
-            ) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 20.dp, vertical = 16.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    Text(
-                        "SON SUNUCULAR",
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = MUTED,
-                        letterSpacing = 1.sp,
-                        modifier = Modifier.weight(1f),
-                    )
-                    Text(
-                        "${recentServers.size}",
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = Color.White,
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(10.dp))
-                            .background(OUTLINE)
-                            .padding(horizontal = 7.dp, vertical = 2.dp),
-                    )
-                }
-                HorizontalDivider(color = OUTLINE)
+                Spacer(Modifier.height(20.dp))
 
                 if (recentServers.isEmpty()) {
-                    Box(
-                        modifier = Modifier.fillMaxSize(),
-                        contentAlignment = Alignment.Center,
-                    ) {
+                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                         Column(
                             horizontalAlignment = Alignment.CenterHorizontally,
                             verticalArrangement = Arrangement.spacedBy(8.dp),
                         ) {
-                            Text("🏠", fontSize = 32.sp)
-                            Text("Henüz sunucu yok", fontSize = 13.sp, color = MUTED)
+                            Text("Burası şimdilik boş", fontSize = 15.sp, color = TEXT2)
                             Text(
-                                "Bir sunucuya katıldıktan\nsonra burada görünür.",
-                                fontSize = 12.sp,
-                                color = Color(0xFF6D6F78),
-                                textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                                "Sunucu oluştur ya da davet koduyla bir sunucuya katıl.",
+                                fontSize = 12.sp, color = MUTED,
                             )
                         }
                     }
                 } else {
                     LazyColumn(
-                        modifier = Modifier.fillMaxSize(),
-                        contentPadding = PaddingValues(vertical = 8.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(Radius.Large))
+                            .background(SURFACE),
+                        contentPadding = PaddingValues(vertical = 6.dp),
                     ) {
                         items(recentServers) { (sid, sname) ->
                             RecentServerRow(
@@ -853,20 +647,17 @@ private fun RecentServerRow(
             CircularProgressIndicator(
                 modifier = Modifier.size(18.dp),
                 strokeWidth = 2.dp,
-                color = Color(0xFFDA373C),
+                color = AppColors.Danger,
             )
         } else {
             Box(
                 modifier = Modifier
                     .clip(RoundedCornerShape(6.dp))
-                    .background(if (!anyLoading) Color(0xFF3A2022) else OUTLINE)
+                    .background(if (!anyLoading) AppColors.Danger.copy(alpha = 0.15f) else OUTLINE)
                     .clickable(enabled = !anyLoading, onClick = onDelete)
                     .padding(horizontal = 8.dp, vertical = 5.dp),
             ) {
-                Text(
-                    "🗑",
-                    fontSize = 12.sp,
-                )
+                Icon(Icons.Outlined.Delete, "Sil", tint = AppColors.Danger, modifier = Modifier.size(14.dp))
             }
         }
     }
@@ -879,15 +670,7 @@ private fun RecentServerRow(
 @Composable
 private fun AsyncServerIcon(imageUrl: String, name: String, size: androidx.compose.ui.unit.Dp) {
     if (imageUrl.isNotEmpty()) {
-        var bmp by remember(imageUrl) { mutableStateOf<androidx.compose.ui.graphics.ImageBitmap?>(null) }
-        LaunchedEffect(imageUrl) {
-            withContext(Dispatchers.IO) {
-                runCatching {
-                    val bytes = java.net.URI.create(imageUrl).toURL().readBytes()
-                    bmp = androidx.compose.ui.res.loadImageBitmap(bytes.inputStream())
-                }
-            }
-        }
+        val bmp = rememberCachedImage(imageUrl)
         Box(
             modifier = Modifier.size(size).clip(CircleShape),
             contentAlignment = Alignment.Center,

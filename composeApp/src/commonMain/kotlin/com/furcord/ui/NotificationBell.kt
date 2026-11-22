@@ -32,13 +32,13 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
-private val NB_BG      = Color(0xFF2B2D31)
-private val NB_SURFACE = Color(0xFF232428)
+private val NB_BG      = AppColors.BgSidebar
+private val NB_SURFACE = AppColors.BgDark
 private val NB_OUTLINE = Color(0xFF3F4147)
-private val NB_ACCENT  = Color(0xFF5865F2)
-private val NB_GREEN   = Color(0xFF23A55A)
-private val NB_RED     = Color(0xFFED4245)
-private val NB_TEXT    = Color(0xFFDCDDDE)
+private val NB_ACCENT  = AppColors.Accent
+private val NB_GREEN   = AppColors.Online
+private val NB_RED     = AppColors.Danger
+private val NB_TEXT    = AppColors.TextSecondary
 private val NB_SUB     = Color(0xFF96989D)
 
 /**
@@ -287,7 +287,7 @@ private fun NotifFriendRow(
             .fillMaxWidth()
             .padding(start = 16.dp, bottom = 2.dp)
             .clip(RoundedCornerShape(6.dp))
-            .background(Color(0xFF232428))
+            .background(AppColors.BgDark)
             .clickable { onToggle() }
             .padding(horizontal = 10.dp, vertical = 8.dp),
     ) {
@@ -342,7 +342,7 @@ private fun NotifServerRow(
             .fillMaxWidth()
             .padding(start = 16.dp, bottom = 2.dp)
             .clip(RoundedCornerShape(6.dp))
-            .background(Color(0xFF232428))
+            .background(AppColors.BgDark)
             .clickable { onToggle() }
             .padding(horizontal = 10.dp, vertical = 8.dp),
     ) {
