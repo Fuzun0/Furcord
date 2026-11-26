@@ -823,6 +823,7 @@ fun ServerDetailScreen(
     var channels           by remember { mutableStateOf<List<VoiceChannel>>(emptyList()) }
     var channelUsers       by remember { mutableStateOf<Map<String, List<ActiveUser>>>(emptyMap()) }
     var connectedChannelId by remember { mutableStateOf<String?>(null) }
+    var joiningChannelId   by remember { mutableStateOf<String?>(null) }
     var selectedChannelId  by remember { mutableStateOf<String?>(null) }
     var showTextChannel    by remember { mutableStateOf(true) }   // true = # genel seçili
     var isMuted            by remember { mutableStateOf(false) }
@@ -1039,6 +1040,19 @@ fun ServerDetailScreen(
                             fetchedUsers
                     } catch (_: Exception) {
                         newUsers[ch.id] = channelUsers[ch.id] ?: emptyList()
+                    }
+                }
+                // Hayalet temizliği: bağlı olmadığım (veya geçiş yaptığım) kanallarda
+                // adım kalmışsa (uygulama kapanışı, sunucu değişimi vb.) kendimi çıkar.
+                val keepId = connectedChannelId ?: joiningChannelId
+                for (ch in fetched) {
+                    val list = newUsers[ch.id] ?: continue
+                    if (ch.id != keepId && ch.id != joiningChannelId && list.any { it.uid == currentUser.uid }) {
+                        val cleaned = list.filter { it.uid != currentUser.uid }
+                        runCatching {
+                            FirestoreClient.setChannelActiveUsers(serverId, ch.id, cleaned, currentUser.idToken)
+                            newUsers[ch.id] = cleaned
+                        }
                     }
                 }
                 // Join/leave ses efektleri — ilk poll'da ses çalma
@@ -1278,6 +1292,7 @@ fun ServerDetailScreen(
             selectedChannelId = ch.id
             return
         }
+        joiningChannelId = ch.id
         scope.launch {
             // Başka bir sunucuda ses bağlantısı varsa önce onu kapat
             val otherOwner = VoiceSession.ownerServerId
@@ -1309,6 +1324,7 @@ fun ServerDetailScreen(
                 channelUsers = channelUsers + (ch.id to updated)
             } catch (_: Exception) {}
             connectedChannelId = ch.id
+            joiningChannelId   = null
             selectedChannelId  = ch.id
             showTextChannel    = false   // ses kanalına geçildiğinde # genel deselect
             VoiceSession.ownerServerId = serverId
