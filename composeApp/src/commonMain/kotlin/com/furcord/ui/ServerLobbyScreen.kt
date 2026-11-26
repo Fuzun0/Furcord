@@ -1,7 +1,7 @@
 package com.furcord.ui
 
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
+import com.furcord.ui.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -164,6 +164,7 @@ fun ServerLobbyScreen(
         ProfileSettingsDialog(
             currentUser = currentUser,
             onDismiss   = { showProfileDialog = false },
+            onSignOut   = { showProfileDialog = false; onSignOut() },
             onSaved     = { newName, newPhoto ->
                 onUserUpdated(newName, newPhoto)
                 showProfileDialog = false
@@ -308,16 +309,6 @@ fun ServerLobbyScreen(
                     }
                 },
             )
-            // Çıkış butonu
-            IconButton(
-                onClick = onSignOut,
-                modifier = Modifier
-                    .size(36.dp)
-                    .clip(RoundedCornerShape(8.dp))
-                    .background(SURFACE2),
-            ) {
-                Icon(Icons.Outlined.PowerSettingsNew, "Çıkış", tint = TEXT2, modifier = Modifier.size(18.dp))
-            }
         }
 
         HorizontalDivider(color = OUTLINE, thickness = 1.dp)

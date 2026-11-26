@@ -1,7 +1,7 @@
 package com.furcord
 
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
+import com.furcord.ui.clickable
 import androidx.compose.foundation.hoverable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsHoveredAsState
@@ -24,7 +24,34 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 
-fun main() = application {
+private const val SINGLE_INSTANCE_PORT = 47652
+
+/** Ikinci kez açılma istekleri (masaüstü kısayolu vb.) — artınca mevcut pencere öne getirilir. */
+private var showRequests by mutableStateOf(0)
+
+/**
+ * Tek örnek kilidi: localhost portunu ilk açan uygulama sahibidir. Ikinci örnek, sahibine
+ * "göster" sinyali yollayıp kendini kapatır.
+ */
+private fun acquireSingleInstance(): Boolean = try {
+    val ss = java.net.ServerSocket(SINGLE_INSTANCE_PORT, 5, java.net.InetAddress.getLoopbackAddress())
+    Thread {
+        while (true) {
+            try { ss.accept().use { showRequests++ } } catch (_: Exception) { break }
+        }
+    }.apply { isDaemon = true; start() }
+    true
+} catch (_: java.net.BindException) {
+    runCatching {
+        java.net.Socket(java.net.InetAddress.getLoopbackAddress(), SINGLE_INSTANCE_PORT).use { it.getOutputStream().write(1) }
+    }.isFailure   // sahibine ulaşılamadıysa (port başka bir uygulamada) normal aç
+} catch (_: Exception) { true }
+
+fun main() {
+    if (acquireSingleInstance()) runApp()
+}
+
+private fun runApp() = application {
     val icon = painterResource("furcord_logo.png")
 
     // Görev çubuğu hariç kullanılabilir ekran alanı. AWT'nin mantıksal pikselleri
@@ -46,32 +73,66 @@ fun main() = application {
     val batteryBar = remember { BatteryTaskbar().also { it.start() } }
     LaunchedEffect(Unit) {
         while (true) {
-            val devices = withContext(Dispatchers.IO) { BatteryReader.read() }
+            val devices = withContext(Dispatchers.IO) { BatteryReader.readStable() }
             batteryBar.update(devices)
-            delay(60_000)            // 60 saniyede bir yenile
+            delay(30_000)            // 30 saniyede bir yenile
         }
     }
     DisposableEffect(Unit) { onDispose { batteryBar.stop() } }
 
-    val isFilled = state.size == fullSize &&
-        state.position.x == usable.x.dp && state.position.y == usable.y.dp
+    // Pencerenin bulunduğu monitörü bulmak için AWT penceresine referans
+    val winHolder = remember { arrayOfNulls<java.awt.Window>(1) }
+
+    /** Pencerenin merkezinin bulunduğu monitörün (görev çubuğu hariç) kullanılabilir alanı. */
+    fun usableForWindow(): java.awt.Rectangle {
+        val win = winHolder[0] ?: return usable
+        return runCatching {
+            val center = java.awt.Point(win.x + win.width / 2, win.y + win.height / 2)
+            val devices = GraphicsEnvironment.getLocalGraphicsEnvironment().screenDevices
+            val gc = devices.map { it.defaultConfiguration }.firstOrNull { it.bounds.contains(center) }
+                ?: win.graphicsConfiguration
+                ?: return@runCatching usable
+            val b   = gc.bounds
+            val ins = java.awt.Toolkit.getDefaultToolkit().getScreenInsets(gc)
+            java.awt.Rectangle(b.x + ins.left, b.y + ins.top, b.width - ins.left - ins.right, b.height - ins.top - ins.bottom)
+        }.getOrDefault(usable)
+    }
+
+    val isFilled = usableForWindow().let { r ->
+        state.size == DpSize(r.width.dp, r.height.dp) &&
+            state.position.x == r.x.dp && state.position.y == r.y.dp
+    }
 
     fun fillScreen() {
-        state.position = fullPos
-        state.size     = fullSize
+        val r = usableForWindow()
+        state.position = WindowPosition(r.x.dp, r.y.dp)
+        state.size     = DpSize(r.width.dp, r.height.dp)
     }
 
     fun restoreDown() {
-        val w = (usable.width  * 0.8).toInt()
-        val h = (usable.height * 0.8).toInt()
+        val r = usableForWindow()
+        val w = (r.width  * 0.8).toInt()
+        val h = (r.height * 0.8).toInt()
         state.size     = DpSize(w.dp, h.dp)
-        state.position = WindowPosition((usable.x + (usable.width - w) / 2).dp, (usable.y + (usable.height - h) / 2).dp)
+        state.position = WindowPosition((r.x + (r.width - w) / 2).dp, (r.y + (r.height - h) / 2).dp)
     }
 
     fun showWindow(fill: Boolean) {
         windowVisible = true
         state.isMinimized = false
         if (fill) fillScreen()
+    }
+
+    // Uygulama zaten açıkken tekrar başlatılırsa (masaüstü kısayolu) mevcut pencereyi öne getir
+    LaunchedEffect(showRequests) {
+        if (showRequests > 0) {
+            showWindow(fill = false)
+            winHolder[0]?.let { w ->
+                runCatching {
+                    w.isAlwaysOnTop = true; w.toFront(); w.requestFocus(); w.isAlwaysOnTop = false
+                }
+            }
+        }
     }
 
     // ── Sistem tepsisi (saat yanındaki simge) ─────────────────────────────────
@@ -94,6 +155,7 @@ fun main() = application {
         state          = state,
         undecorated    = true,
     ) {
+        SideEffect { winHolder[0] = window }
         Column(modifier = Modifier.fillMaxSize()) {
             // ── Koyu özel başlık çubuğu ────────────────────────────────────
             WindowDraggableArea(

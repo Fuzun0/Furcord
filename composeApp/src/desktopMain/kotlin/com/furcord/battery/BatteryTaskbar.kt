@@ -30,6 +30,7 @@ class BatteryTaskbar {
     private var hwnd: HWND? = null
     private var parent: HWND? = null
     private var lastSig = ""
+    private var tickCount = 0
 
     fun update(list: List<BatteryDevice>) { devices = list }
 
@@ -91,6 +92,8 @@ class BatteryTaskbar {
             hwnd?.let { u.DestroyWindow(it) }
             hwnd = null
         }
+        // Pencere sistem tarafından yok edildiyse (görev çubuğu yeniden kuruldu) yeniden oluştur
+        if (hwnd != null && !u.IsWindow(hwnd)) hwnd = null
         if (hwnd == null) {
             hwnd = createChild(taskbar)
             parent = taskbar
@@ -116,7 +119,9 @@ class BatteryTaskbar {
         u.SetWindowPos(h, null, x, 0, w, tbH, 0x0010 or 0x0040)
 
         val sig = list.joinToString { "${it.id}:${it.percent}" } + "|$w|$tbH|$dark"
-        if (sig != lastSig) {
+        // Görev çubuğu (Windows 11) içeriği sıfırlayabilir → imza değişmese de birkaç saniyede bir yeniden çiz
+        tickCount++
+        if (sig != lastSig || tickCount % 3 == 0) {
             lastSig = sig
             paint(h, img)
         }

@@ -53,6 +53,9 @@ object VoiceEngine {
     private const val MAX_PLC_FRAMES      = 5                   // mixer: veri yoksa en fazla ~100 ms tekrar
     private const val SPEAKER_QUEUE_FRAMES = 3                  // hoparlör hattında tutulacak ~60 ms
     private const val OPUS_BITRATE        = 48_000
+    private const val VAD_MIN_RMS         = 300.0               // bunun altı asla konuşma sayılmaz
+    private const val VAD_ONSET_FRAMES    = 3                   // 60 ms sürekli yüksek enerji → konuşma (klavye tıkı elenir)
+    private const val VAD_HANGOVER_FRAMES = 15                  // konuşma bitince 300 ms daha gönder
     private const val RELAY_SEQ           = Int.MIN_VALUE       // relay (TCP, sıralı) paketlerinde seq yok
 
     private const val SCREEN_CHUNK_SIZE   = 1_400  // MTU altı (1500B) — IP fragmantasyonu önlenir
@@ -341,9 +344,12 @@ object VoiceEngine {
         val pcm     = ShortArray(SAMPLES_FRAME)
         val pktBuf  = ByteArray(HEADER_BYTES + MAX_OPUS_BYTES)
         val pcmBB   = ByteBuffer.wrap(pcmBuf).order(ByteOrder.LITTLE_ENDIAN)
+        selfHashForVad = selfUidHash
+        noiseFloor = 100.0; aboveCount = 0; hangover = 0; vadOpen = false; preRoll.clear()
         while (isActive) {
             val read = try { micLine?.read(pcmBuf, 0, FRAME_BYTES) ?: break } catch (_: Exception) { break }
-            if (read < FRAME_BYTES || isMuted) continue
+            if (read < FRAME_BYTES) continue
+            if (isMuted) { vadOpen = false; aboveCount = 0; hangover = 0; preRoll.clear(); continue }
 
             // Mikrofon kazancı + yumuşak sınırlayıcı (hard clip yerine tepe normalizasyonu)
             val gain = micGain
@@ -363,27 +369,65 @@ object VoiceEngine {
                 }
             }
 
-            speakingTimestamps[selfUidHash] = System.currentTimeMillis()
+            // ── VAD: yalnızca konuşma varken gönder ─────────────────────────────
+            // Ham (kazançsız) kare enerjisi; gürültü tabanı uyarlanır → sabit fan/uğultu konuşma sayılmaz.
+            var sumSq = 0.0
+            for (i in 0 until SAMPLES_FRAME) { val s = pcmBB.getShort(i * 2).toDouble(); sumSq += s * s }
+            val rms = Math.sqrt(sumSq / SAMPLES_FRAME)
+            if (rms < noiseFloor) noiseFloor = noiseFloor * 0.9 + rms * 0.1
+            else if (!vadOpen)    noiseFloor += (rms - noiseFloor) * 0.003
+            val threshold = maxOf(noiseFloor * 3.0, VAD_MIN_RMS)
+            val loud = rms > threshold
 
-            val enc = encoder ?: break
-            val seq = seqCounter.incrementAndGet()
-            val n = try { enc.encode(pcm, 0, SAMPLES_FRAME, pktBuf, HEADER_BYTES, MAX_OPUS_BYTES) }
-                    catch (_: Exception) { continue }
-            if (n <= 0) continue
+            if (loud) { aboveCount++; hangover = VAD_HANGOVER_FRAMES } else { aboveCount = 0; if (hangover > 0) hangover-- }
 
-            val rc = relayClient
-            if (isRelayMode && rc != null) {
-                rc.sendFrame(pktBuf.copyOfRange(HEADER_BYTES, HEADER_BYTES + n))
-            } else {
-                ByteBuffer.wrap(pktBuf, 0, HEADER_BYTES).putInt(seq).putInt(selfUidHash)
-                val sock = socket ?: break
-                val len = HEADER_BYTES + n
-                for (addr in peerAddrs.values) {
-                    runCatching { sock.send(DatagramPacket(pktBuf, len, addr)) }
+            if (!vadOpen) {
+                // Kapalıyken son kareleri ön-tamponda tut; konuşma başlayınca baştan gönder (ilk hece kesilmesin)
+                preRoll.addLast(pcm.copyOf())
+                while (preRoll.size > VAD_ONSET_FRAMES) preRoll.removeFirst()
+                if (aboveCount >= VAD_ONSET_FRAMES) {
+                    vadOpen = true
+                    while (preRoll.isNotEmpty()) { if (!encodeAndSend(preRoll.removeFirst())) return }
                 }
+                continue
             }
+            // Açık: konuşma + hangover süresince gönder
+            if (!loud && hangover == 0) { vadOpen = false; preRoll.clear(); continue }
+            if (!encodeAndSend(pcm)) return
         }
     }
+
+    // VAD durumu (capture thread'ine özel)
+    private var noiseFloor = 100.0
+    private var aboveCount = 0
+    private var hangover   = 0
+    private var vadOpen    = false
+    private val preRoll    = java.util.ArrayDeque<ShortArray>()
+    private val pktBufV    = ByteArray(HEADER_BYTES + MAX_OPUS_BYTES)
+
+    /** Bir PCM karesini Opus'a çevirip eşlere (veya relay'e) yollar; kalıcı hata olursa false. */
+    private fun encodeAndSend(frame: ShortArray): Boolean {
+        val enc  = encoder ?: return false
+        val seq  = seqCounter.incrementAndGet()
+        val n = try { enc.encode(frame, 0, SAMPLES_FRAME, pktBufV, HEADER_BYTES, MAX_OPUS_BYTES) }
+                catch (_: Exception) { return true }
+        if (n <= 0) return true
+        speakingTimestamps[selfHashForVad] = System.currentTimeMillis()
+
+        val rc = relayClient
+        if (isRelayMode && rc != null) {
+            rc.sendFrame(pktBufV.copyOfRange(HEADER_BYTES, HEADER_BYTES + n))
+        } else {
+            ByteBuffer.wrap(pktBufV, 0, HEADER_BYTES).putInt(seq).putInt(selfHashForVad)
+            val sock = socket ?: return false
+            val len = HEADER_BYTES + n
+            for (addr in peerAddrs.values) {
+                runCatching { sock.send(DatagramPacket(pktBufV, len, addr)) }
+            }
+        }
+        return true
+    }
+    @Volatile private var selfHashForVad = 0
 
     private fun receiveLoop() {
         // Ses paketleri küçük, ekran paylaşımı parçaları ≤ ~1.4 KB; yine de tam UDP boyutunda tampon

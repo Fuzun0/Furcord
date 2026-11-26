@@ -2,8 +2,9 @@
 
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
+import com.furcord.ui.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
@@ -27,6 +28,7 @@ import com.furcord.platform.decodeBase64ToBitmap
 import com.furcord.platform.pickImageAsBase64
 import com.furcord.voice.VoiceEngine
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -68,6 +70,11 @@ fun UserAvatar(
     }
 }
 
+private enum class MicTestState { Idle, Recording, Recorded, Playing }
+
+private val MIC_TEST_FORMAT = javax.sound.sampled.AudioFormat(48000f, 16, 1, true, false)
+private const val MIC_TEST_MAX_BYTES = 48000 * 2 * 10   // en fazla 10 sn kayıt
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Profile settings dialog
 // ─────────────────────────────────────────────────────────────────────────────
@@ -76,8 +83,92 @@ fun ProfileSettingsDialog(
     currentUser: AuthUser,
     onDismiss: () -> Unit,
     onSaved: (newDisplayName: String, newPhotoURL: String) -> Unit,
+    onSignOut: (() -> Unit)? = null,
 ) {
     val scope = rememberCoroutineScope()
+
+    var micGain      by remember { mutableStateOf(AppPrefs.micGain) }
+    // ── Mikrofon testi durumu ──
+    var micState     by remember { mutableStateOf(MicTestState.Idle) }
+    var micLevel     by remember { mutableStateOf(0f) }
+    var micTestError by remember { mutableStateOf("") }
+    var micRecording by remember { mutableStateOf<ByteArray?>(null) }
+    var micJob       by remember { mutableStateOf<kotlinx.coroutines.Job?>(null) }
+    DisposableEffect(Unit) { onDispose { micJob?.cancel() } }
+
+    fun startMicRecord() {
+        micJob?.cancel()
+        micTestError = ""
+        micRecording = null
+        micState = MicTestState.Recording
+        micJob = scope.launch(Dispatchers.IO) {
+            var line: javax.sound.sampled.TargetDataLine? = null
+            val out = java.io.ByteArrayOutputStream()
+            try {
+                line = javax.sound.sampled.AudioSystem.getLine(
+                    javax.sound.sampled.DataLine.Info(javax.sound.sampled.TargetDataLine::class.java, MIC_TEST_FORMAT)
+                ) as javax.sound.sampled.TargetDataLine
+                line.open(MIC_TEST_FORMAT)
+                line.start()
+                val buf = ByteArray(1920)   // 20 ms
+                while (isActive && out.size() < MIC_TEST_MAX_BYTES) {
+                    val n = line.read(buf, 0, buf.size)
+                    if (n <= 0) continue
+                    val gain = micGain
+                    var peak = 0
+                    var i = 0
+                    while (i + 1 < n) {
+                        val s = ((buf[i + 1].toInt() shl 8) or (buf[i].toInt() and 0xFF)).toShort().toInt()
+                        val v = (s * gain).toInt().coerceIn(-32768, 32767)
+                        buf[i]     = (v and 0xFF).toByte()
+                        buf[i + 1] = ((v shr 8) and 0xFF).toByte()
+                        val a = kotlin.math.abs(v)
+                        if (a > peak) peak = a
+                        i += 2
+                    }
+                    micLevel = (peak / 32768f).coerceIn(0f, 1f)
+                    out.write(buf, 0, n)
+                }
+            } catch (e: Exception) {
+                micTestError = "Mikrofon açılamadı: ${e.message}"
+            } finally {
+                runCatching { line?.stop(); line?.close() }
+                micLevel = 0f
+                val data = out.toByteArray()
+                micRecording = if (data.isNotEmpty()) data else null
+                micState = if (data.isNotEmpty()) MicTestState.Recorded else MicTestState.Idle
+            }
+        }
+    }
+
+    fun startMicPlayback() {
+        val data = micRecording ?: return
+        micJob?.cancel()
+        micTestError = ""
+        micState = MicTestState.Playing
+        micJob = scope.launch(Dispatchers.IO) {
+            var line: javax.sound.sampled.SourceDataLine? = null
+            try {
+                line = javax.sound.sampled.AudioSystem.getLine(
+                    javax.sound.sampled.DataLine.Info(javax.sound.sampled.SourceDataLine::class.java, MIC_TEST_FORMAT)
+                ) as javax.sound.sampled.SourceDataLine
+                line.open(MIC_TEST_FORMAT)
+                line.start()
+                var off = 0
+                while (isActive && off < data.size) {
+                    val len = minOf(3840, data.size - off)
+                    line.write(data, off, len)
+                    off += len
+                }
+                if (isActive) line.drain()
+            } catch (e: Exception) {
+                micTestError = "Ses çalınamadı: ${e.message}"
+            } finally {
+                runCatching { line?.stop(); line?.close() }
+                micState = MicTestState.Recorded
+            }
+        }
+    }
 
     var displayName    by remember { mutableStateOf(currentUser.displayName) }
     var photoURL       by remember { mutableStateOf(currentUser.photoURL) }
@@ -86,7 +177,6 @@ fun ProfileSettingsDialog(
     var saving         by remember { mutableStateOf(false) }
     var error          by remember { mutableStateOf("") }
     var success        by remember { mutableStateOf(false) }
-    var micGain        by remember { mutableStateOf(AppPrefs.micGain) }
     val focusRequester = remember { FocusRequester() }
 
     LaunchedEffect(Unit) {
@@ -111,7 +201,9 @@ fun ProfileSettingsDialog(
             modifier       = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
         ) {
             Column(
-                modifier = Modifier.padding(28.dp),
+                modifier = Modifier
+                    .verticalScroll(androidx.compose.foundation.rememberScrollState())
+                    .padding(28.dp),
                 verticalArrangement = Arrangement.spacedBy(16.dp),
             ) {
                 Text(
@@ -297,7 +389,80 @@ fun ProfileSettingsDialog(
                     }
                 }
 
+                // ── Mikrofon testi ─────────────────────────────────────────────────────
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        text          = "MİKROFON TESTİ",
+                        fontSize      = 11.sp,
+                        fontWeight    = FontWeight.Bold,
+                        color         = AppColors.TextMuted,
+                        letterSpacing = 0.8.sp,
+                    )
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        when (micState) {
+                            MicTestState.Idle -> OutlinedButton(
+                                onClick = { startMicRecord() },
+                                shape   = RoundedCornerShape(8.dp),
+                                colors  = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFFB5BAC1)),
+                            ) { Text("Mikrofonu Test Et", fontSize = 13.sp) }
+
+                            MicTestState.Recording -> Button(
+                                onClick = { micJob?.cancel() },
+                                shape   = RoundedCornerShape(8.dp),
+                                colors  = ButtonDefaults.buttonColors(containerColor = AppColors.Danger),
+                            ) { Text("Kaydı Durdur", fontSize = 13.sp) }
+
+                            MicTestState.Recorded -> {
+                                Button(
+                                    onClick = { startMicPlayback() },
+                                    shape   = RoundedCornerShape(8.dp),
+                                    colors  = ButtonDefaults.buttonColors(containerColor = AppColors.Accent),
+                                ) { Text("▶ Yürüt", fontSize = 13.sp) }
+                                OutlinedButton(
+                                    onClick = { startMicRecord() },
+                                    shape   = RoundedCornerShape(8.dp),
+                                    colors  = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFFB5BAC1)),
+                                ) { Text("Tekrar Kaydet", fontSize = 13.sp) }
+                            }
+
+                            MicTestState.Playing -> Button(
+                                onClick = { micJob?.cancel() },
+                                shape   = RoundedCornerShape(8.dp),
+                                colors  = ButtonDefaults.buttonColors(containerColor = AppColors.Danger),
+                            ) { Text("■ Durdur", fontSize = 13.sp) }
+                        }
+                    }
+                    when (micState) {
+                        MicTestState.Recording -> {
+                            LinearProgressIndicator(
+                                progress   = { micLevel },
+                                modifier   = Modifier.fillMaxWidth().height(6.dp).clip(RoundedCornerShape(3.dp)),
+                                color      = AppColors.Online,
+                                trackColor = AppColors.Outline,
+                            )
+                            Text("Kaydediliyor… konuş, sonra durdur (en fazla 10 sn)", fontSize = 11.sp, color = AppColors.TextMuted)
+                        }
+                        MicTestState.Playing  -> Text("Kayıt çalınıyor…", fontSize = 11.sp, color = AppColors.TextMuted)
+                        MicTestState.Recorded -> Text("Kayıt hazır. Yürüt'e basarak kendini dinle.", fontSize = 11.sp, color = AppColors.TextMuted)
+                        else -> {}
+                    }
+                    if (micTestError.isNotEmpty()) Text(micTestError, fontSize = 12.sp, color = AppColors.Danger)
+                }
+
                 HorizontalDivider(color = Color(0xFF3F4147))
+
+                if (onSignOut != null) {
+                    OutlinedButton(
+                        onClick  = onSignOut,
+                        modifier = Modifier.fillMaxWidth(),
+                        shape    = RoundedCornerShape(8.dp),
+                        colors   = ButtonDefaults.outlinedButtonColors(contentColor = AppColors.Danger),
+                    ) { Text("Hesaptan Çıkış Yap", fontSize = 13.sp, fontWeight = FontWeight.SemiBold) }
+                }
 
                 Row(
                     modifier = Modifier.fillMaxWidth(),

@@ -84,7 +84,8 @@ object DmRepository {
             while (isActive) {
                 runCatching {
                     val fresh = FirestoreClient.listDmConversations(uid, idToken_)
-                    _threads.value = fresh
+                    // Kullanıcının sildiği (temizlediği) sohbetler, yeni mesaj gelene dek gizli kalır
+                    _threads.value = fresh.filter { it.lastTimestamp > clearedAt(it.dmId) }
                 }
                 // Odaktayken 30 sn, arka planda 3 dakika
                 delay(if (focused) 30_000L else 3 * 60_000L)
@@ -112,6 +113,19 @@ object DmRepository {
      * DM penceresi açıldığında çağrılır. İlgili thread'i "okundu" olarak işaretler.
      * [dmId] hesabı: `listOf(myUid, otherUid).sorted().joinToString("_")`
      */
+    /** Bu sohbette kullanıcının "sil" dediği andaki zaman damgası (0 = hiç silinmedi). */
+    fun clearedAt(dmId: String): Long = AppPrefs.get("dmCleared_$dmId").toLongOrNull() ?: 0L
+
+    /**
+     * Sohbeti yalnızca bu kullanıcı için siler: listeden kalkar ve eski mesajlar gizlenir.
+     * Karşı tarafın mesaj geçmişi etkilenmez; yeni mesaj gelirse sohbet yeniden görünür.
+     */
+    fun clearConversation(dmId: String) {
+        val last = _threads.value.find { it.dmId == dmId }?.lastTimestamp ?: 0L
+        AppPrefs.set("dmCleared_$dmId", maxOf(System.currentTimeMillis(), last).toString())
+        _threads.value = _threads.value.filter { it.dmId != dmId }
+    }
+
     fun markRead(dmId: String) {
         _readIds.value = _readIds.value + dmId
     }

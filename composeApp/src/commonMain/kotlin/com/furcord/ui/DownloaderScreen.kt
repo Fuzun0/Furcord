@@ -2,7 +2,7 @@ package com.furcord.ui
 
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
+import com.furcord.ui.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -175,6 +175,48 @@ fun DownloaderScreen(onBack: () -> Unit) {
         }
 
         HorizontalDivider(color = AppColors.Outline)
+
+        // ── Sohbetten indirilen ekler (görsel / GIF / video / dosya) ─────────
+        val chatDls = DownloadManager.attachmentDownloads
+        LaunchedEffect(chatDls.count { it.done }) { files = DownloadManager.listMedia() }
+        if (chatDls.isNotEmpty()) {
+            Column(
+                Modifier.fillMaxWidth().padding(horizontal = 32.dp, vertical = 12.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        "Sohbet İndirmeleri",
+                        fontSize = 15.sp, fontWeight = FontWeight.Bold, color = AppColors.TextPrimary,
+                        modifier = Modifier.weight(1f),
+                    )
+                    if (chatDls.any { it.done }) {
+                        TextButton(onClick = { DownloadManager.clearFinishedAttachmentDownloads() }) {
+                            Text("Temizle", fontSize = 12.sp, color = AppColors.TextMuted)
+                        }
+                    }
+                }
+                chatDls.forEach { d ->
+                    Column(
+                        Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp))
+                            .background(AppColors.BgSidebar).padding(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        Text(d.name, fontSize = 14.sp, color = AppColors.TextPrimary,
+                            maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        if (!d.done) {
+                            if (d.progress > 0f) LinearProgressIndicator(progress = { d.progress }, Modifier.fillMaxWidth())
+                            else LinearProgressIndicator(Modifier.fillMaxWidth())
+                        }
+                        Text(
+                            d.status, fontSize = 12.sp,
+                            color = when { d.error -> AppColors.Danger; d.done -> AppColors.Online; else -> AppColors.TextMuted },
+                        )
+                    }
+                }
+            }
+            HorizontalDivider(color = AppColors.Outline)
+        }
 
         // ── İndirilenler listesi ────────────────────────────────────────────
         Text(

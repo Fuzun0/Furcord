@@ -1,6 +1,7 @@
 package com.furcord.auth
 
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.decodeFromString
 import java.io.File
@@ -915,6 +916,134 @@ object FirestoreClient {
         StorageUploadResult(downloadUrl)
     }
 
+    // ── Yayın sohbeti (yalnızca aktif ekran paylaşımına özgü, yayın bitince silinir) ──
+
+    suspend fun sendStreamChat(
+        serverId: String, uid: String, username: String, photoURL: String, text: String, idToken: String,
+    ) = withContext(Dispatchers.IO) {
+        fun String.esc() = replace("\\", "\\\\").replace("\"", "\\\"")
+        val body = """{"fields":{"uid":{"stringValue":"${uid.esc()}"},"username":{"stringValue":"${username.esc()}"},"photoURL":{"stringValue":""},"text":{"stringValue":"${text.take(500).esc()}"},"timestamp":{"integerValue":"${System.currentTimeMillis()}"}}}"""
+        val (code, resp) = request("POST", "$BASE/servers/$serverId/streamChat", body, idToken)
+        if (code !in 200..299) throw Exception("Mesaj gönderilemedi ($code): $resp")
+    }
+
+    /** [afterTimestamp]'ten sonraki yayın sohbeti mesajları (artan sırada). */
+    suspend fun listStreamChat(serverId: String, afterTimestamp: Long, idToken: String): List<ChatMessage> =
+        withContext(Dispatchers.IO) {
+            val queryUrl = "https://firestore.googleapis.com/v1/projects/$PROJECT_ID/databases/(default)/documents/servers/$serverId:runQuery"
+            val body = """
+                {"structuredQuery":{"from":[{"collectionId":"streamChat"}],
+                 "where":{"fieldFilter":{"field":{"fieldPath":"timestamp"},"op":"GREATER_THAN","value":{"integerValue":"$afterTimestamp"}}},
+                 "orderBy":[{"field":{"fieldPath":"timestamp"},"direction":"ASCENDING"}],"limit":200}}
+            """.trimIndent()
+            val (code, text) = request("POST", queryUrl, body, idToken)
+            if (code !in 200..299) return@withContext emptyList()
+            runCatching { fsJson.decodeFromString<List<FsQueryItem>>(text) }
+                .getOrNull()
+                ?.mapNotNull { it.document?.let { doc -> parseMsgFromDoc(doc) } }
+                ?: emptyList()
+        }
+
+    /** Yayın sohbetindeki tüm mesajları siler (yayın başlarken/biterken yayıncı çağırır). */
+    suspend fun clearStreamChat(serverId: String, idToken: String) = withContext(Dispatchers.IO) {
+        repeat(5) {
+            val (code, text) = runCatching { request("GET", "$BASE/servers/$serverId/streamChat?pageSize=300", idToken = idToken) }
+                .getOrElse { return@withContext }
+            if (code !in 200..299) return@withContext
+            val docs = runCatching { fsJson.decodeFromString<FsListResponse>(text) }.getOrNull()?.documents.orEmpty()
+            if (docs.isEmpty()) return@withContext
+            docs.forEach { d ->
+                val id = d.name.substringAfterLast("/")
+                runCatching { request("DELETE", "$BASE/servers/$serverId/streamChat/$id", idToken = idToken) }
+            }
+        }
+    }
+
+    // ── Büyük dosya ekleri (Storage yerine Firestore parçaları) ──────────────
+
+    /** Parça başına ham bayt (base64 sonrası ~800 KB → Firestore 1 MiB belge limiti altında). */
+    const val ATTACH_CHUNK = 600_000
+    private const val ATTACH_BASE = "$BASE/servers/_files/attachments"
+
+    /**
+     * Dosyayı [ATTACH_CHUNK] boyutlu parçalara bölüp servers/_files/attachments/{id}_{n} belgelerine yazar.
+     * (Mevcut güvenlik kuralları bu yola izin verir; DM ve sunucu sohbetleri aynı yolu kullanır.)
+     */
+    suspend fun uploadAttachment(
+        id: String,
+        bytes: ByteArray,
+        idToken: String,
+        onProgress: (Float) -> Unit = {},
+    ) = withContext(Dispatchers.IO) {
+        val total = (bytes.size + ATTACH_CHUNK - 1) / ATTACH_CHUNK
+        val done = java.util.concurrent.atomic.AtomicInteger(0)
+        val gate = kotlinx.coroutines.sync.Semaphore(4)
+        kotlinx.coroutines.coroutineScope {
+            (0 until total).map { n ->
+                async {
+                    gate.acquire()
+                    try {
+                        val from = n * ATTACH_CHUNK
+                        val to   = minOf(bytes.size, from + ATTACH_CHUNK)
+                        val b64  = java.util.Base64.getEncoder().encodeToString(bytes.copyOfRange(from, to))
+                        val body = """{"fields":{"d":{"stringValue":"$b64"}}}"""
+                        var lastErr = ""
+                        var ok = false
+                        repeat(3) { attempt ->
+                            if (!ok) {
+                                val (code, resp) = runCatching {
+                                    request("PATCH", "$ATTACH_BASE/${id}_$n", body, idToken, timeoutSec = 60)
+                                }.getOrElse { -1 to (it.message ?: "") }
+                                if (code in 200..299) ok = true else { lastErr = "($code) $resp"; kotlinx.coroutines.delay(500L * (attempt + 1)) }
+                            }
+                        }
+                        if (!ok) throw Exception("Dosya yüklenemedi $lastErr")
+                        onProgress(done.incrementAndGet().toFloat() / total)
+                    } finally { gate.release() }
+                }
+            }.forEach { it.await() }
+        }
+    }
+
+    /** [uploadAttachment] ile yüklenmiş dosyanın tüm parçalarını indirip birleştirir. */
+    suspend fun downloadAttachment(
+        id: String,
+        size: Long,
+        idToken: String,
+        onProgress: (Float) -> Unit = {},
+    ): ByteArray = withContext(Dispatchers.IO) {
+        val total = ((size + ATTACH_CHUNK - 1) / ATTACH_CHUNK).toInt().coerceAtLeast(1)
+        val done  = java.util.concurrent.atomic.AtomicInteger(0)
+        val gate  = kotlinx.coroutines.sync.Semaphore(4)
+        val parts = kotlinx.coroutines.coroutineScope {
+            (0 until total).map { n ->
+                async {
+                    gate.acquire()
+                    try {
+                        var data: ByteArray? = null
+                        repeat(3) { attempt ->
+                            if (data == null) {
+                                val (code, text) = runCatching {
+                                    request("GET", "$ATTACH_BASE/${id}_$n", idToken = idToken, timeoutSec = 60)
+                                }.getOrElse { -1 to "" }
+                                if (code in 200..299) {
+                                    val doc = runCatching { fsJson.decodeFromString<FsDocument>(text) }.getOrNull()
+                                    val s = doc?.fields?.str("d").orEmpty()
+                                    if (s.isNotEmpty()) data = java.util.Base64.getDecoder().decode(s)
+                                } else kotlinx.coroutines.delay(500L * (attempt + 1))
+                            }
+                        }
+                        onProgress(done.incrementAndGet().toFloat() / total)
+                        data ?: throw Exception("Dosya parçası alınamadı (${n + 1}/$total)")
+                    } finally { gate.release() }
+                }
+            }.map { it.await() }
+        }
+        val out = java.io.ByteArrayOutputStream(size.toInt().coerceAtLeast(0))
+        parts.forEach { out.write(it) }
+        out.toByteArray()
+    }
+
     // ── Friend request notifications ──────────────────────────────────────────
 
     /** Arkadaşlık isteği gönder — karşı tarafın bildirim koleksiyonuna yazar. */
@@ -1018,11 +1147,12 @@ object FirestoreClient {
         url: String,
         body: String? = null,
         idToken: String,
+        timeoutSec: Long = 15,
     ): Pair<Int, String> {
         val builder = HttpRequest.newBuilder()
             .uri(URI.create(url))
             .header("Authorization", "Bearer $idToken")
-            .timeout(Duration.ofSeconds(15))
+            .timeout(Duration.ofSeconds(timeoutSec))
         if (body != null) {
             builder.header("Content-Type", "application/json")
             builder.method(method, HttpRequest.BodyPublishers.ofString(body, Charsets.UTF_8))

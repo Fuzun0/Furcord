@@ -1,7 +1,7 @@
 ﻿package com.furcord.ui
 
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
+import com.furcord.ui.clickable
 import androidx.compose.foundation.hoverable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsHoveredAsState
@@ -45,6 +45,7 @@ import com.furcord.screenshare.PiPStreamWindow
 import androidx.compose.foundation.Image
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Fullscreen
 import androidx.compose.material.icons.filled.Minimize
 import androidx.compose.ui.layout.ContentScale
@@ -84,23 +85,18 @@ import androidx.compose.material.icons.automirrored.rounded.Send
 @Composable
 private fun InviteDialog(
     serverId: String,
+    serverName: String,
+    currentUser: AuthUser,
     idToken: String,
     onDismiss: () -> Unit,
 ) {
     val scope = rememberCoroutineScope()
-    var inviteCode  by remember { mutableStateOf<String?>(null) }
-    var loading     by remember { mutableStateOf(true) }
-    var error       by remember { mutableStateOf("") }
-    var copied      by remember { mutableStateOf(false) }
+    var friends     by remember { mutableStateOf<List<com.furcord.auth.FriendEntry>?>(null) }
+    var sentTo      by remember { mutableStateOf<Set<String>>(emptySet()) }
+    var sendingTo   by remember { mutableStateOf<Set<String>>(emptySet()) }
 
-    LaunchedEffect(serverId) {
-        try {
-            inviteCode = FirestoreClient.createInvite(serverId, idToken)
-        } catch (e: Exception) {
-            error = "Davet oluşturulamadı: ${e.message}"
-        } finally {
-            loading = false
-        }
+    LaunchedEffect(currentUser.uid) {
+        friends = runCatching { FirestoreClient.listFriends(currentUser.uid, idToken) }.getOrDefault(emptyList())
     }
 
     AlertDialog(
@@ -112,52 +108,72 @@ private fun InviteDialog(
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
                 Text(
-                    text = "Aşağıdaki kodu paylaşarak arkadaşlarını sunucuya davet edebilirsin.",
+                    text = "Arkadaşlarına davet gönder; davet bildirimlerine düşer.",
                     fontSize = 13.sp,
                     color = Color(0xFFB5BAC1),
                 )
+                // ── Arkadaş listesi ──
+                HorizontalDivider(color = Color(0xFF3F4147))
+                Text(
+                    text = "ARKADAŞLAR",
+                    fontSize = 11.sp, fontWeight = FontWeight.Bold,
+                    color = AppColors.TextMuted, letterSpacing = 0.8.sp,
+                )
+                val fl = friends
                 when {
-                    loading -> Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
-                        CircularProgressIndicator(modifier = Modifier.size(28.dp))
+                    fl == null -> Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+                        CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
                     }
-                    error.isNotEmpty() -> Text(error, color = AppColors.Danger, fontSize = 13.sp)
-                    inviteCode != null -> {
-                        val code = inviteCode!!
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clip(RoundedCornerShape(8.dp))
-                                .background(AppColors.Outline)
-                                .padding(start = 20.dp, end = 20.dp, bottom = 16.dp, top= 8.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(12.dp),
-                        ) {
-                            Text(
-                                text = code,
-                                fontSize = 22.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = AppColors.Accent,
-                                letterSpacing = 4.sp,
-                                modifier = Modifier.weight(1f),
-                            )
-                            IconButton(
-                                onClick = {
-                                    try {
-                                        val sel = StringSelection(code)
-                                        Toolkit.getDefaultToolkit().systemClipboard.setContents(sel, sel)
-                                        copied = true
-                                    } catch (_: Exception) {}
-                                },
-                                modifier = Modifier
-                                    .size(36.dp)
-                                    .clip(RoundedCornerShape(6.dp))
-                                    .background(if (copied) AppColors.Online else AppColors.Accent),
+                    fl.isEmpty() -> Text("Henüz arkadaşın yok.", fontSize = 12.sp, color = AppColors.TextMuted)
+                    else -> LazyColumn(
+                        modifier = Modifier.fillMaxWidth().heightIn(max = 220.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        items(fl, key = { it.uid }) { fr ->
+                            val sent    = fr.uid in sentTo
+                            val sending = fr.uid in sendingTo
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(10.dp),
                             ) {
-                                Text(if (copied) "✓" else "📋", fontSize = 14.sp, color = Color.White)
+                                UserAvatar(displayName = fr.displayName, photoURL = "", size = 30)
+                                Text(
+                                    text = fr.displayName,
+                                    fontSize = 13.sp, color = AppColors.TextPrimary,
+                                    maxLines = 1, overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.weight(1f),
+                                )
+                                Button(
+                                    onClick = {
+                                        sendingTo = sendingTo + fr.uid
+                                        scope.launch {
+                                            val ok = runCatching {
+                                                FirestoreClient.sendServerInviteNotif(
+                                                    toUid      = fr.uid,
+                                                    serverId   = serverId,
+                                                    serverName = serverName,
+                                                    fromUid    = currentUser.uid,
+                                                    fromName   = currentUser.nickname.ifEmpty { currentUser.displayName.ifEmpty { currentUser.email } },
+                                                    idToken    = idToken,
+                                                )
+                                            }.isSuccess
+                                            sendingTo = sendingTo - fr.uid
+                                            if (ok) sentTo = sentTo + fr.uid
+                                        }
+                                    },
+                                    enabled = !sent && !sending,
+                                    shape = RoundedCornerShape(6.dp),
+                                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp),
+                                    modifier = Modifier.height(30.dp),
+                                    colors = ButtonDefaults.buttonColors(
+                                        containerColor = AppColors.Accent,
+                                        disabledContainerColor = if (sent) AppColors.Online.copy(alpha = 0.3f) else AppColors.Accent.copy(alpha = 0.4f),
+                                    ),
+                                ) {
+                                    Text(if (sent) "Gönderildi ✓" else if (sending) "…" else "Davet Et", fontSize = 12.sp, color = Color.White)
+                                }
                             }
-                        }
-                        if (copied) {
-                            Text("Kod panoya kopyalandı!", fontSize = 12.sp, color = AppColors.Online)
                         }
                     }
                 }
@@ -491,6 +507,8 @@ private fun MessageRow(
     isGrouped: Boolean = false,
     onReply: (ChatMessage) -> Unit = {},
     onCopy: (ChatMessage) -> Unit = {},
+    idToken: String = "",
+    onDownload: (ChatMessage) -> Unit = {},
 ) {
     val timeStr = remember(msg.timestamp) {
         SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(msg.timestamp))
@@ -575,7 +593,7 @@ private fun MessageRow(
                     }
                     if (msg.imageUrl.isNotBlank()) {
                         Spacer(Modifier.height(4.dp))
-                        AsyncChatImage(msg.imageUrl)
+                        AttachmentView(msg.imageUrl, idToken)
                     }
                 }
             }
@@ -599,6 +617,12 @@ private fun MessageRow(
                     Icon(Icons.Outlined.ContentCopy, "Kopyala",
                         tint = AppColors.TextMuted, modifier = Modifier.size(16.dp))
                 }
+                if (msg.imageUrl.isNotBlank() && !msg.id.startsWith("img-pending-")) {
+                    IconButton(onClick = { onDownload(msg) }, Modifier.size(28.dp)) {
+                        Icon(Icons.Default.Download, "İndir",
+                            tint = AppColors.TextMuted, modifier = Modifier.size(16.dp))
+                    }
+                }
             }
         }
 
@@ -611,6 +635,10 @@ private fun MessageRow(
                 onClick = { showContextMenu = false; onReply(msg) })
             DropdownMenuItem(text = { Text("Kopyala") },
                 onClick = { showContextMenu = false; onCopy(msg) })
+            if (msg.imageUrl.isNotBlank() && !msg.id.startsWith("img-pending-")) {
+                DropdownMenuItem(text = { Text("İndir") },
+                    onClick = { showContextMenu = false; onDownload(msg) })
+            }
         }
     }
 }
@@ -765,6 +793,15 @@ private fun ServerSettingsDialog(
     )
 }
 
+/**
+ * Uygulama genelinde tek bir aktif ses oturumu vardır. Başka bir sunucunun ses kanalına
+ * girilirken mevcut oturum buradaki [disconnect] ile temiz şekilde kapatılır.
+ */
+private object VoiceSession {
+    @Volatile var ownerServerId: String? = null
+    @Volatile var disconnect: (suspend () -> Unit)? = null
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Main screen
 // ─────────────────────────────────────────────────────────────────────────────
@@ -777,6 +814,9 @@ fun ServerDetailScreen(
     onLeaveServer: () -> Unit,
     onUserUpdated: (newDisplayName: String, newPhotoURL: String) -> Unit = { _, _ -> },
     onOpenDm: ((uid: String, name: String) -> Unit)? = null,
+    onSignOut: (() -> Unit)? = null,
+    onVoiceConnectedChange: (Boolean) -> Unit = {},
+    onJoinServer: ((serverId: String, serverName: String) -> Unit)? = null,
 ) {
     val scope = rememberCoroutineScope()
 
@@ -795,6 +835,7 @@ fun ServerDetailScreen(
     var replyingTo    by remember { mutableStateOf<ChatMessage?>(null) }
     var sendingMsg    by remember { mutableStateOf(false) }
     var sendingImage  by remember { mutableStateOf(false) }
+    var attachError   by remember { mutableStateOf("") }
     val listState     = rememberLazyListState()
 
     // Profile dialog
@@ -854,6 +895,7 @@ fun ServerDetailScreen(
         ProfileSettingsDialog(
             currentUser = currentUser,
             onDismiss   = { showProfileDialog = false },
+            onSignOut   = onSignOut?.let { so -> { showProfileDialog = false; so() } },
             onSaved     = { newName, newPhoto ->
                 onUserUpdated(newName, newPhoto)
                 showProfileDialog = false
@@ -861,10 +903,22 @@ fun ServerDetailScreen(
         )
     }
 
+    if (attachError.isNotEmpty()) {
+        AlertDialog(
+            onDismissRequest = { attachError = "" },
+            containerColor   = AppColors.BgSidebar,
+            title = { Text("Dosya gönderilemedi", fontWeight = FontWeight.Bold, color = AppColors.Danger) },
+            text  = { Text(attachError, color = AppColors.TextSecondary, fontSize = 14.sp) },
+            confirmButton = { TextButton(onClick = { attachError = "" }) { Text("Tamam", color = AppColors.Accent) } },
+        )
+    }
+
     // Invite dialog
-    if (showInviteDialog) {
+    if (showInviteDialog && isOwner) {
         InviteDialog(
             serverId   = serverId,
+            serverName = serverName,
+            currentUser = currentUser,
             idToken    = currentUser.idToken,
             onDismiss  = { showInviteDialog = false },
         )
@@ -904,10 +958,22 @@ fun ServerDetailScreen(
             onStart   = { src, q ->
                 showSharePicker = false
                 showTextChannel = false  // ses kanalı görünümüne geç
+                // Önceki yayından kalan sohbeti temizle, yeni yayının sohbeti boş başlasın
+                GlobalScope.launch { runCatching { FirestoreClient.clearStreamChat(serverId, currentUser.idToken) } }
                 ScreenShareManager.start(src, q)
                 isScreenSharing = true
+                showPiP = true   // yayını gösteren küçük yüzen oynatıcı
             },
         )
+    }
+
+    // Yayın bitince (her yolla) yayın sohbeti silinir
+    DisposableEffect(isScreenSharing) {
+        val wasSharing = isScreenSharing
+        val token = currentUser.idToken
+        onDispose {
+            if (wasSharing) GlobalScope.launch { runCatching { FirestoreClient.clearStreamChat(serverId, token) } }
+        }
     }
 
     // Yakalama kendiliğinden bittiyse (pencere kapandı vb.) paylaşım durumunu sıfırla
@@ -929,13 +995,19 @@ fun ServerDetailScreen(
             onVolumeChange = {},
             onClose        = {
                 showPiP = false
-                if (isScreenSharing) {
-                    ScreenShareManager.stop()
-                    isScreenSharing = false
-                } else {
+                // Yayıncının önizleme penceresini kapatması yayını bitirmez (uygulamadaki
+                // "Paylaşımı Durdur" ile biter); izleyici için pencere kapanınca izleme biter.
+                if (!isScreenSharing) {
                     ScreenShareManager.stopReceiver()
                     isAttemptingReceive = false
                 }
+            },
+            chatPanel      = {
+                StreamChatPanel(
+                    serverId    = serverId,
+                    currentUser = currentUser,
+                    modifier    = Modifier.fillMaxSize(),
+                )
             },
         )
     }
@@ -1055,6 +1127,9 @@ fun ServerDetailScreen(
         }
     }
 
+    // ── Ses bağlantı durumunu üst katmana bildir (arka planda canlı tutmak için) ──
+    LaunchedEffect(connectedChannelId) { onVoiceConnectedChange(connectedChannelId != null) }
+
     // ── Ses kanalı kronometresi ────────────────────────────────────────
     LaunchedEffect(connectedChannelId) {
         if (connectedChannelId != null) {
@@ -1082,9 +1157,16 @@ fun ServerDetailScreen(
             val prev    = latestChannelUsers
             val uid     = currentUser.uid
             val token   = currentUser.idToken
-            ScreenShareManager.stop()
-            ScreenShareManager.stopReceiverFull()
-            VoiceEngine.stop()
+            // Yalnızca bu ekran ses oturumunu tutuyorsa durdur (başka sunucu devralmış olabilir)
+            if (cid != null) {
+                ScreenShareManager.stop()
+                ScreenShareManager.stopReceiverFull()
+                VoiceEngine.stop()
+                if (VoiceSession.ownerServerId == serverId) {
+                    VoiceSession.ownerServerId = null
+                    VoiceSession.disconnect = null
+                }
+            }
             // runBlocking kullanarak JVM kapanmadan önce cleanup tamamlansın
             kotlinx.coroutines.runBlocking {
                 if (cid != null) {
@@ -1165,6 +1247,29 @@ fun ServerDetailScreen(
         }
     }
 
+    // ── Leave channel (suspend) — hem manuel çıkış hem başka sunucuya geçişte kullanılır ──
+    suspend fun leaveChannelSuspend() {
+        val cid = connectedChannelId ?: return
+        try {
+            FirestoreClient.setChannelActiveUsers(
+                serverId, cid,
+                (channelUsers[cid] ?: emptyList()).filter { it.uid != currentUser.uid },
+                currentUser.idToken,
+            )
+        } catch (_: Exception) {}
+        runCatching { FirestoreClient.removeVoicePeer(serverId, currentUser.uid, currentUser.idToken) }
+        ScreenShareManager.stop()
+        ScreenShareManager.stopReceiverFull()
+        isScreenSharing = false
+        showPiP = false
+        VoiceEngine.stop()
+        connectedChannelId = null
+        if (VoiceSession.ownerServerId == serverId) {
+            VoiceSession.ownerServerId = null
+            VoiceSession.disconnect = null
+        }
+    }
+
     // ── Join channel ──────────────────────────────────────────────────────────
     fun joinChannel(ch: VoiceChannel) {
         if (connectedChannelId == ch.id) {
@@ -1174,6 +1279,15 @@ fun ServerDetailScreen(
             return
         }
         scope.launch {
+            // Başka bir sunucuda ses bağlantısı varsa önce onu kapat
+            val otherOwner = VoiceSession.ownerServerId
+            if (otherOwner != null && otherOwner != serverId) {
+                runCatching { VoiceSession.disconnect?.invoke() }
+                if (VoiceSession.ownerServerId == otherOwner) {
+                    VoiceSession.ownerServerId = null
+                    VoiceSession.disconnect = null
+                }
+            }
             val prevId = connectedChannelId
             if (prevId != null) {
                 try {
@@ -1197,6 +1311,8 @@ fun ServerDetailScreen(
             connectedChannelId = ch.id
             selectedChannelId  = ch.id
             showTextChannel    = false   // ses kanalına geçildiğinde # genel deselect
+            VoiceSession.ownerServerId = serverId
+            VoiceSession.disconnect    = { leaveChannelSuspend() }
             // Opsiyonel relay: JVM argümanlarıyla verilebilir.
             val relayHost = System.getProperty("furcord.relay.host")?.trim().orEmpty()
             val relayPort = System.getProperty("furcord.relay.port")?.toIntOrNull()
@@ -1226,31 +1342,15 @@ fun ServerDetailScreen(
 
     // ── Leave channel ─────────────────────────────────────────────────────────
     fun leaveChannel() {
-        val cid = connectedChannelId ?: return
-        scope.launch {
-            try {
-                FirestoreClient.setChannelActiveUsers(
-                    serverId, cid,
-                    (channelUsers[cid] ?: emptyList()).filter { it.uid != currentUser.uid },
-                    currentUser.idToken,
-                )
-            } catch (_: Exception) {}
-            runCatching { FirestoreClient.removeVoicePeer(serverId, currentUser.uid, currentUser.idToken) }
-            ScreenShareManager.stop()
-            ScreenShareManager.stopReceiverFull()
-            isScreenSharing = false
-            showPiP = false
-            VoiceEngine.stop()
-            connectedChannelId = null
-        }
+        if (connectedChannelId == null) return
+        scope.launch { leaveChannelSuspend() }
     }
 
     // ── Send image ────────────────────────────────────────────────────────────
     fun sendImage() {
         if (sendingImage) return
         scope.launch(Dispatchers.IO) {
-            val dialog = FileDialog(null as Frame?, "Resim Seç", FileDialog.LOAD)
-            dialog.file = "*.jpg;*.jpeg;*.png;*.webp;*.gif"
+            val dialog = FileDialog(null as Frame?, "Dosya Seç (görsel, GIF, video…)", FileDialog.LOAD)
             dialog.isVisible = true
             val selectedFile = dialog.directory?.let { dir ->
                 dialog.file?.let { name -> java.io.File(dir, name) }
@@ -1258,27 +1358,32 @@ fun ServerDetailScreen(
             if (!selectedFile.exists()) return@launch
             withContext(Dispatchers.Main) { sendingImage = true }
             try {
-                // Storage yerine sıkıştırılmış görsel doğrudan mesaja gömülür
-                val result = object { val downloadUrl = com.furcord.auth.ImageData.toDataUrl(selectedFile.readBytes(), maxSide = 1280) }
+                // Küçük görseller mesaja gömülür, video/büyük dosyalar parçalı yüklenir
+                val attUrl = com.furcord.download.Attachments.prepare(selectedFile, currentUser.idToken)
                 val now = System.currentTimeMillis()
                 val optimistic = ChatMessage(
                     id = "img-pending-$now",
                     uid = currentUser.uid, username = displayNickname,
                     photoURL = currentUser.photoURL, text = "",
-                    timestamp = now, imageUrl = result.downloadUrl,
+                    timestamp = now, imageUrl = attUrl,
                 )
                 withContext(Dispatchers.Main) { messages = messages + optimistic }
                 FirestoreClient.sendMessage(
                     serverId = serverId, uid = currentUser.uid,
                     username = displayNickname, photoURL = currentUser.photoURL,
                     text = "", idToken = currentUser.idToken,
-                    imageUrl = result.downloadUrl,
+                    imageUrl = attUrl,
                 )
                 val fetched = FirestoreClient.listMessages(serverId, currentUser.idToken)
                 withContext(Dispatchers.Main) {
                     if (fetched.isNotEmpty()) { messages = fetched; MessageStore.set(serverId, fetched) }
                 }
-            } catch (_: Exception) {}
+            } catch (e: Exception) {
+                withContext(Dispatchers.Main) {
+                    messages = messages.filter { !it.id.startsWith("img-pending-") }
+                    attachError = e.message ?: "Dosya gönderilemedi."
+                }
+            }
             withContext(Dispatchers.Main) { sendingImage = false }
         }
     }
@@ -1377,12 +1482,18 @@ fun ServerDetailScreen(
                 // Notification bell
                 NotificationBell(
                     currentUser = currentUser,
-                    hasUpdate = hasUpdate
+                    hasUpdate = hasUpdate,
+                    onJoinServer = { sid, sname ->
+                        com.furcord.auth.RecentServers.save(sid, sname)
+                        onJoinServer?.invoke(sid, sname)
+                    },
                 )
              
-                // Invite button
-                IconButton(onClick = { showInviteDialog = true }, modifier = Modifier.size(28.dp)) {
-                    Icon(Icons.Outlined.PersonAddAlt, "Davet", tint = AppColors.TextMuted, modifier = Modifier.size(18.dp))
+                // Invite button — yalnızca sunucu sahibi
+                if (isOwner) {
+                    IconButton(onClick = { showInviteDialog = true }, modifier = Modifier.size(28.dp)) {
+                        Icon(Icons.Outlined.PersonAddAlt, "Davet", tint = AppColors.TextMuted, modifier = Modifier.size(18.dp))
+                    }
                 }
                 // Server settings (only owner)
                 if (isOwner) {
@@ -1937,6 +2048,8 @@ private fun ChatPanel(
                         val cb = java.awt.Toolkit.getDefaultToolkit().systemClipboard
                         cb.setContents(java.awt.datatransfer.StringSelection(m.text), null)
                     },
+                    idToken    = currentUser.idToken,
+                    onDownload = { m -> com.furcord.download.DownloadManager.downloadAttachment(m.imageUrl, currentUser.idToken) },
                 )
             }
         }

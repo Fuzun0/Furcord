@@ -1,6 +1,9 @@
 package com.furcord.download
 
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.net.URI
@@ -27,10 +30,73 @@ object DownloadManager {
             return File(desktop, "Furcord Medya").apply { mkdirs() }
         }
 
-    private val MEDIA_EXT = setOf("mp4", "mkv", "webm", "mp3", "m4a", "opus", "wav")
+    private val AUDIO_EXT = setOf("mp3", "m4a", "opus", "wav", "ogg", "flac")
+
+    // ── Sohbetten indirilen ekler ─────────────────────────────────────────────
+    data class AttachmentDownload(
+        val key: String,
+        val name: String,
+        val progress: Float = 0f,
+        val status: String = "Başlıyor…",
+        val error: Boolean = false,
+        val done: Boolean = false,
+    )
+
+    /** İndirme sayfasında gösterilen sohbet indirmeleri (en yenisi başta). */
+    var attachmentDownloads by androidx.compose.runtime.mutableStateOf<List<AttachmentDownload>>(emptyList())
+        private set
+
+    /** Artınca uygulama indirme sayfasına geçer. */
+    var openPageRequest by androidx.compose.runtime.mutableStateOf(0)
+        private set
+
+    private val dlScope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + Dispatchers.IO)
+
+    private fun updateDownload(key: String, f: (AttachmentDownload) -> AttachmentDownload) {
+        attachmentDownloads = attachmentDownloads.map { if (it.key == key) f(it) else it }
+    }
+
+    private fun uniqueFile(dir: File, name: String): File {
+        val safe = Attachments.sanitize(name)
+        var f = File(dir, safe)
+        if (!f.exists()) return f
+        val base = safe.substringBeforeLast('.', safe)
+        val ext  = safe.substringAfterLast('.', "").let { if (it.isEmpty()) "" else ".$it" }
+        var i = 1
+        while (f.exists()) { f = File(dir, "$base ($i)$ext"); i++ }
+        return f
+    }
+
+    /**
+     * Sohbetteki bir eki (görsel/GIF/video/dosya) "Furcord Medya" klasörüne indirir
+     * ve indirme sayfasına geçilmesini ister.
+     */
+    fun downloadAttachment(url: String, idToken: String) {
+        val info = Attachments.parse(url)
+        val key  = "${System.nanoTime()}"
+        attachmentDownloads = listOf(AttachmentDownload(key, info.name)) + attachmentDownloads
+        openPageRequest++
+        dlScope.launch {
+            try {
+                updateDownload(key) { it.copy(status = "İndiriliyor…") }
+                val data = Attachments.bytes(info, idToken) { p ->
+                    updateDownload(key) { it.copy(progress = p, status = "İndiriliyor… %${(p * 100).toInt()}") }
+                }
+                val target = uniqueFile(mediaDir, info.name)
+                target.writeBytes(data)
+                updateDownload(key) { it.copy(progress = 1f, done = true, status = "Tamamlandı — ${target.name}") }
+            } catch (e: Exception) {
+                updateDownload(key) { it.copy(error = true, done = true, status = e.message ?: "İndirme başarısız") }
+            }
+        }
+    }
+
+    fun clearFinishedAttachmentDownloads() {
+        attachmentDownloads = attachmentDownloads.filter { !it.done }
+    }
 
     data class MediaFile(val file: File, val sizeBytes: Long, val modified: Long) {
-        val isAudio: Boolean get() = file.extension.lowercase() in setOf("mp3", "m4a", "opus", "wav")
+        val isAudio: Boolean get() = file.extension.lowercase() in AUDIO_EXT
         val sizeText: String
             get() = when {
                 sizeBytes >= 1L shl 30 -> "%.2f GB".format(sizeBytes / (1L shl 30).toDouble())
@@ -43,7 +109,7 @@ object DownloadManager {
 
     /** Klasördeki medya dosyalarını en yeniden eskiye döndürür. */
     suspend fun listMedia(): List<MediaFile> = withContext(Dispatchers.IO) {
-        mediaDir.listFiles { f -> f.isFile && f.extension.lowercase() in MEDIA_EXT }
+        mediaDir.listFiles { f -> f.isFile && !f.name.endsWith(".part") && !f.name.endsWith(".ytdl") }
             ?.map { MediaFile(it, it.length(), it.lastModified()) }
             ?.sortedByDescending { it.modified }
             ?: emptyList()

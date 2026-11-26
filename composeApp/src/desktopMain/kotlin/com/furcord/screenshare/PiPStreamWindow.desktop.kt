@@ -5,6 +5,7 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import com.furcord.ui.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.window.WindowDraggableArea
 import androidx.compose.material.icons.Icons
@@ -38,6 +39,7 @@ actual fun PiPStreamWindow(
     peerVolume:        Float,
     onVolumeChange:    (Float) -> Unit,
     onClose:           () -> Unit,
+    chatPanel:         (@Composable () -> Unit)?,
 ) {
     val screenSize: Dimension = Toolkit.getDefaultToolkit().screenSize
     val pipW   = 380
@@ -58,6 +60,7 @@ actual fun PiPStreamWindow(
 
     val isFullscreen    by remember { derivedStateOf { windowState.placement == WindowPlacement.Fullscreen } }
     var showQualityMenu by remember { mutableStateOf(false) }
+    var chatOpen        by remember { mutableStateOf(true) }
     val currentQuality  by ScreenEngine.quality.collectAsState()
 
     // Kontrol gÃ¶rÃ¼nÃ¼rlÃ¼ÄŸÃ¼: fare hareket edince 5 saniye gÃ¶ster
@@ -83,9 +86,12 @@ actual fun PiPStreamWindow(
         undecorated    = true,
         resizable      = !isFullscreen,
     ) {
+        Box(Modifier.fillMaxSize()) {
         Box(
             modifier = Modifier
                 .fillMaxSize()
+                .padding(end = if (isFullscreen && chatPanel != null && chatOpen) 340.dp else 0.dp)
+
                 .background(Color(0xFF111214))
                 .pointerInput(Unit) {
                     awaitPointerEventScope {
@@ -102,7 +108,13 @@ actual fun PiPStreamWindow(
                 Image(
                     bitmap             = bmp,
                     contentDescription = null,
-                    modifier           = Modifier.fillMaxSize(),
+                    modifier           = Modifier.fillMaxSize().then(
+                        // Küçük pencerede videoya tıklayınca tam ekran
+                        if (!isFullscreen) Modifier.clickable(
+                            indication = null,
+                            interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
+                        ) { windowState.placement = WindowPlacement.Fullscreen } else Modifier
+                    ),
                     contentScale       = ContentScale.Fit,
                 )
             } else {
@@ -191,6 +203,12 @@ actual fun PiPStreamWindow(
                     }
 
                     // Tam ekran / küçült butonu
+                    // Yayın sohbetini aç/kapat (tam ekranda)
+                    if (isFullscreen && chatPanel != null) {
+                        TextButton(onClick = { chatOpen = !chatOpen }) {
+                            Text(if (chatOpen) "Sohbeti Gizle" else "Sohbeti Göster", color = Color(0xFFB5BAC1), fontSize = 12.sp)
+                        }
+                    }
                     IconButton(
                         onClick  = {
                             if (windowState.placement == WindowPlacement.Fullscreen) {
@@ -241,6 +259,11 @@ actual fun PiPStreamWindow(
                     }
                 }
             }
+        }
+        // ── Yayın sohbeti (Twitch tarzı sağ panel, tam ekranda) ───────────
+        if (isFullscreen && chatPanel != null && chatOpen) {
+            Box(Modifier.align(Alignment.CenterEnd).width(340.dp).fillMaxHeight()) { chatPanel() }
+        }
         }
     }
 }

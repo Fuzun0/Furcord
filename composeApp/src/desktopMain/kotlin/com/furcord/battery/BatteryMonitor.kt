@@ -38,6 +38,23 @@ object BatteryReader {
         ConvertTo-Json -InputObject @(§out) -Compress
     """.trimIndent().replace('§', '$')
 
+    private val lastSeen = HashMap<String, Pair<BatteryDevice, Long>>()
+    private const val STALE_MS = 15 * 60_000L
+
+    /**
+     * [read] anlık/aralıklı sonuç verebilir (PowerShell zaman aşımı, uyuyan cihaz vb.).
+     * Bu yüzden cihazlar son görüldükleri değerle [STALE_MS] boyunca tutulur → gösterge titremez/kaybolmaz.
+     */
+    fun readStable(): List<BatteryDevice> {
+        val now = System.currentTimeMillis()
+        val fresh = runCatching { read() }.getOrDefault(emptyList())
+        synchronized(lastSeen) {
+            fresh.forEach { lastSeen[it.name] = it to now }
+            lastSeen.entries.removeIf { now - it.value.second > STALE_MS }
+            return lastSeen.values.map { it.first }
+        }
+    }
+
     /** Bluetooth (Windows'un bildirdiği) + Razer 2.4 GHz/kablolu cihazlar. */
     fun read(): List<BatteryDevice> =
         (readBluetooth() + RazerHid.read() + GenericHid.read() + XInputBattery.read()).distinctBy { it.name }

@@ -15,4 +15,5 @@ expect fun PiPStreamWindow(
     peerVolume:        Float,
     onVolumeChange:    (Float) -> Unit,
     onClose:           () -> Unit,
+    chatPanel:         (@Composable () -> Unit)? = null,
 )

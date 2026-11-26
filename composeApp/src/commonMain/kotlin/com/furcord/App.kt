@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.ui.graphics.Color
@@ -20,7 +21,7 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
+import com.furcord.ui.TextButton
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -82,6 +83,8 @@ fun App() {
         var authState   by remember { mutableStateOf<AppAuthState>(AppAuthState.Loading) }
         var serverState by remember { mutableStateOf<AppServerState>(AppServerState.None) }
         var dmTarget    by remember { mutableStateOf<DmTarget?>(null) }
+        // Ses bağlantısı süren sunucu (id, isim) — başka ekrandayken de canlı tutulur
+        var voiceServer by remember { mutableStateOf<Pair<String, String>?>(null) }
         var dmWindowOpen by remember { mutableStateOf(false) }
         // Giriş sonrası Firestore'dan profil yüklemek için bekleyen kullanıcı
         var pendingProfileLoad by remember { mutableStateOf<AuthUser?>(null) }
@@ -359,6 +362,20 @@ fun App() {
                     )
                 }
 
+                // Sohbetten "İndir"e basılınca indirme sayfasına geç (ses bağlantısı korunur)
+                val dlRequest = com.furcord.download.DownloadManager.openPageRequest
+                LaunchedEffect(dlRequest) {
+                    if (dlRequest > 0) serverState = AppServerState.Downloader
+                }
+
+                val doSignOut: () -> Unit = {
+                    FirebaseAuth.signOut()
+                    DmRepository.stop()
+                    voiceServer = null
+                    serverState = AppServerState.None
+                    authState   = AppAuthState.Unauthenticated
+                }
+
                 Box(Modifier.fillMaxSize()) {
                     Row(Modifier.fillMaxSize()) {
 
@@ -389,12 +406,7 @@ fun App() {
                                         onJoinServer       = { id, name ->
                                             serverState = AppServerState.InServer(id, name)
                                         },
-                                        onSignOut          = {
-                                            FirebaseAuth.signOut()
-                                            DmRepository.stop()
-                                            serverState = AppServerState.None
-                                            authState   = AppAuthState.Unauthenticated
-                                        },
+                                        onSignOut          = doSignOut,
                                         onUserUpdated      = { newName, newPhoto ->
                                             authState = AppAuthState.Authenticated(
                                                 currentUser.copy(displayName = newName, photoURL = newPhoto)
@@ -414,11 +426,23 @@ fun App() {
                                     DownloaderScreen(onBack = { serverState = AppServerState.None })
                                 }
 
-                                is AppServerState.InServer -> {
-                                    key(ss.serverId) {
+                                is AppServerState.InServer -> {}
+                            }
+
+                            // Sunucu ekranları: görünen sunucu + (varsa) ses bağlantısı süren sunucu.
+                            // Ses sunucusu başka ekrandayken de kompozisyonda kalır (gizli) → bağlantı kesilmez.
+                            val visibleServer = serverState as? AppServerState.InServer
+                            val shown = listOfNotNull(
+                                visibleServer?.let { it.serverId to it.serverName },
+                                voiceServer,
+                            ).distinctBy { it.first }
+                            shown.forEach { (sid, sname) ->
+                                key(sid) {
+                                    val isVisible = visibleServer?.serverId == sid
+                                    Box(if (isVisible) Modifier.fillMaxSize() else Modifier.size(0.dp)) {
                                         ServerDetailScreen(
-                                            serverId      = ss.serverId,
-                                            serverName    = ss.serverName,
+                                            serverId      = sid,
+                                            serverName    = sname,
                                             currentUser   = currentUser,
                                             hasUpdate     = pendingUpdate != null && !updateDismissed,
                                             onLeaveServer = { serverState = AppServerState.None },
@@ -432,6 +456,12 @@ fun App() {
                                                 DmRepository.markRead(listOf(currentUser.uid, uid).sorted().joinToString("_"))
                                                 dmTarget = DmTarget(uid, name)
                                                 dmWindowOpen = true
+                                            },
+                                            onSignOut = doSignOut,
+                                            onJoinServer = { id, name -> serverState = AppServerState.InServer(id, name) },
+                                            onVoiceConnectedChange = { connected ->
+                                                if (connected) voiceServer = sid to sname
+                                                else if (voiceServer?.first == sid) voiceServer = null
                                             },
                                         )
                                     }

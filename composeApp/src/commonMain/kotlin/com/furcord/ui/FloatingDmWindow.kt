@@ -1,7 +1,7 @@
 package com.furcord.ui
 
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
+import com.furcord.ui.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -19,6 +19,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.key.*
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.isSecondaryPressed
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -235,8 +236,20 @@ fun FloatingDmWindow(
                                 items(conversations, key = { it.dmId }) { conv ->
                                     val isUnread   = unreadThreads.any { it.dmId == conv.dmId }
                                     val isSelected = conv.otherUid == selectedUid
+                                    var convMenu by remember { mutableStateOf(false) }
+                                    Box {
                                     Row(
                                         modifier = Modifier
+                                            .pointerInput(conv.dmId) {
+                                                awaitPointerEventScope {
+                                                    while (true) {
+                                                        val event = awaitPointerEvent()
+                                                        if (event.type == androidx.compose.ui.input.pointer.PointerEventType.Press &&
+                                                            event.buttons.isSecondaryPressed
+                                                        ) convMenu = true
+                                                    }
+                                                }
+                                            }
                                             .fillMaxWidth()
                                             .background(
                                                 when {
@@ -283,6 +296,21 @@ fun FloatingDmWindow(
                                                 overflow = TextOverflow.Ellipsis,
                                             )
                                         }
+                                    }
+                                    DropdownMenu(
+                                        expanded = convMenu,
+                                        onDismissRequest = { convMenu = false },
+                                        containerColor = Color(0xFF111214),
+                                    ) {
+                                        DropdownMenuItem(
+                                            text = { Text("🗑 Sohbeti Sil", color = Color(0xFFED4245), fontSize = 13.sp) },
+                                            onClick = {
+                                                convMenu = false
+                                                DmRepository.clearConversation(conv.dmId)
+                                                if (selectedUid == conv.otherUid) { selectedUid = null; selectedName = "" }
+                                            },
+                                        )
+                                    }
                                     }
                                 }
                             }
@@ -338,6 +366,11 @@ private fun DmChatPane(
     var inputText     by remember(recipientUid) { mutableStateOf("") }
     var sending       by remember { mutableStateOf(false) }
     var sendingImage  by remember { mutableStateOf(false) }
+    var sendError     by remember { mutableStateOf("") }
+    // Kullanıcının bu sohbeti sildiği andan önceki mesajlar gösterilmez
+    val clearedTs = remember(recipientUid) {
+        DmRepository.clearedAt(listOf(currentUser.uid, recipientUid).sorted().joinToString("_"))
+    }
 
     // Periyodik mesaj yoklama — timestamp cursor (kota tasarrufu)
     LaunchedEffect(recipientUid) {
@@ -385,8 +418,7 @@ private fun DmChatPane(
     fun sendImage() {
         if (sendingImage) return
         scope.launch(Dispatchers.IO) {
-            val dialog = FileDialog(null as Frame?, "Resim Seç", FileDialog.LOAD)
-            dialog.file = "*.jpg;*.jpeg;*.png;*.webp;*.gif"
+            val dialog = FileDialog(null as Frame?, "Dosya Seç (görsel, GIF, video…)", FileDialog.LOAD)
             dialog.isVisible = true
             val selectedFile = dialog.directory?.let { dir ->
                 dialog.file?.let { name -> java.io.File(dir, name) }
@@ -395,7 +427,7 @@ private fun DmChatPane(
             withContext(Dispatchers.Main) { sendingImage = true }
             try {
                 val senderNick = currentUser.nickname.ifBlank { currentUser.displayName.ifBlank { currentUser.email } }
-                val result = object { val downloadUrl = com.furcord.auth.ImageData.toDataUrl(selectedFile.readBytes(), maxSide = 1280) }
+                val attUrl = com.furcord.download.Attachments.prepare(selectedFile, currentUser.idToken)
                 FirestoreClient.sendDm(
                     senderUid    = currentUser.uid,
                     senderName   = senderNick,
@@ -403,13 +435,24 @@ private fun DmChatPane(
                     recipientUid = recipientUid,
                     text         = "",
                     idToken      = currentUser.idToken,
-                    imageUrl     = result.downloadUrl,
+                    imageUrl     = attUrl,
                 )
                 val fresh = FirestoreClient.listDms(currentUser.uid, recipientUid, currentUser.idToken)
                 withContext(Dispatchers.Main) { if (fresh.isNotEmpty()) messages = fresh }
-            } catch (_: Exception) {}
+            } catch (e: Exception) {
+                withContext(Dispatchers.Main) { sendError = e.message ?: "Dosya gönderilemedi." }
+            }
             withContext(Dispatchers.Main) { sendingImage = false }
         }
+    }
+
+    if (sendError.isNotEmpty()) {
+        AlertDialog(
+            onDismissRequest = { sendError = "" },
+            title = { Text("Dosya gönderilemedi") },
+            text  = { Text(sendError) },
+            confirmButton = { TextButton(onClick = { sendError = "" }) { Text("Tamam") } },
+        )
     }
 
     Column(modifier = modifier) {
@@ -445,7 +488,7 @@ private fun DmChatPane(
             verticalArrangement = Arrangement.spacedBy(3.dp),
         ) {
             item { Spacer(Modifier.height(6.dp)) }
-            items(messages, key = { it.id }) { msg ->
+            items(messages.filter { it.timestamp > clearedTs }, key = { it.id }) { msg ->
                 val isMine = msg.uid == currentUser.uid
                 Row(
                     modifier              = Modifier.fillMaxWidth(),
@@ -472,18 +515,15 @@ private fun DmChatPane(
                         Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                             if (msg.text.isNotBlank()) Text(msg.text, color = FwText, fontSize = 13.sp)
                             if (msg.imageUrl.isNotBlank()) {
-                                val bmp = rememberCachedImage(msg.imageUrl)
-                                if (bmp != null) {
-                                    androidx.compose.foundation.Image(
-                                        bitmap             = bmp!!,
-                                        contentDescription = "Görsel",
-                                        modifier           = Modifier.widthIn(max = 200.dp).heightIn(max = 150.dp)
-                                            .clip(RoundedCornerShape(6.dp)),
-                                        contentScale       = androidx.compose.ui.layout.ContentScale.Fit,
-                                    )
-                                } else {
-                                    CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp, color = FwAccent)
-                                }
+                                AttachmentView(
+                                    url        = msg.imageUrl,
+                                    idToken    = currentUser.idToken,
+                                    maxWidth   = 220.dp,
+                                    maxHeight  = 180.dp,
+                                    onDownload = {
+                                        com.furcord.download.DownloadManager.downloadAttachment(msg.imageUrl, currentUser.idToken)
+                                    },
+                                )
                             }
                         }
                     }
