@@ -88,6 +88,13 @@ object VoiceEngine {
     /** Mikrofon giriş kazanç: 0.0 = sessiz, 1.0 = normal, 2.0 = 2x. Disk'e kaydedilir. */
     @Volatile var micGain: Float = AppPrefs.micGain
 
+    /**
+     * Ses kanalındayken mikrofon hattı motor tarafından tutulur; ikinci kez açılamaz.
+     * Mikrofon testi bu kancayla ham 16-bit PCM karelerini (little-endian, 48 kHz mono) dinler.
+     * Capture thread'inde çağrılır — hızlı tut.
+     */
+    @Volatile var micTap: ((ByteArray, Int) -> Unit)? = null
+
     var localPublicIp: String = ""; private set
     var localPort: Int = 0;         private set
 
@@ -349,6 +356,7 @@ object VoiceEngine {
         while (isActive) {
             val read = try { micLine?.read(pcmBuf, 0, FRAME_BYTES) ?: break } catch (_: Exception) { break }
             if (read < FRAME_BYTES) continue
+            micTap?.let { runCatching { it(pcmBuf, FRAME_BYTES) } }   // mikrofon testi (hat zaten açık)
             if (isMuted) { vadOpen = false; aboveCount = 0; hangover = 0; preRoll.clear(); continue }
 
             // Mikrofon kazancı + yumuşak sınırlayıcı (hard clip yerine tepe normalizasyonu)

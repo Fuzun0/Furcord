@@ -407,6 +407,7 @@ fun App() {
                             onServerClick  = { id, name -> serverState = AppServerState.InServer(id, name) },
                             onOpenDm       = { dmWindowOpen = true },
                             idToken        = currentUser.idToken,
+                            voiceServerId  = voiceServer?.first,
                         )
 
                         // ── İçerik ──

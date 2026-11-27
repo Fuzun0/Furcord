@@ -6,6 +6,8 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.rounded.Send
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -110,8 +112,12 @@ fun StreamChatPanel(
             }
             items(msgs, key = { it.id }) { m ->
                 val c = NameColors[(m.uid.hashCode() and 0x7fffffff) % NameColors.size]
+                val time = remember(m.timestamp) {
+                    java.text.SimpleDateFormat("HH:mm", java.util.Locale.getDefault()).format(java.util.Date(m.timestamp))
+                }
                 Text(
                     buildAnnotatedString {
+                        withStyle(SpanStyle(color = Color(0xFF7C7C86), fontSize = 11.sp)) { append("$time  ") }
                         withStyle(SpanStyle(color = c, fontWeight = FontWeight.Bold)) { append(m.username) }
                         withStyle(SpanStyle(color = Color(0xFFEFEFF1))) { append(": ${m.text}") }
                     },
@@ -121,24 +127,43 @@ fun StreamChatPanel(
         }
 
         if (error.isNotEmpty()) Text(error, color = Color(0xFFED4245), fontSize = 11.sp, modifier = Modifier.padding(horizontal = 10.dp))
-        OutlinedTextField(
-            value = input,
-            onValueChange = { input = it.take(500); error = "" },
-            placeholder = { Text("Mesaj gönder", color = Color(0xFF9A9AA3), fontSize = 13.sp) },
-            singleLine = true,
-            shape = RoundedCornerShape(8.dp),
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(10.dp)
-                .onPreviewKeyEvent { e ->
-                    if (e.type == KeyEventType.KeyDown && e.key == Key.Enter) { send(); true } else false
-                },
-            colors = OutlinedTextFieldDefaults.colors(
-                focusedTextColor = Color.White, unfocusedTextColor = Color.White,
-                focusedBorderColor = AppColors.Accent, unfocusedBorderColor = Color(0xFF3F3F46),
-                focusedContainerColor = Color(0xFF26262C), unfocusedContainerColor = Color(0xFF26262C),
-                cursorColor = AppColors.Accent,
-            ),
-        )
+        Row(
+            Modifier.fillMaxWidth().padding(10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            OutlinedTextField(
+                value = input,
+                onValueChange = { input = it.take(500); error = "" },
+                placeholder = { Text("Mesaj gönder", color = Color(0xFF9A9AA3), fontSize = 13.sp) },
+                singleLine = true,
+                shape = RoundedCornerShape(8.dp),
+                modifier = Modifier
+                    .weight(1f)
+                    .onPreviewKeyEvent { e ->
+                        if (e.key == Key.Enter) {
+                            if (e.type == KeyEventType.KeyDown) send()
+                            true
+                        } else false
+                    },
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedTextColor = Color.White, unfocusedTextColor = Color.White,
+                    focusedBorderColor = AppColors.Accent, unfocusedBorderColor = Color(0xFF3F3F46),
+                    focusedContainerColor = Color(0xFF26262C), unfocusedContainerColor = Color(0xFF26262C),
+                    cursorColor = AppColors.Accent,
+                ),
+            )
+            IconButton(
+                onClick = ::send,
+                enabled = input.isNotBlank(),
+                modifier = Modifier.size(40.dp),
+            ) {
+                Icon(
+                    Icons.AutoMirrored.Rounded.Send, "Gönder",
+                    tint = if (input.isNotBlank()) AppColors.Accent else Color(0xFF6B6B73),
+                    modifier = Modifier.size(20.dp),
+                )
+            }
+        }
     }
 }

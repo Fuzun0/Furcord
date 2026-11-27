@@ -73,7 +73,21 @@ data class ServerInviteNotif(
     val fromUid:    String,
     val fromName:   String,
     val timestamp:  Long,
+    /** true: davet değil, sunucu sahibinin katılma isteğini onayladığı bildirim. */
+    val approved:   Boolean = false,
 )
+
+/** Sunucu sahibine gelen "sunucuna katılmak istiyorum" isteği. */
+data class JoinRequestNotif(
+    val serverId:   String,
+    val serverName: String,
+    val fromUid:    String,
+    val fromName:   String,
+    val timestamp:  Long,
+)
+
+/** İsimle sunucu arama sonucu. */
+data class ServerSearchResult(val id: String, val name: String, val ownerUid: String)
 
 /** Uygulama güncelleme bilgisi. */
 data class AppVersionInfo(
@@ -343,6 +357,82 @@ object FirestoreClient {
             val name = doc.fields.str("name").takeIf { it.isNotEmpty() } ?: sid
             sid to name
         }
+
+    /** Sunucuyu adıyla arar (tam eşleşme; yoksa ilk harfi büyük/küçük varyantlarını dener). */
+    suspend fun searchServerByName(name: String, idToken: String): ServerSearchResult? =
+        withContext(Dispatchers.IO) {
+            val variants = linkedSetOf(
+                name, name.lowercase(), name.uppercase(),
+                name.replaceFirstChar { it.uppercaseChar() },
+            )
+            for (v in variants) {
+                val doc = runStructuredQuery("servers", "name", v, idToken) ?: continue
+                val sid   = doc.name.substringAfterLast("/").takeIf { it.isNotEmpty() } ?: continue
+                val owner = doc.fields.str("creatorUid")
+                if (owner.isEmpty()) continue
+                return@withContext ServerSearchResult(sid, doc.fields.str("name").ifEmpty { v }, owner)
+            }
+            null
+        }
+
+    /** Sunucu sahibinin bildirim kutusuna "katılma isteği" bırakır. */
+    suspend fun sendJoinRequest(
+        ownerUid: String, serverId: String, serverName: String,
+        fromUid: String, fromName: String, idToken: String,
+    ) = withContext(Dispatchers.IO) {
+        fun String.esc() = replace("\\", "\\\\").replace("\"", "\\\"")
+        val body = """{"fields":{
+            "type":{"stringValue":"join_request"},
+            "serverId":{"stringValue":"${serverId.esc()}"},
+            "serverName":{"stringValue":"${serverName.esc()}"},
+            "fromUid":{"stringValue":"${fromUid.esc()}"},
+            "fromName":{"stringValue":"${fromName.esc()}"},
+            "timestamp":{"integerValue":"${System.currentTimeMillis()}"}
+        }}""".trimIndent()
+        val (code, _) = request("PATCH", "$BASE/users/$ownerUid/notifications/join_${serverId}_$fromUid", idToken = idToken, body = body)
+        if (code !in 200..299) throw Exception("HTTP $code")
+    }
+
+    /** Sahibin bekleyen katılma isteklerini listeler. */
+    suspend fun listJoinRequests(myUid: String, idToken: String): List<JoinRequestNotif> =
+        withContext(Dispatchers.IO) {
+            val (code, text) = request("GET", "$BASE/users/$myUid/notifications?pageSize=100", idToken = idToken)
+            if (code !in 200..299) return@withContext emptyList()
+            val resp = runCatching { fsJson.decodeFromString<FsListResponse>(text) }.getOrNull()
+                ?: return@withContext emptyList()
+            resp.documents.mapNotNull { doc ->
+                val f = doc.fields
+                if (f.str("type") != "join_request") return@mapNotNull null
+                val sid = f.str("serverId").takeIf { it.isNotEmpty() } ?: return@mapNotNull null
+                val uid = f.str("fromUid").takeIf { it.isNotEmpty() } ?: return@mapNotNull null
+                JoinRequestNotif(sid, f.str("serverName"), uid, f.str("fromName"), f.lng("timestamp"))
+            }.sortedByDescending { it.timestamp }
+        }
+
+    /** İsteği kaldırır (kabul/red sonrası). */
+    suspend fun removeJoinRequest(ownerUid: String, serverId: String, fromUid: String, idToken: String) =
+        withContext(Dispatchers.IO) {
+            runCatching { request("DELETE", "$BASE/users/$ownerUid/notifications/join_${serverId}_$fromUid", idToken = idToken) }
+        }
+
+    /** İsteği kabul eder: istek sahibine "onaylandı" bildirimi gönderir (o da Katıl'a basınca sunucuya girer). */
+    suspend fun approveJoinRequest(
+        req: JoinRequestNotif, ownerUid: String, ownerName: String, idToken: String,
+    ) = withContext(Dispatchers.IO) {
+        fun String.esc() = replace("\\", "\\\\").replace("\"", "\\\"")
+        val body = """{"fields":{
+            "type":{"stringValue":"server_invite"},
+            "approved":{"booleanValue":true},
+            "serverId":{"stringValue":"${req.serverId.esc()}"},
+            "serverName":{"stringValue":"${req.serverName.esc()}"},
+            "fromUid":{"stringValue":"${ownerUid.esc()}"},
+            "fromName":{"stringValue":"${ownerName.esc()}"},
+            "timestamp":{"integerValue":"${System.currentTimeMillis()}"}
+        }}""".trimIndent()
+        val (code, _) = request("PATCH", "$BASE/users/${req.fromUid}/notifications/${req.serverId}", idToken = idToken, body = body)
+        if (code !in 200..299) throw Exception("HTTP $code")
+        removeJoinRequest(ownerUid, req.serverId, req.fromUid, idToken)
+    }
 
     /** Lists voice channels for the given server. */
     suspend fun listVoiceChannels(serverId: String, idToken: String): List<VoiceChannel> =
@@ -1299,7 +1389,8 @@ object FirestoreClient {
                 val f   = doc.fields
                 if (f.str("type") != "server_invite") return@mapNotNull null
                 val sid = f.str("serverId").takeIf { it.isNotEmpty() } ?: return@mapNotNull null
-                ServerInviteNotif(sid, f.str("serverName"), f.str("fromUid"), f.str("fromName"), f.lng("timestamp"))
+                ServerInviteNotif(sid, f.str("serverName"), f.str("fromUid"), f.str("fromName"), f.lng("timestamp"),
+                    approved = f.bool("approved"))
             }.sortedByDescending { it.timestamp }
         }
 

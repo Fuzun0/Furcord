@@ -27,6 +27,7 @@ import androidx.compose.ui.window.PopupProperties
 import com.furcord.auth.AuthUser
 import com.furcord.auth.FirestoreClient
 import com.furcord.auth.FriendRequest
+import com.furcord.auth.JoinRequestNotif
 import com.furcord.auth.ServerInviteNotif
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
@@ -58,6 +59,7 @@ fun NotificationBell(
 
     var friendRequests  by remember { mutableStateOf<List<FriendRequest>>(emptyList()) }
     var serverInvites   by remember { mutableStateOf<List<ServerInviteNotif>>(emptyList()) }
+    var joinRequests    by remember { mutableStateOf<List<JoinRequestNotif>>(emptyList()) }
     var showPanel       by remember { mutableStateOf(false) }
     var expandFriends   by remember { mutableStateOf(true) }
     var expandInvites   by remember { mutableStateOf(true) }
@@ -66,7 +68,7 @@ fun NotificationBell(
     var expandedFriendUid   by remember { mutableStateOf<String?>(null) }
     var expandedInviteId    by remember { mutableStateOf<String?>(null) }
 
-    val totalCount = friendRequests.size + serverInvites.size + (if (hasUpdate) 1 else 0)
+    val totalCount = friendRequests.size + serverInvites.size + joinRequests.size + (if (hasUpdate) 1 else 0)
 
     // 10 sn'de bir bildirimleri yenile (unified: users/{uid}/notifications)
     LaunchedEffect(currentUser.uid) {
@@ -74,6 +76,7 @@ fun NotificationBell(
             runCatching {
                 friendRequests = FirestoreClient.listFriendRequests(currentUser.uid, currentUser.idToken)
                 serverInvites  = FirestoreClient.listServerInviteNotifs(currentUser.uid, currentUser.idToken)
+                joinRequests   = FirestoreClient.listJoinRequests(currentUser.uid, currentUser.idToken)
             }
             delay(10_000)
         }
@@ -208,6 +211,51 @@ fun NotificationBell(
                                 }
                             }
 
+                            // ── Sunucuya Katılma İstekleri (sunucu sahibi) ─
+                            if (joinRequests.isNotEmpty()) {
+                                item {
+                                    if (friendRequests.isNotEmpty()) {
+                                        HorizontalDivider(color = NB_OUTLINE, modifier = Modifier.padding(vertical = 4.dp))
+                                    }
+                                    Row(
+                                        Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 6.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                    ) {
+                                        Text("Katılma İstekleri", color = NB_TEXT,
+                                            fontWeight = FontWeight.SemiBold, fontSize = 13.sp,
+                                            modifier = Modifier.weight(1f))
+                                        Box(
+                                            Modifier.clip(CircleShape).background(NB_ACCENT)
+                                                .padding(horizontal = 6.dp, vertical = 2.dp),
+                                        ) {
+                                            Text("${joinRequests.size}", color = Color.White, fontSize = 11.sp)
+                                        }
+                                    }
+                                }
+                                items(joinRequests, key = { "${it.serverId}_${it.fromUid}" }) { req ->
+                                    NotifJoinRequestRow(
+                                        req = req,
+                                        onAccept = {
+                                            scope.launch {
+                                                runCatching {
+                                                    FirestoreClient.approveJoinRequest(
+                                                        req, currentUser.uid,
+                                                        currentUser.nickname.ifEmpty { currentUser.displayName.ifEmpty { currentUser.email } },
+                                                        currentUser.idToken,
+                                                    )
+                                                }.onSuccess { joinRequests = joinRequests.filter { it !== req } }
+                                            }
+                                        },
+                                        onReject = {
+                                            scope.launch {
+                                                FirestoreClient.removeJoinRequest(currentUser.uid, req.serverId, req.fromUid, currentUser.idToken)
+                                                joinRequests = joinRequests.filter { it !== req }
+                                            }
+                                        },
+                                    )
+                                }
+                            }
+
                             // ── Sunucu Davetleri ──────────────────────────
                             if (serverInvites.isNotEmpty()) {
                                 item {
@@ -328,6 +376,50 @@ private fun NotifFriendRow(
     }
 }
 
+// ── Katılma isteği satırı (sunucu sahibine) ───────────────────────────────────
+@Composable
+private fun NotifJoinRequestRow(
+    req: JoinRequestNotif,
+    onAccept: () -> Unit,
+    onReject: () -> Unit,
+) {
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .padding(start = 16.dp, bottom = 2.dp)
+            .clip(RoundedCornerShape(6.dp))
+            .background(AppColors.BgDark)
+            .padding(horizontal = 10.dp, vertical = 8.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            UserAvatar(displayName = req.fromName, photoURL = "", size = 28)
+            Spacer(Modifier.width(8.dp))
+            Text(
+                "${req.fromName} kullanıcısı \"${req.serverName}\" sunucuna giriş isteği gönderdi",
+                color = NB_TEXT, fontSize = 12.sp, modifier = Modifier.weight(1f),
+            )
+        }
+        Row(
+            Modifier.fillMaxWidth().padding(top = 8.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Button(
+                onClick = onAccept,
+                modifier = Modifier.weight(1f).height(32.dp),
+                colors = ButtonDefaults.buttonColors(containerColor = NB_GREEN),
+                contentPadding = PaddingValues(0.dp),
+            ) { Text("Kabul Et", fontSize = 12.sp, color = Color.White) }
+            OutlinedButton(
+                onClick = onReject,
+                modifier = Modifier.weight(1f).height(32.dp),
+                colors = ButtonDefaults.outlinedButtonColors(contentColor = NB_RED),
+                border = androidx.compose.foundation.BorderStroke(1.dp, NB_RED),
+                contentPadding = PaddingValues(0.dp),
+            ) { Text("Reddet", fontSize = 12.sp, color = NB_RED) }
+        }
+    }
+}
+
 // ── Sunucu daveti satırı ──────────────────────────────────────────────────────
 @Composable
 private fun NotifServerRow(
@@ -358,7 +450,7 @@ private fun NotifServerRow(
             Column(Modifier.weight(1f)) {
                 Text(inv.serverName, color = NB_TEXT, fontSize = 13.sp, fontWeight = FontWeight.Medium,
                     maxLines = 1, overflow = TextOverflow.Ellipsis)
-                Text("${inv.fromName} seni davet etti", color = NB_SUB, fontSize = 10.sp,
+                Text(if (inv.approved) "${inv.fromName} isteğini kabul etti" else "${inv.fromName} seni davet etti", color = NB_SUB, fontSize = 10.sp,
                     maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
             Text(if (isExpanded) "▲" else "▼", color = NB_SUB, fontSize = 10.sp)

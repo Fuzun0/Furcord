@@ -19,42 +19,43 @@ import kotlinx.coroutines.launch
 /**
  * "Sunucu ekle" penceresi — Oluştur / Katıl sekmeleri.
  *
- * @param onSearch  Davet koduyla sunucu arar → (id, isim) veya null (bulunamadı). Hata fırlatabilir.
+ * @param onSearch  Sunucu adıyla arar → sonuç veya null (bulunamadı). Hata fırlatabilir.
  * @param onCreate  Sunucu oluşturur → hata mesajı döner, başarılıysa null.
- * @param onJoin    Bulunan sunucuya katılır.
+ * @param onJoin    Bulunan sunucunun sahibine katılma isteği gönderir → hata mesajı, başarılıysa null.
  */
 @Composable
 fun AddServerDialog(
     onDismiss: () -> Unit,
-    onSearch: suspend (inviteCode: String) -> Pair<String, String>?,
+    onSearch: suspend (name: String) -> com.furcord.auth.ServerSearchResult?,
     onCreate: suspend (name: String) -> String?,
-    onJoin: (serverId: String, serverName: String) -> Unit,
+    onJoin: suspend (server: com.furcord.auth.ServerSearchResult) -> String?,
 ) {
     val scope = rememberCoroutineScope()
     var tab by remember { mutableIntStateOf(0) }          // 0 = Oluştur, 1 = Katıl
     var text by remember { mutableStateOf("") }
     var loading by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf("") }
-    var found by remember { mutableStateOf<Pair<String, String>?>(null) }
+    var found by remember { mutableStateOf<com.furcord.auth.ServerSearchResult?>(null) }
+    var sent by remember { mutableStateOf(false) }
 
     fun submit() {
         val value = text.trim()
         if (value.isEmpty() || loading) return
         val result = found
-        if (tab == 1 && result != null) {
-            onJoin(result.first, result.second)
-            return
-        }
+        if (sent) { onDismiss(); return }
         scope.launch {
             loading = true
             error = ""
             try {
-                if (tab == 0) {
+                if (tab == 1 && result != null) {
+                    error = onJoin(result) ?: ""
+                    if (error.isEmpty()) sent = true
+                } else if (tab == 0) {
                     error = onCreate(value) ?: ""
                     if (error.isEmpty()) onDismiss()
                 } else {
                     found = onSearch(value)
-                    if (found == null) error = "Sunucu bulunamadı. Davet kodunu kontrol edin."
+                    if (found == null) error = "Bu isimde sunucu bulunamadı."
                 }
             } catch (e: Exception) {
                 error = "Bağlantı hatası: ${e.message}"
@@ -83,7 +84,7 @@ fun AddServerDialog(
                 listOf("Oluştur", "Katıl").forEachIndexed { i, title ->
                     Tab(
                         selected = tab == i,
-                        onClick = { tab = i; text = ""; error = ""; found = null },
+                        onClick = { tab = i; text = ""; error = ""; found = null; sent = false },
                         text = { Text(title, fontSize = 13.sp) },
                         selectedContentColor = AppColors.Accent,
                         unselectedContentColor = AppColors.TextMuted,
@@ -93,11 +94,12 @@ fun AddServerDialog(
 
             OutlinedTextField(
                 value = text,
-                onValueChange = { text = it; error = ""; found = null },
+                onValueChange = { text = it; error = ""; found = null; sent = false },
+                enabled = !sent,
                 singleLine = true,
                 placeholder = {
                     Text(
-                        if (tab == 0) "Sunucuna bir isim ver" else "Davet kodunu gir",
+                        if (tab == 0) "Sunucuna bir isim ver" else "Sunucu adını ara",
                         color = AppColors.TextSubtle, fontSize = 13.sp,
                     )
                 },
@@ -118,6 +120,13 @@ fun AddServerDialog(
                 Text(error, fontSize = 12.sp, color = AppColors.Danger)
             }
 
+            if (sent) {
+                Text(
+                    "İstek gönderildi. Sunucu sahibi kabul ettiğinde bildirimlerine \"Katıl\" daveti düşecek.",
+                    fontSize = 12.sp, color = AppColors.Online,
+                )
+            }
+
             val result = found
             if (tab == 1 && result != null) {
                 Row(
@@ -134,12 +143,12 @@ fun AddServerDialog(
                         contentAlignment = Alignment.Center,
                     ) {
                         Text(
-                            result.second.take(1).uppercase(),
+                            result.name.take(1).uppercase(),
                             color = Color.White, fontWeight = FontWeight.SemiBold, fontSize = 14.sp,
                         )
                     }
                     Text(
-                        result.second,
+                        result.name,
                         fontSize = 14.sp, color = AppColors.TextPrimary,
                         maxLines = 1, overflow = TextOverflow.Ellipsis,
                     )
@@ -166,7 +175,8 @@ fun AddServerDialog(
                         Text(
                             when {
                                 tab == 0 -> "Oluştur"
-                                found != null -> "Katıl"
+                                sent -> "Tamam"
+                                found != null -> "İstek Gönder"
                                 else -> "Ara"
                             },
                             fontWeight = FontWeight.SemiBold,

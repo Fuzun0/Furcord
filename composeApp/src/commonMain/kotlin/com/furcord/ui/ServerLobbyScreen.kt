@@ -135,10 +135,7 @@ fun ServerLobbyScreen(
     if (showAddServer) {
         AddServerDialog(
             onDismiss = { showAddServer = false },
-            onSearch  = { code ->
-                FirestoreClient.getServerByInvite(code.uppercase(), currentUser.idToken)
-                    ?: FirestoreClient.getServerByInvite(code, currentUser.idToken)
-            },
+            onSearch  = { name -> FirestoreClient.searchServerByName(name, currentUser.idToken) },
             onCreate  = { name ->
                 try {
                     // 1 sunucu limiti: kullanıcının zaten sunucusu var mı?
@@ -159,7 +156,21 @@ fun ServerLobbyScreen(
                     "Oluşturulamadı: ${e.message}"
                 }
             },
-            onJoin    = { id, name -> showAddServer = false; connectToServer(id, name) },
+            onJoin    = { s ->
+                when {
+                    s.ownerUid == currentUser.uid -> "Bu zaten senin sunucun."
+                    recentServers.any { it.first == s.id } -> "Bu sunucuya zaten katılmışsın."
+                    else -> try {
+                        FirestoreClient.sendJoinRequest(
+                            ownerUid = s.ownerUid, serverId = s.id, serverName = s.name,
+                            fromUid = currentUser.uid,
+                            fromName = currentUser.nickname.ifEmpty { currentUser.displayName.ifEmpty { currentUser.email } },
+                            idToken = currentUser.idToken,
+                        )
+                        null
+                    } catch (e: Exception) { "İstek gönderilemedi: ${e.message}" }
+                }
+            },
         )
     }
 

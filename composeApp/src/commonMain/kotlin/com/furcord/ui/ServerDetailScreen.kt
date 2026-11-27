@@ -76,6 +76,9 @@ import java.util.Date
 import java.util.Locale
 import androidx.compose.material.icons.outlined.PersonAddAlt
 import androidx.compose.material.icons.outlined.Settings
+import androidx.compose.material.icons.outlined.ScreenShare
+import androidx.compose.material.icons.outlined.StopScreenShare
+import androidx.compose.material.icons.filled.CallEnd
 import androidx.compose.material.icons.outlined.Mic
 import androidx.compose.material.icons.outlined.MicOff
 import androidx.compose.material.icons.outlined.Headset
@@ -520,8 +523,16 @@ private fun VoiceConnectedBar(channelName: String, onDisconnect: () -> Unit) {
                     color = AppColors.Online,
                 )
             }
-            IconButton(onClick = onDisconnect, modifier = Modifier.size(26.dp)) {
-                Text("📵", fontSize = 13.sp)
+            Button(
+                onClick = onDisconnect,
+                colors = ButtonDefaults.buttonColors(containerColor = AppColors.Danger, contentColor = Color.White),
+                shape = RoundedCornerShape(6.dp),
+                modifier = Modifier.height(28.dp),
+                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp),
+            ) {
+                Icon(Icons.Filled.CallEnd, null, modifier = Modifier.size(14.dp))
+                Spacer(Modifier.width(4.dp))
+                Text("Bağlantıyı Kes", fontSize = 11.sp, fontWeight = FontWeight.Bold)
             }
         }
         Text(
@@ -2064,6 +2075,30 @@ fun ServerDetailScreen(
                     color = AppColors.TextPrimary, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 Text("Çevrimiçi", fontSize = 11.sp, color = AppColors.Online)
             }
+            // Ekran paylaşımı — sadece ses kanalına bağlıyken; renkli zemin ile ayırt edilir
+            if (connectedChannelId != null) {
+                IconButton(
+                    onClick = {
+                        if (isScreenSharing) {
+                            ScreenShareManager.stop()
+                            isScreenSharing = false
+                        } else {
+                            showSharePicker = true   // kaynak + kalite seç
+                        }
+                    },
+                    modifier = Modifier
+                        .size(30.dp)
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(if (isScreenSharing) AppColors.Danger else AppColors.Accent),
+                ) {
+                    Icon(
+                        if (isScreenSharing) Icons.Outlined.StopScreenShare else Icons.Outlined.ScreenShare,
+                        if (isScreenSharing) "Paylaşımı Durdur" else "Ekranı Paylaş",
+                        tint = Color.White,
+                        modifier = Modifier.size(18.dp),
+                    )
+                }
+            }
             IconButton(onClick = { isMuted = !isMuted }, modifier = Modifier.size(30.dp)) {
                 Icon(
                     if (isMuted) Icons.Outlined.MicOff else Icons.Outlined.Mic, "Mikrofon",
@@ -2189,32 +2224,6 @@ fun ServerDetailScreen(
                         color = AppColors.TextPrimary,
                         modifier = Modifier.weight(1f),
                     )
-                    // Ekran paylaşımı butonu — sadece bağlı kanaldayken görünür
-                    if (connectedChannelId != null) {
-                        FilledTonalButton(
-                            onClick = {
-                                if (isScreenSharing) {
-                                    ScreenShareManager.stop()
-                                    isScreenSharing = false
-                                } else {
-                                    showSharePicker = true   // kaynak + kalite seç
-                                }
-                            },
-                            colors = ButtonDefaults.filledTonalButtonColors(
-                                containerColor = if (isScreenSharing) Color(0xFF3A2022) else AppColors.Accent,
-                                contentColor   = if (isScreenSharing) AppColors.Danger else Color.White,
-                            ),
-                            shape    = RoundedCornerShape(8.dp),
-                            modifier = Modifier.height(32.dp),
-                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp),
-                        ) {
-                            Text(
-                                text       = if (isScreenSharing) "🔴 Paylaşımı Durdur" else "🖥️ Ekranı Paylaş",
-                                fontSize   = 12.sp,
-                                fontWeight = FontWeight.SemiBold,
-                            )
-                        }
-                    }
                 }
                 HorizontalDivider(color = AppColors.Outline)
                 // ── Ekran paylaşımı görünümü (yayıncı ya da izleyici) ─────────

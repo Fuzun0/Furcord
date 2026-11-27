@@ -105,15 +105,39 @@ fun ProfileSettingsDialog(
             var line: javax.sound.sampled.TargetDataLine? = null
             val out = java.io.ByteArrayOutputStream()
             try {
-                line = javax.sound.sampled.AudioSystem.getLine(
-                    javax.sound.sampled.DataLine.Info(javax.sound.sampled.TargetDataLine::class.java, MIC_TEST_FORMAT)
-                ) as javax.sound.sampled.TargetDataLine
-                line.open(MIC_TEST_FORMAT)
-                line.start()
-                val buf = ByteArray(1920)   // 20 ms
+                // Sunucuda ses kanalına bağlıyken mikrofon hattı motor tarafından tutulur → ikinci kez açılamaz.
+                // Bu durumda motorun yakaladığı kareleri dinleriz.
+                val frames = java.util.concurrent.LinkedBlockingQueue<ByteArray>()
+                val viaEngine = com.furcord.voice.VoiceEngine.isActive
+                if (viaEngine) {
+                    com.furcord.voice.VoiceEngine.micTap = { b, n -> if (frames.size < 100) frames.offer(b.copyOf(n)) }
+                } else {
+                    line = javax.sound.sampled.AudioSystem.getLine(
+                        javax.sound.sampled.DataLine.Info(javax.sound.sampled.TargetDataLine::class.java, MIC_TEST_FORMAT)
+                    ) as javax.sound.sampled.TargetDataLine
+                    line.open(MIC_TEST_FORMAT)
+                    line.start()
+                }
+                var idleMs = 0
                 while (isActive && out.size() < MIC_TEST_MAX_BYTES) {
-                    val n = line.read(buf, 0, buf.size)
-                    if (n <= 0) continue
+                    val buf: ByteArray
+                    val n: Int
+                    if (viaEngine) {
+                        val f = frames.poll(100, java.util.concurrent.TimeUnit.MILLISECONDS)
+                        if (f == null) {
+                            idleMs += 100
+                            if (idleMs >= 2000 && !com.furcord.voice.VoiceEngine.isActive) {
+                                micTestError = "Ses bağlantısı kapandı."; break
+                            }
+                            continue
+                        }
+                        idleMs = 0
+                        buf = f; n = f.size
+                    } else {
+                        buf = ByteArray(1920)   // 20 ms
+                        n = line!!.read(buf, 0, buf.size)
+                        if (n <= 0) continue
+                    }
                     val gain = micGain
                     var peak = 0
                     var i = 0
@@ -132,6 +156,7 @@ fun ProfileSettingsDialog(
             } catch (e: Exception) {
                 micTestError = "Mikrofon açılamadı: ${e.message}"
             } finally {
+                com.furcord.voice.VoiceEngine.micTap = null
                 runCatching { line?.stop(); line?.close() }
                 micLevel = 0f
                 val data = out.toByteArray()

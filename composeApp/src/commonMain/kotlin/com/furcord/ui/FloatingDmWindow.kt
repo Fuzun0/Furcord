@@ -121,11 +121,8 @@ fun FloatingDmWindow(
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .clickable(
-                indication = null,
-                interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
-                onClick = onClose,
-            ),
+            // clickable değil: odaklanabilir olduğu için Enter tuşu "tıklama" sayılıp pencereyi kapatıyordu
+            .pointerInput(Unit) { detectTapGestures { onClose() } },
     ) {
     Box(
         modifier = Modifier
@@ -657,10 +654,10 @@ private fun DmChatPane(
                 modifier      = Modifier
                     .weight(1f)
                     .onPreviewKeyEvent { event ->
-                        if (event.type == KeyEventType.KeyDown &&
-                            event.key  == Key.Enter &&
-                            !event.isShiftPressed
-                        ) { sendMessage(); true } else false
+                        if (event.key == Key.Enter && !event.isShiftPressed) {
+                            if (event.type == KeyEventType.KeyDown) sendMessage()
+                            true
+                        } else false
                     },
                 placeholder = { Text("Mesaj yaz...", color = FwSub, fontSize = 12.sp) },
                 singleLine  = true,

@@ -35,6 +35,7 @@ fun ServerRail(
     onServerClick: (id: String, name: String) -> Unit,
     onOpenDm: () -> Unit,
     idToken: String = "",
+    voiceServerId: String? = null,            // ses kanalına bağlı olunan sunucu
 ) {
     val unread by DmRepository.unreadCount.collectAsState()
 
@@ -80,8 +81,9 @@ fun ServerRail(
                 val iconBmp = rememberCachedImage(ServerIcons.urls[id] ?: "")
                 RailButton(
                     selected = id == activeServerId,
-                    tooltip = name,
+                    tooltip = if (id == voiceServerId) "$name  (ses bağlantısı aktif)" else name,
                     onClick = { onServerClick(id, name) },
+                    connected = id == voiceServerId,
                 ) {
                     if (iconBmp != null) {
                         androidx.compose.foundation.Image(
@@ -130,6 +132,7 @@ private fun RailButton(
     selected: Boolean,
     tooltip: String? = null,
     onClick: () -> Unit,
+    connected: Boolean = false,
     content: @Composable () -> Unit,
 ) {
     val src = remember { MutableInteractionSource() }
@@ -190,6 +193,16 @@ private fun RailButton(
                             .padding(horizontal = 10.dp, vertical = 6.dp),
                     )
                 }
+            }
+        }
+        // Ses kanalına bağlı sunucu işareti: sağ altta yeşil nokta
+        if (connected) {
+            Box(
+                Modifier.align(Alignment.Center).offset(x = 18.dp, y = 18.dp).size(14.dp)
+                    .clip(androidx.compose.foundation.shape.CircleShape).background(AppColors.BgDeepest),
+                contentAlignment = Alignment.Center,
+            ) {
+                Box(Modifier.size(9.dp).clip(androidx.compose.foundation.shape.CircleShape).background(AppColors.Online))
             }
         }
     }
