@@ -448,6 +448,48 @@ object FirestoreClient {
         }
 
     /**
+     * Kanal listesi + her kanalın aktif kullanıcıları TEK istekte (kanal başına ayrı okuma yok).
+     * Hata durumunda null döner (çağıran mevcut durumu korusun).
+     */
+    suspend fun listVoiceChannelsWithUsers(
+        serverId: String, idToken: String,
+    ): Pair<List<VoiceChannel>, Map<String, List<ActiveUser>>>? =
+        withContext(Dispatchers.IO) {
+            val (code, text) = request("GET", "$BASE/servers/$serverId/voiceChannels", idToken = idToken)
+            if (code !in 200..299) return@withContext null
+            val resp = runCatching { fsJson.decodeFromString<FsListResponse>(text) }.getOrNull()
+                ?: return@withContext null
+            val rows = resp.documents.mapNotNull { doc ->
+                val name = doc.fields.str("name").takeIf { it.isNotEmpty() } ?: return@mapNotNull null
+                val id = doc.name.substringAfterLast("/")
+                Triple(VoiceChannel(id, name), doc.fields.lng("order") to doc.createTime, parseActiveUsersFromDoc(doc))
+            }.sortedWith(compareBy({ it.second.first }, { it.second.second }))
+            rows.map { it.first } to rows.associate { it.first.id to it.third }
+        }
+
+    /** Son [limit] mesajı (en yeni sonda) getirir — orderBy + limit, tüm geçmişi okumaz. */
+    suspend fun listLatestMessages(serverId: String, limit: Int, idToken: String): List<ChatMessage> =
+        queryMessages(serverId, limit, beforeTimestamp = null, idToken = idToken)
+
+    /** [beforeTimestamp]'tan eski [limit] mesajı getirir (yukarı kaydırınca sayfalama; en yeni sonda). */
+    suspend fun listMessagesBefore(serverId: String, beforeTimestamp: Long, limit: Int, idToken: String): List<ChatMessage> =
+        queryMessages(serverId, limit, beforeTimestamp, idToken)
+
+    private suspend fun queryMessages(serverId: String, limit: Int, beforeTimestamp: Long?, idToken: String): List<ChatMessage> =
+        withContext(Dispatchers.IO) {
+            val queryUrl = "https://firestore.googleapis.com/v1/projects/$PROJECT_ID/databases/(default)/documents/servers/$serverId:runQuery"
+            val where = if (beforeTimestamp != null)
+                """"where":{"fieldFilter":{"field":{"fieldPath":"timestamp"},"op":"LESS_THAN","value":{"integerValue":"$beforeTimestamp"}}},"""
+            else ""
+            val body = """{"structuredQuery":{"from":[{"collectionId":"messages"}],$where"orderBy":[{"field":{"fieldPath":"timestamp"},"direction":"DESCENDING"}],"limit":$limit}}"""
+            val (code, text) = request("POST", queryUrl, body, idToken)
+            if (code !in 200..299) return@withContext emptyList()
+            (runCatching { fsJson.decodeFromString<List<FsQueryItem>>(text) }.getOrNull()
+                ?.mapNotNull { it.document?.let { doc -> parseMsgFromDoc(doc) } } ?: emptyList())
+                .sortedBy { it.timestamp }
+        }
+
+    /**
      * Firebase'deki TÜM sunucuları siler (voiceChannels + messages alt koleksiyonlarıyla).
      * Temiz başlangıç için kullanılır. Yerel mesaj dosyalarını da temizler.
      */
@@ -572,9 +614,8 @@ object FirestoreClient {
     /** Fetches the latest messages (up to 50) from servers/{serverId}/messages. */
     suspend fun listMessages(serverId: String, idToken: String): List<ChatMessage> =
         withContext(Dispatchers.IO) {
-            val (code, text) = request("GET", "$BASE/servers/$serverId/messages?pageSize=50", idToken = idToken)
-            if (code !in 200..299) return@withContext emptyList()
-            parseMsgsFromJson(text)
+            // En yeni 30 mesaj (orderBy timestamp DESC + limit); eski sürüm sıralamasız 50 belge okuyordu
+            listLatestMessages(serverId, 30, idToken)
         }
 
     /**
@@ -587,7 +628,7 @@ object FirestoreClient {
         afterTimestamp: Long,
         idToken: String,
     ): List<ChatMessage> = withContext(Dispatchers.IO) {
-        if (afterTimestamp <= 0L) return@withContext listMessages(serverId, idToken)
+        if (afterTimestamp <= 0L) return@withContext listLatestMessages(serverId, 40, idToken)
         val queryUrl = "https://firestore.googleapis.com/v1/projects/$PROJECT_ID/databases/(default)/documents/servers/$serverId:runQuery"
         val body = """
             {
