@@ -20,12 +20,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.furcord.auth.AuthUser
 import com.furcord.auth.ChatMessage
-import com.furcord.auth.FirestoreClient
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.isActive
-import kotlinx.coroutines.launch
 
 private val NameColors = listOf(
     Color(0xFFFF6B6B), Color(0xFFFFA94D), Color(0xFFFFD43B), Color(0xFF69DB7C),
@@ -38,34 +33,16 @@ private val NameColors = listOf(
  */
 @Composable
 fun StreamChatPanel(
-    serverId: String,
-    currentUser: AuthUser,
+    messages: List<ChatMessage>,
+    onSend: (String) -> Unit,
+    error: String = "",
+    onErrorShown: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
-    val scope = rememberCoroutineScope()
-    var msgs  by remember(serverId) { mutableStateOf<List<ChatMessage>>(emptyList()) }
+    // Bu bileşen Firestore'a dokunmaz: veri ve gönderim ana pencerenin durumundan gelir.
+    val msgs = messages
     var input by remember { mutableStateOf("") }
-    var error by remember { mutableStateOf("") }
     val listState = rememberLazyListState()
-    val nick = currentUser.nickname.ifEmpty { currentUser.displayName.ifEmpty { currentUser.email.substringBefore("@") } }
-
-    // Yeni mesajları 2 sn'de bir çek (zaman damgası imleci)
-    LaunchedEffect(serverId) {
-        while (isActive) {
-            runCatching {
-                val real = msgs.filter { !it.id.startsWith("pending-") }
-                val last = real.maxOfOrNull { it.timestamp } ?: 0L
-                val fresh = FirestoreClient.listStreamChat(serverId, last, currentUser.idToken)
-                if (fresh.isNotEmpty()) {
-                    val pend = msgs.filter { p ->
-                        p.id.startsWith("pending-") && fresh.none { it.uid == p.uid && it.text == p.text }
-                    }
-                    msgs = ((real + fresh).distinctBy { it.id }.sortedBy { it.timestamp } + pend).takeLast(300)
-                }
-            }
-            delay(2_000)
-        }
-    }
 
     LaunchedEffect(msgs.size) {
         if (msgs.isNotEmpty()) listState.animateScrollToItem(msgs.size - 1)
@@ -75,19 +52,7 @@ fun StreamChatPanel(
         val text = input.trim()
         if (text.isEmpty()) return
         input = ""
-        val now = System.currentTimeMillis()
-        msgs = msgs + ChatMessage(
-            id = "pending-$now", uid = currentUser.uid, username = nick, photoURL = "",
-            text = text, timestamp = now,
-        )
-        scope.launch {
-            runCatching {
-                FirestoreClient.sendStreamChat(serverId, currentUser.uid, nick, "", text, currentUser.idToken)
-            }.onFailure {
-                msgs = msgs.filter { m -> !(m.id.startsWith("pending-") && m.text == text) }
-                error = "Gönderilemedi"
-            }
-        }
+        onSend(text)
     }
 
     Column(modifier.background(Color(0xFF18181B))) {
@@ -134,7 +99,7 @@ fun StreamChatPanel(
         ) {
             OutlinedTextField(
                 value = input,
-                onValueChange = { input = it.take(500); error = "" },
+                onValueChange = { input = it.take(500); onErrorShown() },
                 placeholder = { Text("Mesaj gönder", color = Color(0xFF9A9AA3), fontSize = 13.sp) },
                 singleLine = true,
                 shape = RoundedCornerShape(8.dp),

@@ -63,6 +63,7 @@ import androidx.compose.ui.layout.positionInWindow
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.GlobalScope
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -899,10 +900,12 @@ fun ServerDetailScreen(
     @Suppress("NAME_SHADOWING")
     val currentUser by rememberUpdatedState(currentUser)
 
+    var streamMsgs by remember(serverId) { mutableStateOf<List<ChatMessage>>(emptyList()) }
+    var streamChatError by remember { mutableStateOf("") }
     // Yayın izleyici ses seviyesi: yayıncının sesi ses kanalından geldiği için kanaldaki diğer kullanıcılara uygulanır
     var streamVolume by remember { mutableStateOf(1f) }
-    var channels         by remember { mutableStateOf<List<VoiceChannel>>(emptyList()) }
-    var channelUsers       by remember { mutableStateOf<Map<String, List<ActiveUser>>>(emptyMap()) }
+    var channels         by remember { mutableStateOf(VoiceStateCache.channels[serverId] ?: emptyList()) }
+    var channelUsers       by remember { mutableStateOf(VoiceStateCache.users[serverId] ?: emptyMap()) }
     var connectedChannelId by remember { mutableStateOf<String?>(null) }
     var joiningChannelId   by remember { mutableStateOf<String?>(null) }
     var selectedChannelId  by remember { mutableStateOf<String?>(null) }
@@ -932,6 +935,21 @@ fun ServerDetailScreen(
     val peerVolumes       = remember { androidx.compose.runtime.snapshots.SnapshotStateMap<String, Float>() }
     // Ses seviyesi slider gösterilecek mi?
     var showVolumeSlider  by remember { mutableStateOf(false) }
+    fun sendStreamChatMessage(text: String) {
+        val nick = currentUser.nickname.ifEmpty { currentUser.displayName.ifEmpty { currentUser.email.substringBefore("@") } }
+        streamMsgs = streamMsgs + ChatMessage(
+            id = "pending-${System.currentTimeMillis()}", uid = currentUser.uid, username = nick, photoURL = "",
+            text = text, timestamp = System.currentTimeMillis(),
+        )
+        scope.launch {
+            runCatching {
+                FirestoreClient.sendStreamChat(serverId, currentUser.uid, nick, "", text, currentUser.idToken)
+            }.onFailure {
+                streamMsgs = streamMsgs.filter { m -> !(m.id.startsWith("pending-") && m.text == text) }
+                streamChatError = "Gönderilemedi"
+            }
+        }
+    }
     fun setStreamVolume(v: Float) {
         streamVolume = v
         val cid = connectedChannelId ?: return
@@ -1075,6 +1093,7 @@ fun ServerDetailScreen(
                 showSharePicker = false
                 showTextChannel = false  // ses kanalı görünümüne geç
                 // Önceki yayından kalan sohbeti temizle, yeni yayının sohbeti boş başlasın
+                streamMsgs = emptyList()
                 GlobalScope.launch { runCatching { FirestoreClient.clearStreamChat(serverId, currentUser.idToken) } }
                 ScreenShareManager.start(src, q)
                 isScreenSharing = true
@@ -1103,6 +1122,27 @@ fun ServerDetailScreen(
         }
     }
 
+    // ── Yayın sohbeti: durum + yoklama + gönderim ana pencerede; yayın penceresi yalnızca gösterir ──
+    // Yoklama yalnızca yayın penceresi açıkken çalışır; pencere kapanınca coroutine iptal olur.
+    // Bellekteki son mesajın zaman damgasından sonrasını sorar (önceki mesajlar yeniden okunmaz).
+    LaunchedEffect(serverId, showPiP) {
+        if (!showPiP) return@LaunchedEffect
+        while (isActive) {
+            runCatching {
+                val real = streamMsgs.filter { !it.id.startsWith("pending-") }
+                val last = real.maxOfOrNull { it.timestamp } ?: 0L
+                val fresh = FirestoreClient.listStreamChat(serverId, last, currentUser.idToken)
+                if (fresh.isNotEmpty()) {
+                    val pend = streamMsgs.filter { p ->
+                        p.id.startsWith("pending-") && fresh.none { it.uid == p.uid && it.text == p.text }
+                    }
+                    streamMsgs = ((real + fresh).distinctBy { it.id }.sortedBy { it.timestamp } + pend).takeLast(300)
+                }
+            }
+            delay(pollMs(3_000, 15_000))
+        }
+    }
+
     if (showPiP) {
         PiPStreamWindow(
             isSelfView       = isScreenSharing,
@@ -1120,9 +1160,11 @@ fun ServerDetailScreen(
             },
             chatPanel      = {
                 StreamChatPanel(
-                    serverId    = serverId,
-                    currentUser = currentUser,
-                    modifier    = Modifier.fillMaxSize(),
+                    messages     = streamMsgs,
+                    onSend       = { sendStreamChatMessage(it) },
+                    error        = streamChatError,
+                    onErrorShown = { streamChatError = "" },
+                    modifier     = Modifier.fillMaxSize(),
                 )
             },
         )
@@ -1150,6 +1192,7 @@ fun ServerDetailScreen(
                 }
                 val fetched = snapshot.first
                 channels = fetched
+                VoiceStateCache.channels[serverId] = fetched
                 val newUsers = mutableMapOf<String, List<ActiveUser>>()
                 for (ch in fetched) {
                     val fetchedUsers = snapshot.second[ch.id] ?: emptyList()
@@ -1205,6 +1248,7 @@ fun ServerDetailScreen(
                 prevUsers  = newUsers
                 firstPoll  = false
                 channelUsers = newUsers
+                VoiceStateCache.users[serverId] = newUsers
                 loading = false
             } catch (_: Exception) {
                 loading = false
@@ -2889,3 +2933,9 @@ private fun Modifier.graphicsLayerAlpha(a: Float): Modifier =
 /** Firestore okuma kotasını korumak için: pencere odakta değilse yoklamayı seyrelt. */
 private fun pollMs(focusedMs: Long, unfocusedMs: Long): Long =
     if (com.furcord.ui.Notifier.windowFocused) focusedMs else unfocusedMs
+
+/** Sunucu değiştirirken kanal/kullanıcı listesini bellekte tutar; ekran anında dolar, ilk okuma beklenmez. */
+private object VoiceStateCache {
+    val channels = java.util.concurrent.ConcurrentHashMap<String, List<VoiceChannel>>()
+    val users    = java.util.concurrent.ConcurrentHashMap<String, Map<String, List<ActiveUser>>>()
+}

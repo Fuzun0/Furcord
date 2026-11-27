@@ -106,7 +106,11 @@ object MessageStore {
      * Format v2: id\u0001uid\u0001username\u0001photoURL\u0001timestamp\u0001text\u0001imageUrl\u0001replyToId\u0001replyToUser\u0001replyToText
      * Eski format (6 alan) da desteklenir.
      */
+    /** Bellek önbelleği: sunucu/kanal değiştirirken diskten ve Firestore'dan yeniden okumamak için. */
+    private val mem = java.util.concurrent.ConcurrentHashMap<String, List<ChatMessage>>()
+
     fun get(serverId: String): List<ChatMessage> {
+        mem[serverId]?.let { return it }
         return try {
             val f = file(serverId)
             if (!f.exists()) return emptyList()
@@ -125,12 +129,13 @@ object MessageStore {
                     replyToUser = p.getOrElse(8) { "" },
                     replyToText = p.getOrElse(9) { "" },
                 )
-            }.sortedBy { it.timestamp }
+            }.sortedBy { it.timestamp }.also { mem[serverId] = it }
         } catch (_: Exception) { emptyList() }
     }
 
     /** Mesajları diske yazar. Pending (optimistik) mesajlar dahil edilir. */
     fun set(serverId: String, messages: List<ChatMessage>) = try {
+        mem[serverId] = messages
         file(serverId).writeText(
             messages.joinToString("\n") { m ->
                 "${m.id}\u0001${m.uid}\u0001${m.username}\u0001${m.photoURL}\u0001${m.timestamp}" +
@@ -140,7 +145,7 @@ object MessageStore {
     } catch (_: Exception) {}
 
     /** Sunucu silindiğinde yerel mesaj dosyasını da temizler. */
-    fun clear(serverId: String) = try { file(serverId).delete() } catch (_: Exception) {}
+    fun clear(serverId: String) = try { mem.remove(serverId); file(serverId).delete() } catch (_: Exception) {}
 }
 
 object FirestoreClient {
