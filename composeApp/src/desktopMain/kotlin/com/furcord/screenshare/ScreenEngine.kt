@@ -88,10 +88,31 @@ object ScreenEngine {
 
     private val sourceLock = ReentrantLock()   // listSources / thumbnail aynı anda çalışmasın
 
+    /** Yayını gösteren alanın piksel boyutu — kod çözücü kareyi gereğinden büyük üretmez. */
+    @Volatile private var viewW = 0
+    @Volatile private var viewH = 0
+    fun setViewSize(w: Int, h: Int) { viewW = w; viewH = h }
+
+    /** JPEG'i çözer; görüntüleme alanı karenin yarısından küçükse alt örnekleme yapar (daha az CPU). */
+    private fun decodeFrame(jpeg: ByteArray): BufferedImage? {
+        val reader = ImageIO.getImageReadersByFormatName("jpeg").next()
+        return try {
+            ImageIO.createImageInputStream(ByteArrayInputStream(jpeg)).use { iis ->
+                reader.input = iis
+                val w = reader.getWidth(0); val h = reader.getHeight(0)
+                val tw = viewW; val th = viewH
+                val f = if (tw > 0 && th > 0) minOf(w / tw, h / th) else 1
+                val param = reader.defaultReadParam
+                if (f >= 2) param.setSourceSubsampling(f, f, 0, 0)
+                reader.read(0, param)
+            }
+        } finally { reader.dispose() }
+    }
+
     init {
         scope.launch {
             for (jpeg in decodeChannel) {
-                runCatching { ImageIO.read(ByteArrayInputStream(jpeg))?.toComposeImageBitmap() }
+                runCatching { decodeFrame(jpeg)?.toComposeImageBitmap() }
                     .getOrNull()?.let { _receiverFrame.value = it }
             }
         }

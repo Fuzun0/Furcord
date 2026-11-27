@@ -123,23 +123,36 @@ private fun runApp() = application {
         if (fill) fillScreen()
     }
 
-    // Uygulama zaten açıkken tekrar başlatılırsa (masaüstü kısayolu) mevcut pencereyi öne getir
-    LaunchedEffect(showRequests) {
-        if (showRequests > 0) {
-            showWindow(fill = false)
-            winHolder[0]?.let { w ->
-                runCatching {
-                    w.isAlwaysOnTop = true; w.toFront(); w.requestFocus(); w.isAlwaysOnTop = false
-                }
+    fun bringToFront() {
+        showWindow(fill = false)
+        winHolder[0]?.let { w ->
+            runCatching {
+                w.isAlwaysOnTop = true; w.toFront(); w.requestFocus(); w.isAlwaysOnTop = false
             }
         }
+    }
+
+    // Uygulama zaten açıkken tekrar başlatılırsa (masaüstü kısayolu) mevcut pencereyi öne getir
+    LaunchedEffect(showRequests) {
+        if (showRequests > 0) bringToFront()
+    }
+
+    // ── Windows bildirimleri (mesaj gelince sağ altta toast) ─────────────────
+    val trayState = rememberTrayState()
+    DisposableEffect(trayState) {
+        com.furcord.ui.Notifier.sink = { title, body ->
+            trayState.sendNotification(Notification(title, body, Notification.Type.None))
+        }
+        onDispose { com.furcord.ui.Notifier.sink = null }
     }
 
     // ── Sistem tepsisi (saat yanındaki simge) ─────────────────────────────────
     Tray(
         icon     = icon,
+        state    = trayState,
         tooltip  = "Furcord",
-        onAction = { showWindow(fill = false) },          // çift tık: olduğu gibi aç
+        // Çift tık veya bildirime tıklama: pencereyi öne getir (bildirim bir DM ise sohbeti aç)
+        onAction = { bringToFront(); com.furcord.ui.Notifier.onActivated() },
         menu     = {
             Item("Uygulamayı Büyüt", onClick = { showWindow(fill = true) })
             Separator()

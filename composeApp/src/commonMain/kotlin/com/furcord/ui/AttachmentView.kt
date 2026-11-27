@@ -108,6 +108,8 @@ fun AttachmentView(
     val info = remember(url) { Attachments.parse(url) }
     if (info.kind == Attachments.Kind.Image) {
         ImageAttachment(info, idToken, maxWidth, maxHeight, onDownload)
+    } else if (info.kind == Attachments.Kind.Video) {
+        VideoAttachment(info, idToken, maxWidth, maxHeight, onDownload)
     } else {
         FileCard(info, idToken, maxWidth, onDownload)
     }
@@ -225,5 +227,117 @@ private fun FileCard(
                 Icon(Icons.Default.Download, "İndir", tint = AppColors.TextSecondary, modifier = Modifier.size(18.dp))
             }
         }
+    }
+}
+
+/** Video eki: küçük resim + oynat düğmesi (küçük resim hazır olana dek dosya kartı gösterilir). */
+@Composable
+private fun VideoAttachment(
+    info: Attachments.Info,
+    idToken: String,
+    maxWidth: Dp,
+    maxHeight: Dp,
+    onDownload: (() -> Unit)?,
+) {
+    val scope = rememberCoroutineScope()
+    var thumb by remember(info.url) { mutableStateOf(MediaThumbs.peek("a_${info.attId ?: info.url.hashCode().toUInt()}")) }
+    var opening  by remember { mutableStateOf(false) }
+    var progress by remember { mutableStateOf(0f) }
+    var error    by remember { mutableStateOf("") }
+
+    LaunchedEffect(info.url) {
+        if (thumb == null) thumb = MediaThumbs.forAttachment(info, idToken)
+    }
+
+    val t = thumb
+    if (t == null) { FileCard(info, idToken, maxWidth, onDownload); return }
+
+    fun play() {
+        if (opening) return
+        scope.launch {
+            opening = true; error = ""; progress = 0f
+            try { DownloadManager.openFile(Attachments.fileForOpen(info, idToken) { progress = it }) }
+            catch (e: Exception) { error = e.message ?: "Açılamadı" }
+            opening = false
+        }
+    }
+
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Box(
+            Modifier.widthIn(max = maxWidth).heightIn(max = maxHeight)
+                .clip(RoundedCornerShape(8.dp)).background(androidx.compose.ui.graphics.Color.Black)
+                .clickable { play() },
+            contentAlignment = Alignment.Center,
+        ) {
+            Image(t, "Video", Modifier.widthIn(max = maxWidth).heightIn(max = maxHeight), contentScale = ContentScale.Fit)
+            Box(
+                Modifier.size(46.dp).clip(androidx.compose.foundation.shape.CircleShape)
+                    .background(androidx.compose.ui.graphics.Color.Black.copy(alpha = 0.6f)),
+                contentAlignment = Alignment.Center,
+            ) {
+                if (opening) CircularProgressIndicator(Modifier.size(24.dp), strokeWidth = 2.dp, color = androidx.compose.ui.graphics.Color.White)
+                else Icon(Icons.Default.PlayArrow, "Oynat", tint = androidx.compose.ui.graphics.Color.White, modifier = Modifier.size(28.dp))
+            }
+            if (onDownload != null) {
+                IconButton(
+                    onClick = onDownload,
+                    modifier = Modifier.align(Alignment.TopEnd).padding(4.dp).size(30.dp)
+                        .clip(androidx.compose.foundation.shape.CircleShape)
+                        .background(androidx.compose.ui.graphics.Color.Black.copy(alpha = 0.55f)),
+                ) { Icon(Icons.Default.Download, "İndir", tint = androidx.compose.ui.graphics.Color.White, modifier = Modifier.size(16.dp)) }
+            }
+            Text(
+                info.sizeText, fontSize = 11.sp, color = androidx.compose.ui.graphics.Color.White,
+                modifier = Modifier.align(Alignment.BottomStart).padding(6.dp)
+                    .clip(RoundedCornerShape(4.dp)).background(androidx.compose.ui.graphics.Color.Black.copy(alpha = 0.6f))
+                    .padding(horizontal = 6.dp, vertical = 2.dp),
+            )
+        }
+        Text(
+            if (error.isNotEmpty()) error else if (opening) "Hazırlanıyor… %${(progress * 100).toInt()}" else info.name,
+            fontSize = 11.sp, color = if (error.isNotEmpty()) AppColors.Danger else AppColors.TextMuted,
+            maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.widthIn(max = maxWidth),
+        )
+    }
+}
+
+/** Alıntı çubuğu/alıntı kutusu için küçük ek önizlemesi (görsel, GIF'in ilk karesi, video karesi). */
+@Composable
+fun AttachmentThumb(url: String, idToken: String, size: Dp = 40.dp) {
+    val info = remember(url) { Attachments.parse(url) }
+    var bmp by remember(url) {
+        mutableStateOf<ImageBitmap?>(
+            when (info.kind) {
+                Attachments.Kind.Image -> MediaCache.peek(url)?.frames?.firstOrNull()
+                Attachments.Kind.Video -> MediaThumbs.peek("a_${info.attId ?: info.url.hashCode().toUInt()}")
+                else -> null
+            }
+        )
+    }
+    LaunchedEffect(url) {
+        if (bmp != null) return@LaunchedEffect
+        when (info.kind) {
+            Attachments.Kind.Image ->
+                if (info.attId == null || info.size <= Attachments.AUTO_LOAD_LIMIT)
+                    bmp = MediaCache.load(info, idToken)?.frames?.firstOrNull()
+            Attachments.Kind.Video -> bmp = MediaThumbs.forAttachment(info, idToken)
+            else -> {}
+        }
+    }
+    Box(
+        Modifier.size(size).clip(RoundedCornerShape(6.dp)).background(AppColors.BgElevated),
+        contentAlignment = Alignment.Center,
+    ) {
+        val b = bmp
+        if (b != null) Image(b, null, Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
+        else Icon(
+            when (info.kind) {
+                Attachments.Kind.Video -> Icons.Default.Movie
+                Attachments.Kind.Audio -> Icons.Default.MusicNote
+                Attachments.Kind.Image -> Icons.Default.Image
+                Attachments.Kind.File  -> Icons.Default.InsertDriveFile
+            },
+            null, tint = AppColors.Accent, modifier = Modifier.size(size / 2),
+        )
     }
 }

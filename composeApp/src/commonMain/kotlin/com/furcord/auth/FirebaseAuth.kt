@@ -330,6 +330,11 @@ object RecentServers {
         file.writeText(updated.take(10).joinToString("\n") { "${it.first}\t${it.second}" })
     } catch (_: Exception) {}
 
+    /** Sunucuyu listeden çıkarır (ör. sunucudan atılınca). */
+    fun remove(serverId: String) = try {
+        file.writeText(load().filter { it.first != serverId }.joinToString("\n") { "${it.first}\t${it.second}" })
+    } catch (_: Exception) {}
+
     /**
      * Sunucuyu sadece listede yoksa **sona** ekler; zaten varsa sırayı değiştirmez.
      * Firestore'dan toplu senkronize ederken kullanılır — kullanıcının kronolojik sırasını bozmaz.

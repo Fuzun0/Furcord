@@ -53,6 +53,13 @@ import androidx.compose.ui.draw.shadow
 import androidx.compose.foundation.border
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.zIndex
+import androidx.compose.ui.draw.alpha
+import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
+import androidx.compose.ui.input.pointer.pointerHoverIcon
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.layout.boundsInWindow
+import androidx.compose.ui.layout.positionInWindow
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.GlobalScope
 import kotlinx.coroutines.delay
@@ -75,6 +82,7 @@ import androidx.compose.material.icons.outlined.Headset
 import androidx.compose.material.icons.outlined.HeadsetOff
 import androidx.compose.material.icons.outlined.Image
 import androidx.compose.material.icons.outlined.ContentCopy
+import androidx.compose.material.icons.outlined.AddReaction
 import androidx.compose.material.icons.automirrored.outlined.Reply
 import androidx.compose.material.icons.automirrored.rounded.Send
 
@@ -324,11 +332,29 @@ private fun ChannelRow(
     onUserRightClick: ((ActiveUser) -> Unit)? = null,
     speakingSet: Set<Int> = emptySet(),
     timerStr: String? = null,
+    onChannelRightClick: (() -> Unit)? = null,
+    isDropTarget: Boolean = false,
+    onBounds: (androidx.compose.ui.geometry.Rect) -> Unit = {},
+    canDragUser: (ActiveUser) -> Boolean = { false },
+    onUserDragStart: (ActiveUser, androidx.compose.ui.geometry.Offset) -> Unit = { _, _ -> },
+    onUserDrag: (androidx.compose.ui.geometry.Offset) -> Unit = {},
+    onUserDragEnd: () -> Unit = {},
 ) {
     val rowInteraction = remember { MutableInteractionSource() }
     val hovered by rowInteraction.collectIsHoveredAsState()
 
-    Column {
+    // Bırakma hedefi: kanal başlığı + altındaki kullanıcılar
+    Column(
+        Modifier
+            .onGloballyPositioned { onBounds(it.boundsInWindow()) }
+            .clip(RoundedCornerShape(6.dp))
+            .then(
+                if (isDropTarget) Modifier
+                    .background(AppColors.Accent.copy(alpha = 0.18f))
+                    .border(1.dp, AppColors.Accent, RoundedCornerShape(6.dp))
+                else Modifier
+            )
+    ) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -341,6 +367,19 @@ private fun ChannelRow(
                         hovered                   -> AppColors.BgElevated
                         else                      -> Color.Transparent
                     }
+                )
+                .then(
+                    if (onChannelRightClick != null) Modifier.pointerInput(channel.id) {
+                        awaitPointerEventScope {
+                            while (true) {
+                                val event = awaitPointerEvent()
+                                if (event.type == PointerEventType.Press && event.buttons.isSecondaryPressed) {
+                                    event.changes.forEach { it.consume() }
+                                    onChannelRightClick()
+                                }
+                            }
+                        }
+                    } else Modifier
                 )
                 .clickable(onClick = onClick)
                 .padding(horizontal = 8.dp, vertical = 6.dp),
@@ -367,84 +406,81 @@ private fun ChannelRow(
                 overflow = TextOverflow.Ellipsis,
             )
             if (!timerStr.isNullOrEmpty()) {
-                Text(
-                    text = timerStr,
-                    fontSize = 11.sp,
-                    color = AppColors.Online,
-                )
+                Text(text = timerStr, fontSize = 11.sp, color = AppColors.Online)
             } else if (activeUsers.isNotEmpty()) {
-                Text(
-                    text = "${activeUsers.size}",
-                    fontSize = 11.sp,
-                    color = AppColors.TextSubtle,
-                )
+                Text(text = "${activeUsers.size}", fontSize = 11.sp, color = AppColors.TextSubtle)
             }
         }
 
         // Active users beneath the channel row
-        if (activeUsers.isNotEmpty()) {
-            activeUsers.forEach { u ->
-                val isSelf        = u.uid == currentUid
-                val userInteract  = remember(u.uid) { MutableInteractionSource() }
+        activeUsers.forEach { u ->
+            key(u.uid) {
+                val isSelf      = u.uid == currentUid
+                val draggable   = canDragUser(u)
+                var rowWinPos by remember { mutableStateOf(androidx.compose.ui.geometry.Offset.Zero) }
+                val latestStart by rememberUpdatedState(onUserDragStart)
+                val latestDrag  by rememberUpdatedState(onUserDrag)
+                val latestEnd   by rememberUpdatedState(onUserDragEnd)
 
-                Box {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(start = 30.dp, end = 8.dp, top = 2.dp, bottom = 2.dp)
-                            .hoverable(userInteract)
-                            .then(
-                                if (!isSelf && onUserRightClick != null) {
-                                    Modifier.pointerInput(u.uid) {
-                                        awaitPointerEventScope {
-                                            while (true) {
-                                                val event = awaitPointerEvent()
-                                                if (event.type == PointerEventType.Press &&
-                                                    event.buttons.isSecondaryPressed
-                                                ) {
-                                                    onUserRightClick(u)
-                                                }
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .onGloballyPositioned { rowWinPos = it.positionInWindow() }
+                        .padding(start = 30.dp, end = 8.dp, top = 2.dp, bottom = 2.dp)
+                        .then(
+                            if (!isSelf && onUserRightClick != null) {
+                                Modifier.pointerInput(u.uid) {
+                                    awaitPointerEventScope {
+                                        while (true) {
+                                            val event = awaitPointerEvent()
+                                            if (event.type == PointerEventType.Press &&
+                                                event.buttons.isSecondaryPressed
+                                            ) {
+                                                event.changes.forEach { it.consume() }
+                                                onUserRightClick(u)
                                             }
                                         }
                                     }
-                                } else Modifier
-                            ),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    ) {
-                        val isSpeaking = speakingSet.contains(u.uid.hashCode())
-                        Box(modifier = Modifier.size(38.dp), contentAlignment = Alignment.Center) {
-                            if (isSpeaking) {
-                                Box(
-                                    Modifier
-                                        .size(38.dp)
-                                        .border(1.5.dp, AppColors.Online, CircleShape)
-                                )
-                            }
-                            Box(
-                                modifier = Modifier
-                                    .size(30.dp)
-                                    .clip(CircleShape)
-                            ) {
-                                UserAvatar(
-                                    displayName = u.username,
-                                    photoURL    = u.photoURL,
-                                    size        = 30,
-                                )
-                            }
-                        }
-                        Text(
-                            text = if (isSelf) "${u.username} (sen)" else u.username,
-                            fontSize = 12.sp,
-                            color = when {
-                                isSelf || isSpeaking -> AppColors.Online
-                                else -> Color(0xFFB5BAC1)
-                            },
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.weight(1f),
+                                }
+                            } else Modifier
                         )
+                        // Basılı tut + sürükle: kullanıcıyı başka ses kanalına taşı
+                        .then(
+                            if (draggable) Modifier
+                                .pointerHoverIcon(androidx.compose.ui.input.pointer.PointerIcon.Hand)
+                                .pointerInput(u.uid, "drag") {
+                                    detectDragGesturesAfterLongPress(
+                                        onDragStart  = { off -> latestStart(u, rowWinPos + off) },
+                                        onDrag       = { change, delta -> change.consume(); latestDrag(delta) },
+                                        onDragEnd    = { latestEnd() },
+                                        onDragCancel = { latestEnd() },
+                                    )
+                                }
+                            else Modifier
+                        ),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    val isSpeaking = speakingSet.contains(u.uid.hashCode())
+                    Box(modifier = Modifier.size(38.dp), contentAlignment = Alignment.Center) {
+                        if (isSpeaking) {
+                            Box(Modifier.size(38.dp).border(1.5.dp, AppColors.Online, CircleShape))
+                        }
+                        Box(modifier = Modifier.size(30.dp).clip(CircleShape)) {
+                            UserAvatar(displayName = u.username, photoURL = u.photoURL, size = 30)
+                        }
                     }
+                    Text(
+                        text = if (isSelf) "${u.username} (sen)" else u.username,
+                        fontSize = 12.sp,
+                        color = when {
+                            isSelf || isSpeaking -> AppColors.Online
+                            else -> Color(0xFFB5BAC1)
+                        },
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f),
+                    )
                 }
             }
         }
@@ -509,7 +545,11 @@ private fun MessageRow(
     onCopy: (ChatMessage) -> Unit = {},
     idToken: String = "",
     onDownload: (ChatMessage) -> Unit = {},
+    repliedMsg: ChatMessage? = null,
+    myUid: String = "",
+    onReact: (ChatMessage, String) -> Unit = { _, _ -> },
 ) {
+    var showEmoji by remember { mutableStateOf(false) }
     val timeStr = remember(msg.timestamp) {
         SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(msg.timestamp))
     }
@@ -560,6 +600,7 @@ private fun MessageRow(
                     horizontalArrangement = Arrangement.spacedBy(6.dp),
                 ) {
                     Box(Modifier.width(2.dp).height(22.dp).background(AppColors.Accent))
+                    if (repliedMsg != null && repliedMsg.imageUrl.isNotBlank()) AttachmentThumb(repliedMsg.imageUrl, idToken, 28.dp)
                     Text(msg.replyToUser, fontSize = 12.sp, color = AppColors.Accent,
                         fontWeight = FontWeight.SemiBold)
                     Text(msg.replyToText.take(80), fontSize = 12.sp, color = AppColors.TextMuted,
@@ -595,12 +636,16 @@ private fun MessageRow(
                         Spacer(Modifier.height(4.dp))
                         AttachmentView(msg.imageUrl, idToken)
                     }
+                    if (msg.reactions.isNotEmpty() && !msg.id.startsWith("pending-") && !msg.id.startsWith("img-pending-")) {
+                        Spacer(Modifier.height(2.dp))
+                        ReactionChips(msg.reactions, myUid, onToggle = { onReact(msg, it) })
+                    }
                 }
             }
         }
 
         // Hover eylem çubuğu
-        if (hovered) {
+        if (hovered || showEmoji) {
             Row(
                 Modifier
                     .align(Alignment.TopEnd)
@@ -616,6 +661,15 @@ private fun MessageRow(
                 IconButton(onClick = { onCopy(msg) }, Modifier.size(28.dp)) {
                     Icon(Icons.Outlined.ContentCopy, "Kopyala",
                         tint = AppColors.TextMuted, modifier = Modifier.size(16.dp))
+                }
+                if (!msg.id.startsWith("pending-") && !msg.id.startsWith("img-pending-")) {
+                    Box {
+                        IconButton(onClick = { showEmoji = true }, Modifier.size(28.dp)) {
+                            Icon(Icons.Outlined.AddReaction, "Tepki ver",
+                                tint = AppColors.TextMuted, modifier = Modifier.size(16.dp))
+                        }
+                        EmojiPickerMenu(showEmoji, { showEmoji = false }) { onReact(msg, it) }
+                    }
                 }
                 if (msg.imageUrl.isNotBlank() && !msg.id.startsWith("img-pending-")) {
                     IconButton(onClick = { onDownload(msg) }, Modifier.size(28.dp)) {
@@ -853,6 +907,27 @@ fun ServerDetailScreen(
     var showVolumeSlider  by remember { mutableStateOf(false) }
     // Sunucu sahibi mi?
     var isOwner           by remember { mutableStateOf(false) }
+    var creatorUid        by remember { mutableStateOf<String?>(null) }
+    // Sunucuya kayıtlı tüm üyeler (sağ panel)
+    var members           by remember { mutableStateOf<List<ActiveUser>>(emptyList()) }
+    // Kanal oluşturma / silme diyalogları
+    var showCreateChannel by remember { mutableStateOf(false) }
+    var channelToDelete   by remember { mutableStateOf<VoiceChannel?>(null) }
+    var memberToKick      by remember { mutableStateOf<ActiveUser?>(null) }
+    // Ses kanalları listesi sağ tık menüsü (sahip)
+    var channelAreaMenu   by remember { mutableStateOf(false) }
+    var channelAreaMenuAt by remember { mutableStateOf(androidx.compose.ui.unit.DpOffset.Zero) }
+    var channelAreaHeightPx by remember { mutableStateOf(0) }
+    var channelRowMenu    by remember { mutableStateOf<VoiceChannel?>(null) }
+    // Sürükle-bırak: kanal satırlarının pencere içi konumları + sürüklenen kullanıcı
+    val channelBounds     = remember { mutableMapOf<String, androidx.compose.ui.geometry.Rect>() }
+    var dragUser          by remember { mutableStateOf<ActiveUser?>(null) }
+    var dragFromChannel   by remember { mutableStateOf<String?>(null) }
+    var dragPos           by remember { mutableStateOf(androidx.compose.ui.geometry.Offset.Zero) }
+    var rootOffset        by remember { mutableStateOf(androidx.compose.ui.geometry.Offset.Zero) }
+    val dragTargetId: String? = dragUser?.let {
+        channelBounds.entries.firstOrNull { (_, r) -> r.contains(dragPos) }?.key
+    }
     // Atıldı mı?
     var wasKicked         by remember { mutableStateOf(false) }
     // Çevrimiçi üyeler (presence)
@@ -1085,6 +1160,19 @@ fun ServerDetailScreen(
                 val lastTs = messages.filter { !it.id.startsWith("pending-") && !it.id.startsWith("img-pending-") }
                     .maxOfOrNull { it.timestamp } ?: 0L
                 val newMsgs = FirestoreClient.listMessagesSince(serverId, lastTs, currentUser.idToken)
+                // Windows bildirimi: başkasından yeni mesaj geldi ve bu sohbet şu an görünmüyor
+                if (lastTs > 0L) {
+                    val known    = messages.map { it.id }.toSet()
+                    val incoming = newMsgs.filter { it.uid != currentUser.uid && it.id !in known }
+                    val visible  = com.furcord.ui.Notifier.windowFocused &&
+                        com.furcord.ui.Notifier.visibleServerId == serverId && showTextChannel
+                    if (incoming.isNotEmpty() && !visible) {
+                        val m = incoming.last()
+                        val body = m.text.ifBlank { "📎 Bir dosya gönderdi" } +
+                            if (incoming.size > 1) "  (+${incoming.size - 1} mesaj)" else ""
+                        com.furcord.ui.Notifier.notifyServerMessage(serverName, m.username, body)
+                    }
+                }
                 if (newMsgs.isNotEmpty()) {
                     val hasPending = messages.any { it.id.startsWith("pending-") || it.id.startsWith("img-pending-") }
                     val wasAtBottom = messages.isEmpty() || listState.layoutInfo.let { info ->
@@ -1107,7 +1195,14 @@ fun ServerDetailScreen(
         }
     }
 
-// ── Sunucuya girince en son mesajdan başla (görseller/yerleşim oturana dek birkaç kez sabitle) ──    LaunchedEffect(serverId) {        snapshotFlow { messages.size }.first { it > 0 }        repeat(4) {            listState.scrollToItem((messages.size - 1).coerceAtLeast(0))            delay(250)        }    }
+    // ── Sunucuya girince en son mesajdan başla (görseller/yerleşim oturana dek birkaç kez sabitle) ──
+    LaunchedEffect(serverId, "scrollToLatest") {
+        snapshotFlow { messages.size }.first { it > 0 }
+        repeat(4) {
+            listState.scrollToItem((messages.size - 1).coerceAtLeast(0))
+            delay(250)
+        }
+    }
     // ── Presence heartbeat — 30s'de bir yaz ─────────────────────────────────
     LaunchedEffect(serverId, currentUser.uid) {
         while (true) {
@@ -1222,8 +1317,57 @@ fun ServerDetailScreen(
     // ── Sunucu sahipliğini yükle ──────────────────────────────────────────────
     LaunchedEffect(serverId) {
         runCatching {
-            val creatorUid = FirestoreClient.getServerCreatorUid(serverId, currentUser.idToken)
-            isOwner = (creatorUid == currentUser.uid)
+            val cu = FirestoreClient.getServerCreatorUid(serverId, currentUser.idToken)
+            creatorUid = cu
+            isOwner = (cu == currentUser.uid)
+        }
+    }
+
+    // ── Üye kaydı: sunucuya girince kendini üye listesine yaz (atıldıysa yazma) ──
+    LaunchedEffect(serverId, currentUser.uid, displayNickname, currentUser.photoURL) {
+        val kicked = runCatching { FirestoreClient.isKicked(serverId, currentUser.uid, currentUser.idToken) }
+            .getOrDefault(false)
+        if (!kicked) FirestoreClient.upsertMember(serverId, currentUser.uid, displayNickname, currentUser.photoURL, currentUser.idToken)
+    }
+
+    // ── Üye listesi — 20 sn'de bir ──────────────────────────────────────────
+    LaunchedEffect(serverId, "members") {
+        while (true) {
+            runCatching {
+                val fetched = FirestoreClient.listMembers(serverId, currentUser.idToken)
+                if (fetched.isNotEmpty() && fetched != members) members = fetched
+            }
+            delay(20_000)
+        }
+    }
+
+    // ── Sabit "Genel" ses kanalı: sahip, yoksa oluşturur ────────────────────
+    LaunchedEffect(serverId, isOwner, loading) {
+        if (!isOwner || loading) return@LaunchedEffect
+        val hasGeneral = channels.any { it.id == FirestoreClient.DEFAULT_VOICE_CHANNEL_ID || it.name.equals("Genel", ignoreCase = true) }
+        if (!hasGeneral) runCatching {
+            FirestoreClient.ensureDefaultVoiceChannel(serverId, currentUser.idToken)
+            channels = listOf(VoiceChannel(FirestoreClient.DEFAULT_VOICE_CHANNEL_ID, "Genel")) + channels
+        }
+    }
+
+    /** Kullanıcıyı sunucudan atar: atıldı işareti + üyelikten çıkarma + ses kanallarından silme. */
+    fun kickMember(targetUid: String) {
+        if (targetUid == currentUser.uid || targetUid == creatorUid) return
+        scope.launch {
+            runCatching { FirestoreClient.kickUser(serverId, targetUid, currentUser.idToken) }
+            runCatching { FirestoreClient.removeMember(serverId, targetUid, currentUser.idToken) }
+            members = members.filter { it.uid != targetUid }
+            presenceUsers = presenceUsers.filter { it.uid != targetUid }
+            val affected = channelUsers.filterValues { list -> list.any { it.uid == targetUid } }.keys
+            channelUsers = channelUsers.mapValues { (_, users) -> users.filter { it.uid != targetUid } }
+            affected.forEach { cid ->
+                runCatching {
+                    FirestoreClient.setChannelActiveUsers(serverId, cid, channelUsers[cid] ?: emptyList(), currentUser.idToken)
+                }
+            }
+            runCatching { FirestoreClient.removeVoicePeer(serverId, targetUid, currentUser.idToken) }
+            runCatching { FirestoreClient.deletePresence(serverId, targetUid, currentUser.idToken) }
         }
     }
 
@@ -1237,6 +1381,7 @@ fun ServerDetailScreen(
                     if (kicked) {
                         // Kicked kaydını temizle, ses bırak, sunucudan çık
                         FirestoreClient.clearKickedFlag(serverId, currentUser.uid, currentUser.idToken)
+                        com.furcord.auth.RecentServers.remove(serverId)
                         val cid = connectedChannelId
                         if (cid != null) {
                             runCatching {
@@ -1362,6 +1507,73 @@ fun ServerDetailScreen(
         scope.launch { leaveChannelSuspend() }
     }
 
+    /** Sabit "Genel" kanal mı (silinemez)? */
+    fun isDefaultChannel(ch: VoiceChannel): Boolean =
+        ch.id == FirestoreClient.DEFAULT_VOICE_CHANNEL_ID ||
+            (channels.none { it.id == FirestoreClient.DEFAULT_VOICE_CHANNEL_ID } &&
+                channels.firstOrNull { it.name.equals("Genel", ignoreCase = true) }?.id == ch.id)
+
+    // Bağlı olduğum kanal silindiyse Genel'e geç
+    LaunchedEffect(channels, connectedChannelId) {
+        val cid = connectedChannelId ?: return@LaunchedEffect
+        if (channels.isNotEmpty() && channels.none { it.id == cid } && joiningChannelId == null) {
+            channels.firstOrNull { isDefaultChannel(it) }?.let { joinChannel(it) } ?: leaveChannel()
+        }
+    }
+
+    // Sunucu sahibi beni başka ses kanalına taşıdıysa geç (yalnızca ses kanalındayken)
+    LaunchedEffect(connectedChannelId, "voiceMove") {
+        if (connectedChannelId == null) return@LaunchedEffect
+        while (true) {
+            delay(3_000)
+            val target = runCatching { FirestoreClient.getVoiceMove(serverId, currentUser.uid, currentUser.idToken) }.getOrNull()
+                ?: continue
+            FirestoreClient.clearVoiceMove(serverId, currentUser.uid, currentUser.idToken)
+            val ch = channels.find { it.id == target }
+            if (ch != null && ch.id != connectedChannelId && joiningChannelId == null) {
+                joinChannel(ch)
+            }
+        }
+    }
+
+    /** Sürükle-bırak: [user]'ı [target] kanalına taşır. */
+    fun moveUserTo(user: ActiveUser, target: VoiceChannel) {
+        if (user.uid == currentUser.uid) { joinChannel(target); return }
+        if (!isOwner) return
+        // Anında görsel geri bildirim; kalıcı durum hedef kullanıcının istemcisi taşınınca yazılır
+        channelUsers = channelUsers.mapValues { (cid, list) ->
+            val without = list.filter { it.uid != user.uid }
+            if (cid == target.id) without + user else without
+        }.let { if (target.id !in it) it + (target.id to listOf(user)) else it }
+        scope.launch {
+            runCatching { FirestoreClient.requestVoiceMove(serverId, user.uid, target.id, currentUser.idToken) }
+        }
+    }
+
+    fun createChannel(name: String) {
+        val clean = name.trim().take(40)
+        if (clean.isEmpty() || !isOwner) return
+        scope.launch {
+            runCatching {
+                FirestoreClient.createVoiceChannel(serverId, clean, channels.size, currentUser.idToken)
+                val fetched = FirestoreClient.listVoiceChannels(serverId, currentUser.idToken)
+                if (fetched.isNotEmpty()) channels = fetched
+            }
+        }
+    }
+
+    fun deleteChannel(ch: VoiceChannel) {
+        if (!isOwner || isDefaultChannel(ch)) return
+        scope.launch {
+            runCatching {
+                FirestoreClient.deleteVoiceChannel(serverId, ch.id, currentUser.idToken)
+                channels = channels.filter { it.id != ch.id }
+                channelUsers = channelUsers - ch.id
+                channelBounds.remove(ch.id)
+            }
+        }
+    }
+
     // ── Send image ────────────────────────────────────────────────────────────
     fun sendImage() {
         if (sendingImage) return
@@ -1420,7 +1632,7 @@ fun ServerDetailScreen(
             timestamp   = now,
             replyToId   = reply?.id   ?: "",
             replyToUser = reply?.username ?: "",
-            replyToText = reply?.text ?: "",
+            replyToText = quotePreviewText(reply?.text ?: "", reply?.imageUrl ?: ""),
         )
         messages = messages + optimistic
         messageText = ""
@@ -1438,7 +1650,7 @@ fun ServerDetailScreen(
                     idToken     = currentUser.idToken,
                     replyToId   = reply?.id   ?: "",
                     replyToUser = reply?.username ?: "",
-                    replyToText = reply?.text?.take(120) ?: "",
+                    replyToText = quotePreviewText(reply?.text ?: "", reply?.imageUrl ?: "").take(120),
                 )
                 // Gönderim başarılı: cache'i hemen güncelle (optimistik mesaj dahil)
                 // Kullanıcı Firestore fetch gelmeden önce ayrılırsa bile mesaj kaybolmaz
@@ -1458,12 +1670,132 @@ fun ServerDetailScreen(
         }
     }
 
+    // ── Tepki (emoji) ekle / kaldır ──────────────────────────────────────────
+    fun reactTo(msg: ChatMessage, emoji: String) {
+        if (msg.id.startsWith("pending-") || msg.id.startsWith("img-pending-")) return
+        // Anında göster; sunucu yanıtı gelince kesinleştir
+        fun apply(id: String, r: Map<String, List<String>>) {
+            messages = messages.map { if (it.id == id) it.copy(reactions = r) else it }
+        }
+        val users = msg.reactions[emoji].orEmpty()
+        val optimistic = (if (currentUser.uid in users) msg.reactions + (emoji to users - currentUser.uid)
+                          else msg.reactions + (emoji to users + currentUser.uid)).filterValues { it.isNotEmpty() }
+        apply(msg.id, optimistic)
+        scope.launch {
+            runCatching { FirestoreClient.toggleServerReaction(serverId, msg.id, emoji, currentUser.uid, currentUser.idToken) }
+                .onSuccess { apply(msg.id, it) }
+                .onFailure { apply(msg.id, msg.reactions) }
+        }
+    }
+
+    // Başkalarının tepkilerini tazele (son 30 mesaj, yalnızca sohbet görünürken ve pencere odaktayken)
+    LaunchedEffect(serverId, "reactionsRefresh") {
+        while (true) {
+            delay(8_000)
+            if (!showTextChannel || !com.furcord.ui.Notifier.windowFocused) continue
+            runCatching {
+                val fresh = FirestoreClient.listRecentMessages(serverId, 30, currentUser.idToken).associateBy { it.id }
+                if (fresh.isNotEmpty() && messages.any { m -> fresh[m.id]?.let { it.reactions != m.reactions } == true }) {
+                    messages = messages.map { m -> fresh[m.id]?.let { m.copy(reactions = it.reactions) } ?: m }
+                }
+            }
+        }
+    }
+
+    // ── Ses kanalı oluştur (sahip) ───────────────────────────────────────────
+    if (showCreateChannel) {
+        var newName by remember { mutableStateOf("") }
+        val submit = { if (newName.isNotBlank()) { createChannel(newName); showCreateChannel = false } }
+        AlertDialog(
+            onDismissRequest = { showCreateChannel = false },
+            containerColor   = AppColors.BgSidebar,
+            title = { Text("Ses Kanalı Oluştur", fontWeight = FontWeight.Bold, color = AppColors.TextPrimary) },
+            text  = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("KANAL ADI", fontSize = 11.sp, fontWeight = FontWeight.Bold,
+                        color = AppColors.TextMuted, letterSpacing = 0.8.sp)
+                    OutlinedTextField(
+                        value         = newName,
+                        onValueChange = { newName = it.take(40) },
+                        singleLine    = true,
+                        placeholder   = { Text("ör. Oyun", color = AppColors.TextSubtle) },
+                        leadingIcon   = { Text("🔈", fontSize = 14.sp) },
+                        modifier      = Modifier.fillMaxWidth().onPreviewKeyEvent { e ->
+                            if (e.type == KeyEventType.KeyDown && e.key == Key.Enter) { submit(); true } else false
+                        },
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor   = AppColors.Accent,
+                            unfocusedBorderColor = AppColors.Outline,
+                            focusedTextColor     = AppColors.TextPrimary,
+                            unfocusedTextColor   = AppColors.TextPrimary,
+                            cursorColor          = AppColors.Accent,
+                        ),
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = { submit() },
+                    enabled = newName.isNotBlank(),
+                    colors  = ButtonDefaults.buttonColors(containerColor = AppColors.Accent),
+                ) { Text("Oluştur", color = Color.White) }
+            },
+            dismissButton = {
+                TextButton(onClick = { showCreateChannel = false }) { Text("İptal", color = AppColors.TextMuted) }
+            },
+        )
+    }
+
+    // ── Ses kanalı sil onayı ────────────────────────────────────────────────
+    channelToDelete?.let { ch ->
+        AlertDialog(
+            onDismissRequest = { channelToDelete = null },
+            containerColor   = AppColors.BgSidebar,
+            title = { Text("Kanalı Sil", fontWeight = FontWeight.Bold, color = AppColors.TextPrimary) },
+            text  = {
+                Text("\"${ch.name}\" ses kanalı silinecek. İçindeki kullanıcılar Genel kanalına geçer.",
+                    color = AppColors.TextSecondary, fontSize = 14.sp)
+            },
+            confirmButton = {
+                Button(
+                    onClick = { deleteChannel(ch); channelToDelete = null },
+                    colors  = ButtonDefaults.buttonColors(containerColor = AppColors.Danger),
+                ) { Text("Sil", color = Color.White) }
+            },
+            dismissButton = {
+                TextButton(onClick = { channelToDelete = null }) { Text("İptal", color = AppColors.TextMuted) }
+            },
+        )
+    }
+
+    // ── Kullanıcıyı at onayı ────────────────────────────────────────────────
+    memberToKick?.let { m ->
+        AlertDialog(
+            onDismissRequest = { memberToKick = null },
+            containerColor   = AppColors.BgSidebar,
+            title = { Text("${m.username} atılsın mı?", fontWeight = FontWeight.Bold, color = AppColors.TextPrimary) },
+            text  = {
+                Text("Kullanıcı sunucudan çıkarılır. Yeniden katılabilmesi için tekrar davet etmen gerekir.",
+                    color = AppColors.TextSecondary, fontSize = 14.sp)
+            },
+            confirmButton = {
+                Button(
+                    onClick = { kickMember(m.uid); memberToKick = null },
+                    colors  = ButtonDefaults.buttonColors(containerColor = AppColors.Danger),
+                ) { Text("At", color = Color.White) }
+            },
+            dismissButton = {
+                TextButton(onClick = { memberToKick = null }) { Text("İptal", color = AppColors.TextMuted) }
+            },
+        )
+    }
+
     val connectedChannel = channels.find { it.id == connectedChannelId }
     val selectedChannel  = channels.find { it.id == selectedChannelId }
     val displayName      = displayNickname
     val initial          = displayName.firstOrNull()?.uppercaseChar() ?: '?'
 
-    Box(modifier = Modifier.fillMaxSize()) {
+    Box(modifier = Modifier.fillMaxSize().onGloballyPositioned { rootOffset = it.positionInWindow() }) {
     Row(modifier = Modifier.fillMaxSize()) {
 
         // ── Left sidebar ──────────────────────────────────────────────────────
@@ -1575,7 +1907,7 @@ fun ServerDetailScreen(
                 )
             }
 
-            // "SES KANALLARI" label
+            // "SES KANALLARI" label (+ sahip için kanal oluştur düğmesi)
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -1590,6 +1922,14 @@ fun ServerDetailScreen(
                     modifier = Modifier.weight(1f),
                     letterSpacing = 0.8.sp,
                 )
+                if (isOwner) {
+                    Text(
+                        "+",
+                        fontSize = 18.sp,
+                        color = AppColors.TextMuted,
+                        modifier = Modifier.clickable { showCreateChannel = true }.padding(horizontal = 6.dp),
+                    )
+                }
             }
 
             if (loading) {
@@ -1598,22 +1938,77 @@ fun ServerDetailScreen(
                 }
             }
 
+            // Ses kanalları tepsisi — sahip boş bir yere sağ tıklayınca "Ses Kanalı Oluştur"
+            Box(
+                Modifier
+                    .weight(1f)
+                    .fillMaxWidth()
+                    .onSizeChanged { channelAreaHeightPx = it.height }
+                    .pointerInput(isOwner) {
+                        if (!isOwner) return@pointerInput
+                        awaitPointerEventScope {
+                            while (true) {
+                                val event = awaitPointerEvent()
+                                if (event.type == PointerEventType.Press && event.buttons.isSecondaryPressed &&
+                                    event.changes.none { it.isConsumed }
+                                ) {
+                                    event.changes.firstOrNull()?.position?.let {
+                                        channelAreaMenuAt = androidx.compose.ui.unit.DpOffset((it.x / density).dp, ((it.y - channelAreaHeightPx) / density).dp)
+                                    }
+                                    channelAreaMenu = true
+                                }
+                            }
+                        }
+                    },
+            ) {
             LazyColumn(
-                modifier = Modifier.weight(1f).padding(horizontal = 8.dp),
+                modifier = Modifier.fillMaxSize().padding(horizontal = 8.dp),
                 verticalArrangement = Arrangement.spacedBy(2.dp),
             ) {
-                items(channels) { ch ->
-                    ChannelRow(
-                        channel          = ch,
-                        isConnected      = connectedChannelId == ch.id,
-                        isSelected       = selectedChannelId == ch.id,
-                        activeUsers      = channelUsers[ch.id] ?: emptyList(),
-                        currentUid       = currentUser.uid,
-                        onClick          = { joinChannel(ch) },
-                        onUserRightClick = { u -> contextMenuUser = u; showVolumeSlider = false },
-                        speakingSet      = speakingSet,
-                        timerStr         = if (connectedChannelId == ch.id) voiceTimerStr else null,
-                    )
+                items(channels, key = { it.id }) { ch ->
+                    Box {
+                        ChannelRow(
+                            channel          = ch,
+                            isConnected      = connectedChannelId == ch.id,
+                            isSelected       = selectedChannelId == ch.id,
+                            activeUsers      = channelUsers[ch.id] ?: emptyList(),
+                            currentUid       = currentUser.uid,
+                            onClick          = { joinChannel(ch) },
+                            onUserRightClick = { u -> contextMenuUser = u; showVolumeSlider = false },
+                            speakingSet      = speakingSet,
+                            timerStr         = if (connectedChannelId == ch.id) voiceTimerStr else null,
+                            onChannelRightClick = if (isOwner) {{ channelRowMenu = ch }} else null,
+                            isDropTarget     = dragUser != null && dragTargetId == ch.id && dragFromChannel != ch.id,
+                            onBounds         = { r -> channelBounds[ch.id] = r },
+                            canDragUser      = { u -> isOwner || u.uid == currentUser.uid },
+                            onUserDragStart  = { u, pos -> dragUser = u; dragFromChannel = ch.id; dragPos = pos },
+                            onUserDrag       = { delta -> dragPos += delta },
+                            onUserDragEnd    = {
+                                val u = dragUser
+                                val target = dragTargetId?.let { id -> channels.find { it.id == id } }
+                                if (u != null && target != null && target.id != dragFromChannel) moveUserTo(u, target)
+                                dragUser = null; dragFromChannel = null
+                            },
+                        )
+                        // Kanal sağ tık menüsü (sahip)
+                        DropdownMenu(
+                            expanded         = channelRowMenu?.id == ch.id,
+                            onDismissRequest = { channelRowMenu = null },
+                            containerColor   = Color(0xFF111214),
+                        ) {
+                            DropdownMenuItem(
+                                text    = { Text("➕  Ses Kanalı Oluştur", color = AppColors.TextSecondary, fontSize = 13.sp) },
+                                onClick = { channelRowMenu = null; showCreateChannel = true },
+                            )
+                            if (!isDefaultChannel(ch)) {
+                                HorizontalDivider(color = AppColors.BgSidebar)
+                                DropdownMenuItem(
+                                    text    = { Text("🗑  Kanalı Sil", color = AppColors.Danger, fontSize = 13.sp) },
+                                    onClick = { channelRowMenu = null; channelToDelete = ch },
+                                )
+                            }
+                        }
+                    }
                 }
                 if (channels.isEmpty() && !loading) {
                     item {
@@ -1625,6 +2020,18 @@ fun ServerDetailScreen(
                         )
                     }
                 }
+            }
+            DropdownMenu(
+                expanded         = channelAreaMenu,
+                onDismissRequest = { channelAreaMenu = false },
+                offset           = channelAreaMenuAt,
+                containerColor   = Color(0xFF111214),
+            ) {
+                DropdownMenuItem(
+                    text    = { Text("➕  Ses Kanalı Oluştur", color = AppColors.TextSecondary, fontSize = 13.sp) },
+                    onClick = { channelAreaMenu = false; showCreateChannel = true },
+                )
+            }
             }
 
             // Voice connected bar
@@ -1703,21 +2110,7 @@ fun ServerDetailScreen(
                         }
                     }
                 },
-                onKick = if (isOwner) {{
-                    val targetUid = sidebarCtxUser.uid
-                    contextMenuUser = null
-                    scope.launch {
-                        runCatching { FirestoreClient.kickUser(serverId, targetUid, currentUser.idToken) }
-                        channelUsers = channelUsers.mapValues { (_, users) ->
-                            users.filter { it.uid != targetUid }
-                        }
-                        channelUsers.forEach { (cid, users) ->
-                            runCatching {
-                                FirestoreClient.setChannelActiveUsers(serverId, cid, users, currentUser.idToken)
-                            }
-                        }
-                    }
-                }} else null,
+                onKick = if (isOwner && sidebarCtxUser.uid != creatorUid) {{ contextMenuUser = null; memberToKick = sidebarCtxUser }} else null,
                 onWatchStream = if (broadcastingUidHash != 0 && sidebarCtxUser.uid.hashCode() == broadcastingUidHash) {{
                     contextMenuUser = null
                     ScreenShareManager.startReceiver()
@@ -1766,10 +2159,10 @@ fun ServerDetailScreen(
                     replyingTo      = replyingTo,
                     onReply         = { replyingTo = it },
                     onReplyClear    = { replyingTo = null },
+                    onReact         = { m, e -> reactTo(m, e) },
                     modifier        = Modifier.weight(1f).fillMaxWidth(),
                 )
             }
-            MemberPanel(users = presenceUsers, currentUid = currentUser.uid)
         } else {
             // ── Ses kanalı görünümü — sadece kullanıcı grid, mesaj yok ────────
             val viewChannelId = connectedChannelId ?: selectedChannelId
@@ -1976,21 +2369,7 @@ fun ServerDetailScreen(
                                                 }
                                             }
                                         },
-                                        onKick = if (isOwner) {{
-                                            val targetUid = u.uid
-                                            contextMenuUser = null
-                                            scope.launch {
-                                                runCatching { FirestoreClient.kickUser(serverId, targetUid, currentUser.idToken) }
-                                                channelUsers = channelUsers.mapValues { (_, users) ->
-                                                    users.filter { it.uid != targetUid }
-                                                }
-                                                channelUsers.forEach { (cid, users) ->
-                                                    runCatching {
-                                                        FirestoreClient.setChannelActiveUsers(serverId, cid, users, currentUser.idToken)
-                                                    }
-                                                }
-                                            }
-                                        }} else null,
+                                        onKick = if (isOwner && u.uid != creatorUid) {{ contextMenuUser = null; memberToKick = u }} else null,
                                         onWatchStream = if (broadcastingUidHash != 0 && u.uid.hashCode() == broadcastingUidHash) {{
                                             contextMenuUser = null
                                             ScreenShareManager.startReceiver()
@@ -2005,7 +2384,52 @@ fun ServerDetailScreen(
                 }
             }
         }
+        // ── Sağ panel: sunucuya kayıtlı üyeler (her iki görünümde) ──────────
+        MemberPanel(
+            members     = members,
+            online      = presenceUsers,
+            currentUid  = currentUser.uid,
+            creatorUid  = creatorUid,
+            isOwner     = isOwner,
+            onMessage   = { u -> onOpenDm?.invoke(u.uid, u.username) },
+            onAddFriend = { u ->
+                scope.launch {
+                    runCatching {
+                        FirestoreClient.sendFriendRequest(
+                            toUid     = u.uid,
+                            fromUid   = currentUser.uid,
+                            fromName  = displayNickname,
+                            furcordId = currentUser.furcordId,
+                            idToken   = currentUser.idToken,
+                        )
+                    }
+                }
+            },
+            onKick      = { u -> memberToKick = u },
+        )
     }   // end Row
+
+    // Sürüklenen kullanıcının imleci takip eden hayaleti
+    dragUser?.let { du ->
+        Row(
+            Modifier
+                .offset { IntOffset((dragPos.x - rootOffset.x).toInt() + 12, (dragPos.y - rootOffset.y).toInt() - 16) }
+                .zIndex(10f)
+                .shadow(8.dp, RoundedCornerShape(8.dp))
+                .clip(RoundedCornerShape(8.dp))
+                .background(AppColors.BgElevated)
+                .padding(horizontal = 10.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            UserAvatar(displayName = du.username, photoURL = du.photoURL, size = 24)
+            Text(du.username, fontSize = 13.sp, color = AppColors.TextPrimary, fontWeight = FontWeight.SemiBold)
+            val target = dragTargetId?.let { id -> channels.find { it.id == id } }
+            if (target != null && target.id != dragFromChannel) {
+                Text("→ ${target.name}", fontSize = 12.sp, color = AppColors.Accent)
+            }
+        }
+    }
     }   // end Box(fillMaxSize)
 }
 
@@ -2024,6 +2448,7 @@ private fun ChatPanel(
     replyingTo: ChatMessage? = null,
     onReply: (ChatMessage) -> Unit = {},
     onReplyClear: () -> Unit = {},
+    onReact: (ChatMessage, String) -> Unit = { _, _ -> },
     modifier: Modifier = Modifier,
 ) {
     Column(modifier = modifier) {
@@ -2066,6 +2491,9 @@ private fun ChatPanel(
                     },
                     idToken    = currentUser.idToken,
                     onDownload = { m -> com.furcord.download.DownloadManager.downloadAttachment(m.imageUrl, currentUser.idToken) },
+                    repliedMsg = if (msg.replyToId.isNotBlank()) messages.firstOrNull { it.id == msg.replyToId } else null,
+                    myUid      = currentUser.uid,
+                    onReact    = onReact,
                 )
             }
         }
@@ -2087,6 +2515,10 @@ private fun ChatPanel(
                         .background(AppColors.Accent),
                 )
                 Spacer(Modifier.width(8.dp))
+                if (replyingTo!!.imageUrl.isNotBlank()) {
+                    AttachmentThumb(replyingTo!!.imageUrl, currentUser.idToken, 40.dp)
+                    Spacer(Modifier.width(8.dp))
+                }
                 Column(Modifier.weight(1f)) {
                     Text(
                         text       = replyingTo!!.username,
@@ -2095,7 +2527,7 @@ private fun ChatPanel(
                         fontWeight = FontWeight.SemiBold,
                     )
                     Text(
-                        text     = replyingTo!!.text.take(60),
+                        text     = quotePreviewText(replyingTo!!.text, replyingTo!!.imageUrl).take(60),
                         fontSize = 12.sp,
                         color    = AppColors.TextMuted,
                         maxLines = 1,
@@ -2199,45 +2631,146 @@ private fun ChatPanel(
         }
     }
 }
+/**
+ * Sağ panel: sunucuya kayıtlı tüm üyeler — çevrimiçi olanlar üstte, çevrimdışılar soluk.
+ * Sağ tık: Mesaj Gönder / Arkadaş Ekle; sunucu sahibi için "Sunucudan At".
+ */
 @Composable
-private fun MemberPanel(users: List<ActiveUser>, currentUid: String) {
+private fun MemberPanel(
+    members: List<ActiveUser>,
+    online: List<ActiveUser>,
+    currentUid: String,
+    creatorUid: String?,
+    isOwner: Boolean,
+    onMessage: (ActiveUser) -> Unit,
+    onAddFriend: (ActiveUser) -> Unit,
+    onKick: (ActiveUser) -> Unit,
+) {
+    val onlineIds = remember(online) { online.map { it.uid }.toSet() }
+    // Kayıtlı üyeler + (henüz kayda geçmemiş) çevrimiçi kullanıcılar
+    val all = remember(members, online) {
+        (members + online.filter { o -> members.none { it.uid == o.uid } }).distinctBy { it.uid }
+    }
+    val onlineList  = remember(all, onlineIds) { all.filter { it.uid in onlineIds }.sortedBy { it.username.lowercase() } }
+    val offlineList = remember(all, onlineIds) { all.filter { it.uid !in onlineIds }.sortedBy { it.username.lowercase() } }
+
     Column(
         Modifier.width(240.dp).fillMaxHeight()
             .background(AppColors.BgSidebar)
-            .padding(top = 20.dp, start = 12.dp, end = 12.dp)
+            .padding(top = 16.dp, start = 12.dp, end = 12.dp)
     ) {
-        Text(
-            "ÇEVRİMİÇİ — ${users.size}",
-            fontSize = 11.sp, fontWeight = FontWeight.Bold,
-            color = AppColors.TextSubtle, letterSpacing = 0.8.sp,
-            modifier = Modifier.padding(start = 6.dp, bottom = 8.dp),
-        )
         LazyColumn(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-            items(users) { u ->
-                val isSelf = u.uid == currentUid
-                Row(
-                    Modifier.fillMaxWidth()
-                        .clip(RoundedCornerShape(Radius.Small))
-                        .padding(horizontal = 6.dp, vertical = 5.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(10.dp),
-                ) {
-                    Box {
-                        UserAvatar(displayName = u.username, photoURL = u.photoURL, size = 30)
-                        Box(
-                            Modifier.align(Alignment.BottomEnd).size(10.dp)
-                                .clip(CircleShape).background(AppColors.BgSidebar).padding(2.dp)
-                                .clip(CircleShape).background(AppColors.Online)
-                        )
-                    }
-                    Text(
-                        if (isSelf) "${u.username} (sen)" else u.username,
-                        fontSize = 13.sp,
-                        color = if (isSelf) AppColors.Online else AppColors.TextSecondary,
-                        maxLines = 1, overflow = TextOverflow.Ellipsis,
-                    )
+            item(key = "hdr_on") { MemberHeader("ÇEVRİMİÇİ — ${onlineList.size}") }
+            items(onlineList, key = { "on_" + it.uid }) { u ->
+                MemberRow(u, true, u.uid == currentUid, u.uid == creatorUid, isOwner, onMessage, onAddFriend, onKick)
+            }
+            if (offlineList.isNotEmpty()) {
+                item(key = "hdr_off") {
+                    Spacer(Modifier.height(12.dp))
+                    MemberHeader("ÇEVRİMDIŞI — ${offlineList.size}")
+                }
+                items(offlineList, key = { "off_" + it.uid }) { u ->
+                    MemberRow(u, false, u.uid == currentUid, u.uid == creatorUid, isOwner, onMessage, onAddFriend, onKick)
                 }
             }
         }
     }
 }
+
+@Composable
+private fun MemberHeader(text: String) {
+    Text(
+        text, fontSize = 11.sp, fontWeight = FontWeight.Bold,
+        color = AppColors.TextSubtle, letterSpacing = 0.8.sp,
+        modifier = Modifier.padding(start = 6.dp, bottom = 6.dp),
+    )
+}
+
+@Composable
+private fun MemberRow(
+    u: ActiveUser,
+    isOnline: Boolean,
+    isSelf: Boolean,
+    isCreator: Boolean,
+    viewerIsOwner: Boolean,
+    onMessage: (ActiveUser) -> Unit,
+    onAddFriend: (ActiveUser) -> Unit,
+    onKick: (ActiveUser) -> Unit,
+) {
+    val interaction = remember { MutableInteractionSource() }
+    val hovered by interaction.collectIsHoveredAsState()
+    var menuOpen by remember { mutableStateOf(false) }
+    var menuAt   by remember { mutableStateOf(androidx.compose.ui.unit.DpOffset.Zero) }
+
+    Box {
+        Row(
+            Modifier.fillMaxWidth()
+                .clip(RoundedCornerShape(Radius.Small))
+                .hoverable(interaction)
+                .background(if (hovered || menuOpen) AppColors.BgElevated else Color.Transparent)
+                .then(
+                    if (!isSelf) Modifier.pointerInput(u.uid) {
+                        awaitPointerEventScope {
+                            while (true) {
+                                val event = awaitPointerEvent()
+                                if (event.type == PointerEventType.Press && event.buttons.isSecondaryPressed) {
+                                    event.changes.firstOrNull()?.position?.let {
+                                        menuAt = androidx.compose.ui.unit.DpOffset((it.x / density).dp, 0.dp)
+                                    }
+                                    menuOpen = true
+                                }
+                            }
+                        }
+                    } else Modifier
+                )
+                .padding(horizontal = 6.dp, vertical = 5.dp)
+                .graphicsLayerAlpha(if (isOnline) 1f else 0.45f),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            Box {
+                UserAvatar(displayName = u.username, photoURL = u.photoURL, size = 30)
+                if (isOnline) {
+                    Box(
+                        Modifier.align(Alignment.BottomEnd).size(10.dp)
+                            .clip(CircleShape).background(AppColors.BgSidebar).padding(2.dp)
+                            .clip(CircleShape).background(AppColors.Online)
+                    )
+                }
+            }
+            Text(
+                if (isSelf) "${u.username} (sen)" else u.username,
+                fontSize = 13.sp,
+                color = if (isSelf) AppColors.Online else AppColors.TextSecondary,
+                maxLines = 1, overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f, fill = false),
+            )
+            if (isCreator) Text("👑", fontSize = 12.sp)
+        }
+        DropdownMenu(
+            expanded         = menuOpen,
+            onDismissRequest = { menuOpen = false },
+            offset           = menuAt,
+            containerColor   = Color(0xFF111214),
+        ) {
+            DropdownMenuItem(
+                text    = { Text("💬  Mesaj Gönder", color = AppColors.TextSecondary, fontSize = 13.sp) },
+                onClick = { menuOpen = false; onMessage(u) },
+            )
+            DropdownMenuItem(
+                text    = { Text("➕  Arkadaş Ekle", color = AppColors.TextSecondary, fontSize = 13.sp) },
+                onClick = { menuOpen = false; onAddFriend(u) },
+            )
+            if (viewerIsOwner && !isCreator) {
+                HorizontalDivider(color = AppColors.BgSidebar)
+                DropdownMenuItem(
+                    text    = { Text("🔨  Kullanıcıyı At", color = AppColors.Danger, fontSize = 13.sp) },
+                    onClick = { menuOpen = false; onKick(u) },
+                )
+            }
+        }
+    }
+}
+
+private fun Modifier.graphicsLayerAlpha(a: Float): Modifier =
+    if (a >= 1f) this else this.then(Modifier.alpha(a))

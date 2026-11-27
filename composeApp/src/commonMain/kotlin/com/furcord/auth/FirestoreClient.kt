@@ -34,6 +34,8 @@ data class ChatMessage(
     val replyToId:    String = "",  // Yanıtlanan mesajın Firestore doc ID'si
     val replyToUser:  String = "",  // Yanıtlanan mesajın yazarı
     val replyToText:  String = "",  // Yanıtlanan mesajın kısa önizlemesi
+    /** emoji → tepki veren kullanıcı uid'leri */
+    val reactions:    Map<String, List<String>> = emptyMap(),
 )
 
 /** Ses kanalına bağlı bir eşin bağlantı bilgileri. */
@@ -234,6 +236,83 @@ object FirestoreClient {
             if (code !in 200..299) throw Exception("Kanal oluşturulamadı ($code): $text")
         }
 
+    /** Her sunucuda bulunan sabit "Genel" ses kanalının belge kimliği. */
+    const val DEFAULT_VOICE_CHANNEL_ID = "genel"
+
+    /** Sabit "Genel" ses kanalını oluşturur (varsa yalnızca adını/sırasını korur). */
+    suspend fun ensureDefaultVoiceChannel(serverId: String, idToken: String) = withContext(Dispatchers.IO) {
+        val body = """{"fields":{"name":{"stringValue":"Genel"},"order":{"integerValue":"0"}}}"""
+        val url  = "$BASE/servers/$serverId/voiceChannels/$DEFAULT_VOICE_CHANNEL_ID?updateMask.fieldPaths=name&updateMask.fieldPaths=order"
+        val (code, text) = request("PATCH", url, body, idToken)
+        if (code !in 200..299) throw Exception("Genel kanal oluşturulamadı ($code): $text")
+    }
+
+    /** Ses kanalını siler. */
+    suspend fun deleteVoiceChannel(serverId: String, channelId: String, idToken: String) = withContext(Dispatchers.IO) {
+        val (code, text) = request("DELETE", "$BASE/servers/$serverId/voiceChannels/$channelId", idToken = idToken)
+        if (code !in 200..299) throw Exception("Kanal silinemedi ($code): $text")
+    }
+
+    // ── Sunucu üyeleri (sunucuya kayıtlı kullanıcılar) ───────────────────────
+
+    /** Kullanıcıyı sunucunun üye listesine yazar / bilgilerini günceller. */
+    suspend fun upsertMember(
+        serverId: String, uid: String, username: String, photoURL: String, idToken: String,
+    ) = withContext(Dispatchers.IO) {
+        fun String.esc() = replace("\\", "\\\\").replace("\"", "\\\"")
+        val body = """{"fields":{"uid":{"stringValue":"${uid.esc()}"},"username":{"stringValue":"${username.esc()}"},"photoURL":{"stringValue":"${photoURL.esc()}"},"lastSeen":{"integerValue":"${System.currentTimeMillis()}"}}}"""
+        val mask = "updateMask.fieldPaths=uid&updateMask.fieldPaths=username&updateMask.fieldPaths=photoURL&updateMask.fieldPaths=lastSeen"
+        runCatching { request("PATCH", "$BASE/servers/$serverId/members/$uid?$mask", body, idToken) }
+    }
+
+    /** Sunucuya kayıtlı tüm üyeler. */
+    suspend fun listMembers(serverId: String, idToken: String): List<ActiveUser> =
+        withContext(Dispatchers.IO) {
+            val (code, text) = request("GET", "$BASE/servers/$serverId/members?pageSize=300", idToken = idToken)
+            if (code !in 200..299) return@withContext emptyList()
+            val resp = runCatching { fsJson.decodeFromString<FsListResponse>(text) }.getOrNull()
+                ?: return@withContext emptyList()
+            resp.documents.mapNotNull { doc ->
+                val f   = doc.fields
+                val uid = f.str("uid").ifEmpty { doc.name.substringAfterLast("/") }.takeIf { it.isNotEmpty() }
+                    ?: return@mapNotNull null
+                ActiveUser(uid, f.str("username").ifEmpty { "Kullanıcı" }, "#5865F2", f.str("photoURL"))
+            }
+        }
+
+    /** Kullanıcıyı sunucunun üye listesinden çıkarır. */
+    suspend fun removeMember(serverId: String, uid: String, idToken: String) = withContext(Dispatchers.IO) {
+        runCatching { request("DELETE", "$BASE/servers/$serverId/members/$uid", idToken = idToken) }
+    }
+
+    // ── Ses kanalları arası taşıma (sunucu sahibi → hedef kullanıcı) ─────────
+
+    /** Sunucu sahibi, [targetUid]'yi [channelId] ses kanalına taşınmaya çağırır. */
+    suspend fun requestVoiceMove(serverId: String, targetUid: String, channelId: String, idToken: String) =
+        withContext(Dispatchers.IO) {
+            val body = """{"fields":{"channelId":{"stringValue":"$channelId"},"ts":{"integerValue":"${System.currentTimeMillis()}"}}}"""
+            val (code, text) = request("PATCH", "$BASE/servers/$serverId/voiceMoves/$targetUid", body, idToken)
+            if (code !in 200..299) throw Exception("Taşıma isteği gönderilemedi ($code): $text")
+        }
+
+    /** Bu kullanıcı için bekleyen taşıma isteğinin hedef kanalı (yoksa null). */
+    suspend fun getVoiceMove(serverId: String, uid: String, idToken: String): String? =
+        withContext(Dispatchers.IO) {
+            val (code, text) = request("GET", "$BASE/servers/$serverId/voiceMoves/$uid", idToken = idToken)
+            if (code !in 200..299) return@withContext null
+            val doc = runCatching { fsJson.decodeFromString<FsDocument>(text) }.getOrNull() ?: return@withContext null
+            // Çok eski istekler (ör. kullanıcı çevrimdışıyken gelen) yok sayılır
+            if (System.currentTimeMillis() - doc.fields.lng("ts") > 60_000L) {
+                runCatching { request("DELETE", "$BASE/servers/$serverId/voiceMoves/$uid", idToken = idToken) }
+                return@withContext null
+            }
+            doc.fields.str("channelId").takeIf { it.isNotEmpty() }
+        }
+
+    suspend fun clearVoiceMove(serverId: String, uid: String, idToken: String) = withContext(Dispatchers.IO) {
+        runCatching { request("DELETE", "$BASE/servers/$serverId/voiceMoves/$uid", idToken = idToken) }
+    }
+
     // ── Invite links ──────────────────────────────────────────────────────────
 
     /**
@@ -274,8 +353,8 @@ object FirestoreClient {
                 ?: return@withContext emptyList()
             resp.documents.mapNotNull { doc ->
                 val name = doc.fields.str("name").takeIf { it.isNotEmpty() } ?: return@mapNotNull null
-                VoiceChannel(doc.name.substringAfterLast("/"), name)
-            }
+                Triple(VoiceChannel(doc.name.substringAfterLast("/"), name), doc.fields.lng("order"), doc.createTime)
+            }.sortedWith(compareBy({ it.second }, { it.third })).map { it.first }
         }
 
     /**
@@ -517,8 +596,67 @@ object FirestoreClient {
             replyToId   = f.str("replyToId"),
             replyToUser = f.str("replyToUser"),
             replyToText = f.str("replyToText"),
+            reactions   = parseReactions(f),
         )
     }
+
+    private fun parseReactions(f: Map<String, FsValue>): Map<String, List<String>> {
+        val m = f["reactions"]?.map?.fields ?: return emptyMap()
+        return m.mapNotNull { (emoji, v) ->
+            val uids = v.array?.values?.mapNotNull { it.string?.takeIf { s -> s.isNotEmpty() } }.orEmpty()
+            if (uids.isEmpty()) null else emoji to uids
+        }.toMap()
+    }
+
+    private fun reactionsBody(r: Map<String, List<String>>): String {
+        fun String.esc() = replace("\\", "\\\\").replace("\"", "\\\"")
+        val inner = r.entries.joinToString(",") { (e, uids) ->
+            "\"${e.esc()}\":{\"arrayValue\":{\"values\":[" + uids.joinToString(",") { "{\"stringValue\":\"${it.esc()}\"}" } + "]}}"
+        }
+        return if (r.isEmpty()) """{"fields":{}}"""
+        else """{"fields":{"reactions":{"mapValue":{"fields":{$inner}}}}}"""
+    }
+
+    /** Sunucu sohbeti mesajına tepki ekler/kaldırır. Güncel tepki haritasını döndürür. */
+    suspend fun toggleServerReaction(serverId: String, msgId: String, emoji: String, uid: String, idToken: String) =
+        toggleReaction("$BASE/servers/$serverId/messages/$msgId", emoji, uid, idToken)
+
+    /** Özel sohbet mesajına tepki ekler/kaldırır. */
+    suspend fun toggleDmReaction(myUid: String, otherUid: String, msgId: String, emoji: String, idToken: String): Map<String, List<String>> {
+        val dmId = listOf(myUid, otherUid).sorted().joinToString("_")
+        return toggleReaction("$BASE/dm_threads/$dmId/messages/$msgId", emoji, myUid, idToken)
+    }
+
+    private suspend fun toggleReaction(docUrl: String, emoji: String, uid: String, idToken: String): Map<String, List<String>> =
+        withContext(Dispatchers.IO) {
+            val (gc, gt) = request("GET", docUrl, idToken = idToken)
+            if (gc !in 200..299) throw Exception("Mesaj bulunamadı ($gc)")
+            val cur = runCatching { parseReactions(fsJson.decodeFromString<FsDocument>(gt).fields) }.getOrDefault(emptyMap())
+            val users = cur[emoji].orEmpty()
+            val next = (if (uid in users) cur + (emoji to users - uid) else cur + (emoji to users + uid))
+                .filterValues { it.isNotEmpty() }
+            val (pc, pt) = request("PATCH", "$docUrl?updateMask.fieldPaths=reactions", reactionsBody(next), idToken)
+            if (pc !in 200..299) throw Exception("Tepki kaydedilemedi ($pc): $pt")
+            next
+        }
+
+    /** Sunucu sohbetinin son [limit] mesajı (tepkileri tazelemek için). */
+    suspend fun listRecentMessages(serverId: String, limit: Int, idToken: String): List<ChatMessage> =
+        recentQuery("$BASE/servers/$serverId:runQuery", limit, idToken)
+
+    suspend fun listRecentDms(myUid: String, otherUid: String, limit: Int, idToken: String): List<ChatMessage> {
+        val dmId = listOf(myUid, otherUid).sorted().joinToString("_")
+        return recentQuery("$BASE/dm_threads/$dmId:runQuery", limit, idToken)
+    }
+
+    private suspend fun recentQuery(url: String, limit: Int, idToken: String): List<ChatMessage> =
+        withContext(Dispatchers.IO) {
+            val body = """{"structuredQuery":{"from":[{"collectionId":"messages"}],"orderBy":[{"field":{"fieldPath":"timestamp"},"direction":"DESCENDING"}],"limit":$limit}}"""
+            val (code, text) = request("POST", url, body, idToken)
+            if (code !in 200..299) return@withContext emptyList()
+            runCatching { fsJson.decodeFromString<List<FsQueryItem>>(text) }.getOrNull()
+                ?.mapNotNull { it.document?.let { d -> parseMsgFromDoc(d) } } ?: emptyList()
+        }
 
     private fun parseMsgsFromJson(json: String): List<ChatMessage> {
         val resp = runCatching { fsJson.decodeFromString<FsListResponse>(json) }.getOrNull()
@@ -597,8 +735,40 @@ object FirestoreClient {
             ",\"replyToUser\":{\"stringValue\":\"${replyToUser.esc()}\"}" +
             ",\"replyToText\":{\"stringValue\":\"${replyToText.take(120).esc()}\"}"
         else ""
-        val body = """{"fields":{"uid":{"stringValue":"$senderUid"},"username":{"stringValue":"${senderName.esc()}"},"photoURL":{"stringValue":"${senderPhoto.esc()}"},"text":{"stringValue":"${text.esc()}"},"timestamp":{"integerValue":"${System.currentTimeMillis()}"}$imgField$replyField}}"""
-        request("POST", "$BASE/dm_threads/$dmId/messages", idToken = idToken, body = body)
+        val ts   = System.currentTimeMillis()
+        val body = """{"fields":{"uid":{"stringValue":"$senderUid"},"username":{"stringValue":"${senderName.esc()}"},"photoURL":{"stringValue":"${senderPhoto.esc()}"},"text":{"stringValue":"${text.esc()}"},"timestamp":{"integerValue":"$ts"}$imgField$replyField}}"""
+        val result = request("POST", "$BASE/dm_threads/$dmId/messages", idToken = idToken, body = body)
+        // Alıcının bildirim kutusuna da bırak → anlık Windows bildirimi + okunmamış rozeti
+        if (result.first in 200..299) {
+            val notif = """{"fields":{"type":{"stringValue":"dm"},"fromUid":{"stringValue":"${senderUid.esc()}"},"fromName":{"stringValue":"${senderName.esc()}"},"text":{"stringValue":"${text.take(300).esc()}"},"hasAttachment":{"booleanValue":${imageUrl.isNotBlank()}},"timestamp":{"integerValue":"$ts"}}}"""
+            runCatching { request("POST", "$BASE/users/$recipientUid/notifications", notif, idToken) }
+        }
+        result
+    }
+
+    /** Gelen (henüz işlenmemiş) DM bildirimi. */
+    data class DmNotif(
+        val docId: String, val fromUid: String, val fromName: String,
+        val text: String, val hasAttachment: Boolean, val timestamp: Long,
+    )
+
+    /** Bildirim kutusundaki DM bildirimlerini getirir. */
+    suspend fun listDmNotifs(myUid: String, idToken: String): List<DmNotif> = withContext(Dispatchers.IO) {
+        val (code, text) = request("GET", "$BASE/users/$myUid/notifications?pageSize=100", idToken = idToken)
+        if (code !in 200..299) return@withContext emptyList()
+        val resp = runCatching { fsJson.decodeFromString<FsListResponse>(text) }.getOrNull()
+            ?: return@withContext emptyList()
+        resp.documents.mapNotNull { doc ->
+            val f = doc.fields
+            if (f.str("type") != "dm") return@mapNotNull null
+            val from = f.str("fromUid").takeIf { it.isNotEmpty() } ?: return@mapNotNull null
+            DmNotif(doc.name.substringAfterLast("/"), from, f.str("fromName"), f.str("text"),
+                f.bool("hasAttachment"), f.lng("timestamp"))
+        }.sortedBy { it.timestamp }
+    }
+
+    suspend fun deleteNotification(myUid: String, docId: String, idToken: String) = withContext(Dispatchers.IO) {
+        runCatching { request("DELETE", "$BASE/users/$myUid/notifications/$docId", idToken = idToken) }
     }
 
     /**
@@ -788,39 +958,48 @@ object FirestoreClient {
      * directMessages koleksiyonundaki tüm dökümanları tarar —
      * dmId = "uid1_uid2" formatında, her ikisi de biz olabilir.
      */
-    suspend fun listDmConversations(myUid: String, idToken: String): List<DmConversation> =
+    private val dmNameCache = java.util.concurrent.ConcurrentHashMap<String, String>()
+
+    suspend fun listDmConversations(
+        myUid: String,
+        idToken: String,
+        extraUids: Collection<String> = emptyList(),
+    ): List<DmConversation> =
         withContext(Dispatchers.IO) {
-            val (code, text) = request("GET", "$BASE/dm_threads?pageSize=500", idToken = idToken)
-            if (code !in 200..299) return@withContext emptyList()
-            val resp = runCatching { fsJson.decodeFromString<FsListResponse>(text) }.getOrNull()
-                ?: return@withContext emptyList()
+            // Not: dm_threads koleksiyonunu listelemek güvenlik kuralına takılır (kural belge
+            // kimliğine bakıyor). Bu yüzden aday karşı taraflar arkadaş listesinden + bilinen
+            // sohbetlerden çıkarılıp her thread'in son mesajı doğrudan okunur.
+            val friendUids = runCatching {
+                val (fc, ft) = request("GET", "$BASE/friends/$myUid/list?pageSize=200", idToken = idToken)
+                if (fc in 200..299)
+                    fsJson.decodeFromString<FsListResponse>(ft).documents
+                        .map { it.name.substringAfterLast("/") }.filter { it.isNotEmpty() }
+                else emptyList()
+            }.getOrDefault(emptyList())
+            val candidates = (friendUids + extraUids).filter { it.isNotEmpty() && it != myUid }.distinct()
             val found = mutableListOf<DmConversation>()
-            for (doc in resp.documents) {
-                val dmId     = doc.name.substringAfterLast("/")
-                val parts    = dmId.split("_")
-                if (parts.size < 2) continue
-                if (!dmId.contains(myUid)) continue
-                val otherUid = parts.firstOrNull { it != myUid } ?: continue
+            for (otherUid in candidates) {
+                val dmId = listOf(myUid, otherUid).sorted().joinToString("_")
                 val (mc, mt) = request("GET",
                     "$BASE/dm_threads/$dmId/messages?pageSize=1&orderBy=timestamp%20desc",
                     idToken = idToken)
                 if (mc !in 200..299) continue
                 val msgs = parseMsgsFromJson(mt)
                 val last = msgs.lastOrNull() ?: continue
-                val otherName = if (last.uid == myUid) {
-                    runCatching {
-                        val (uc, ut) = request("GET", "$BASE/users/$otherUid", idToken = idToken)
-                        if (uc in 200..299) {
-                            val udoc = fsJson.decodeFromString<FsDocument>(ut)
-                            udoc.fields.str("displayName").takeIf { it.isNotEmpty() } ?: otherUid
-                        } else otherUid
-                    }.getOrDefault(otherUid)
-                } else last.username
+                val otherName = if (last.uid != myUid && last.username.isNotEmpty()) {
+                    last.username.also { dmNameCache[otherUid] = it }
+                } else dmNameCache[otherUid] ?: runCatching {
+                    val (uc, ut) = request("GET", "$BASE/users/$otherUid", idToken = idToken)
+                    if (uc in 200..299) {
+                        val udoc = fsJson.decodeFromString<FsDocument>(ut)
+                        udoc.fields.str("nickname").ifEmpty { udoc.fields.str("displayName") }.ifEmpty { null }
+                    } else null
+                }.getOrNull()?.also { dmNameCache[otherUid] = it } ?: otherUid
                 found.add(DmConversation(
                     dmId          = dmId,
                     otherUid      = otherUid,
                     otherName     = otherName,
-                    lastText      = last.text,
+                    lastText      = last.text.ifBlank { if (last.imageUrl.isNotBlank()) "📎 Dosya" else "" },
                     lastTimestamp = last.timestamp,
                     lastSenderUid = last.uid,
                 ))

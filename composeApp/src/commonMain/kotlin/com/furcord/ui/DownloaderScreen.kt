@@ -12,6 +12,7 @@ import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Movie
 import androidx.compose.material.icons.filled.MusicNote
+import androidx.compose.material.icons.outlined.ContentCut
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -48,6 +49,7 @@ fun DownloaderScreen(onBack: () -> Unit) {
     var isError  by remember { mutableStateOf(false) }
     var files    by remember { mutableStateOf<List<DownloadManager.MediaFile>>(emptyList()) }
     var toDelete by remember { mutableStateOf<DownloadManager.MediaFile?>(null) }
+    var toEdit   by remember { mutableStateOf<DownloadManager.MediaFile?>(null) }
 
     // Ekran açılınca klasördeki mevcut dosyaları listele
     LaunchedEffect(Unit) { files = DownloadManager.listMedia() }
@@ -87,6 +89,20 @@ fun DownloaderScreen(onBack: () -> Unit) {
                 },
                 dismissButton = { TextButton(onClick = { toDelete = null }) { Text("Vazgeç") } },
             )
+        }
+
+        // Kırpma düzenleyicisi
+        toEdit?.let { m ->
+            key(m.file.absolutePath) {
+                MediaTrimDialog(
+                    file = m.file,
+                    onDismiss = { toEdit = null },
+                    onSaved = {
+                        toEdit = null
+                        scope.launch { files = DownloadManager.listMedia() }   // listeyi yenile
+                    },
+                )
+            }
         }
 
         HorizontalDivider(color = AppColors.Outline)
@@ -237,7 +253,7 @@ fun DownloaderScreen(onBack: () -> Unit) {
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 items(files, key = { it.file.absolutePath }) { m ->
-                    MediaRow(m = m, onDelete = { toDelete = m })
+                    MediaRow(m = m, onDelete = { toDelete = m }, onEdit = { toEdit = m })
                 }
             }
         }
@@ -245,7 +261,7 @@ fun DownloaderScreen(onBack: () -> Unit) {
 }
 
 @Composable
-private fun MediaRow(m: DownloadManager.MediaFile, onDelete: () -> Unit) {
+private fun MediaRow(m: DownloadManager.MediaFile, onDelete: () -> Unit, onEdit: () -> Unit) {
     var menuOpen by remember { mutableStateOf(false) }
 
     Box {
@@ -269,10 +285,20 @@ private fun MediaRow(m: DownloadManager.MediaFile, onDelete: () -> Unit) {
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            Icon(
-                if (m.isAudio) Icons.Default.MusicNote else Icons.Default.Movie,
-                contentDescription = null, tint = AppColors.Accent,
-            )
+            if (m.isAudio) {
+                Icon(Icons.Default.MusicNote, contentDescription = null, tint = AppColors.Accent, modifier = Modifier.size(40.dp))
+            } else {
+                var thumb by remember(m.file.absolutePath) { mutableStateOf<androidx.compose.ui.graphics.ImageBitmap?>(null) }
+                LaunchedEffect(m.file.absolutePath) { thumb = MediaThumbs.forFile(m.file) }
+                Box(
+                    Modifier.size(72.dp, 44.dp).clip(RoundedCornerShape(6.dp)).background(androidx.compose.ui.graphics.Color.Black),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    val t = thumb
+                    if (t != null) androidx.compose.foundation.Image(t, null, Modifier.fillMaxSize(), contentScale = androidx.compose.ui.layout.ContentScale.Crop)
+                    else Icon(Icons.Default.Movie, contentDescription = null, tint = AppColors.Accent)
+                }
+            }
             Text(
                 m.file.name,
                 modifier = Modifier.weight(1f),
@@ -280,6 +306,21 @@ private fun MediaRow(m: DownloadManager.MediaFile, onDelete: () -> Unit) {
                 fontSize = 14.sp, color = AppColors.TextPrimary,
             )
             Text("${m.sizeText}  ·  ${m.dateText}", fontSize = 12.sp, color = AppColors.TextMuted)
+            if (m.isTrimmable) {
+                // Düzenle (kırp) — satırın kendi tıklamasından (oynat) bağımsız
+                Row(
+                    Modifier
+                        .clip(RoundedCornerShape(Radius.Small))
+                        .background(AppColors.BgElevated)
+                        .clickable(onClickLabel = "Düzenle") { onEdit() }
+                        .padding(horizontal = 10.dp, vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    Icon(Icons.Outlined.ContentCut, contentDescription = null, tint = AppColors.TextSecondary, modifier = Modifier.size(15.dp))
+                    Text("Düzenle", fontSize = 12.sp, color = AppColors.TextSecondary)
+                }
+            }
         }
 
         DropdownMenu(
@@ -287,6 +328,13 @@ private fun MediaRow(m: DownloadManager.MediaFile, onDelete: () -> Unit) {
             onDismissRequest = { menuOpen = false },
             containerColor = Color(0xFF111214),
         ) {
+            if (m.isTrimmable) {
+                DropdownMenuItem(
+                    text = { Text("Düzenle (kırp)", color = AppColors.TextPrimary, fontSize = 13.sp) },
+                    leadingIcon = { Icon(Icons.Outlined.ContentCut, null, tint = AppColors.TextMuted, modifier = Modifier.size(16.dp)) },
+                    onClick = { menuOpen = false; onEdit() },
+                )
+            }
             DropdownMenuItem(
                 text = { Text("🗑 Sil", color = AppColors.Danger, fontSize = 13.sp) },
                 onClick = { menuOpen = false; onDelete() },

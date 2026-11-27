@@ -5,6 +5,7 @@ import androidx.compose.runtime.setValue
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.sync.withLock
 import java.io.File
 import java.net.URI
 import java.net.http.HttpClient
@@ -31,6 +32,11 @@ object DownloadManager {
         }
 
     private val AUDIO_EXT = setOf("mp3", "m4a", "opus", "wav", "ogg", "flac")
+
+    /** Kırpma düzenleyicisinin desteklediği video uzantıları. */
+    val TRIM_VIDEO_EXT = setOf("mp4", "mkv", "webm", "mov")
+    /** Kırpma düzenleyicisinin desteklediği ses uzantıları. */
+    val TRIM_AUDIO_EXT = setOf("mp3", "m4a", "wav", "ogg", "opus", "flac")
 
     // ── Sohbetten indirilen ekler ─────────────────────────────────────────────
     data class AttachmentDownload(
@@ -97,6 +103,9 @@ object DownloadManager {
 
     data class MediaFile(val file: File, val sizeBytes: Long, val modified: Long) {
         val isAudio: Boolean get() = file.extension.lowercase() in AUDIO_EXT
+        /** "Düzenle" (kırp) butonu gösterilsin mi? */
+        val isTrimmable: Boolean
+            get() = file.extension.lowercase().let { it in TRIM_VIDEO_EXT || it in TRIM_AUDIO_EXT }
         val sizeText: String
             get() = when {
                 sizeBytes >= 1L shl 30 -> "%.2f GB".format(sizeBytes / (1L shl 30).toDouble())
@@ -146,6 +155,12 @@ object DownloadManager {
     private val ytDlp = File(binDir, "yt-dlp.exe")
     private val ffmpeg = File(binDir, "ffmpeg.exe")
 
+    /** ffmpeg.exe yolu (var olduğu garanti değil; önce [ensureFfmpeg] çağırın). */
+    val ffmpegExe: File get() = ffmpeg
+
+    /** Aynı anda iki yerden araç indirilmesini önler (indirici + kırpma düzenleyicisi). */
+    private val toolsLock = kotlinx.coroutines.sync.Mutex()
+
     private val http = HttpClient.newBuilder()
         .followRedirects(HttpClient.Redirect.ALWAYS)
         .connectTimeout(Duration.ofSeconds(30))
@@ -158,30 +173,52 @@ object DownloadManager {
 
     /** yt-dlp ve ffmpeg yoksa indirir. Hata mesajı döner, başarıda null. */
     private suspend fun ensureTools(onStatus: (String) -> Unit): String? = withContext(Dispatchers.IO) {
-        try {
+        toolsLock.withLock { try {
             binDir.mkdirs()
             if (!ytDlp.exists()) {
                 onStatus("yt-dlp indiriliyor…")
                 val input = open(YTDLP_URL) ?: return@withContext "yt-dlp indirilemedi"
                 input.use { i -> ytDlp.outputStream().use { i.copyTo(it) } }
             }
-            if (!ffmpeg.exists()) {
-                onStatus("ffmpeg indiriliyor (ilk seferde ~100 MB)…")
-                val input = open(FFMPEG_URL) ?: return@withContext "ffmpeg indirilemedi"
-                ZipInputStream(input.buffered()).use { zip ->
-                    while (true) {
-                        val entry = zip.nextEntry ?: break
-                        if (entry.name.endsWith("/bin/ffmpeg.exe")) {
-                            ffmpeg.outputStream().use { zip.copyTo(it) }
-                            break
-                        }
-                    }
-                }
-                if (!ffmpeg.exists()) return@withContext "ffmpeg arşivi açılamadı"
-            }
-            null
+            installFfmpeg(onStatus)
         } catch (e: Exception) {
             "Araçlar hazırlanamadı: ${e.message}"
+        } }
+    }
+
+    /** ffmpeg yoksa indirir (IO iş parçacığında, [toolsLock] altında çağrılır). Hata mesajı döner, başarıda null. */
+    private fun installFfmpeg(onStatus: (String) -> Unit): String? {
+        if (ffmpeg.exists()) return null
+        binDir.mkdirs()
+        onStatus("ffmpeg indiriliyor (ilk seferde ~100 MB)…")
+        val input = open(FFMPEG_URL) ?: return "ffmpeg indirilemedi"
+        // Önce geçici dosyaya yaz: yarıda kesilen indirme bozuk bir ffmpeg.exe bırakmasın
+        val tmp = File(binDir, "ffmpeg.exe.part")
+        ZipInputStream(input.buffered()).use { zip ->
+            while (true) {
+                val entry = zip.nextEntry ?: break
+                if (entry.name.endsWith("/bin/ffmpeg.exe")) {
+                    tmp.outputStream().use { zip.copyTo(it) }
+                    break
+                }
+            }
+        }
+        if (!tmp.exists() || tmp.length() == 0L) { tmp.delete(); return "ffmpeg arşivi açılamadı" }
+        if (!tmp.renameTo(ffmpeg)) { tmp.delete(); if (!ffmpeg.exists()) return "ffmpeg kurulamadı" }
+        return null
+    }
+
+    /**
+     * Yalnızca ffmpeg'i hazırlar (yoksa indirir). Kırpma düzenleyicisi kullanır.
+     * Başarıda null, hatada kullanıcıya gösterilecek mesajı döner.
+     */
+    suspend fun ensureFfmpeg(onStatus: (String) -> Unit): String? = withContext(Dispatchers.IO) {
+        toolsLock.withLock {
+            try {
+                installFfmpeg(onStatus)
+            } catch (e: Exception) {
+                "ffmpeg hazırlanamadı: ${e.message}"
+            }
         }
     }
 

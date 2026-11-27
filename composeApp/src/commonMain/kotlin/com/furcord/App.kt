@@ -226,6 +226,22 @@ fun App() {
                 // Pencere odak değişikliğini DmRepository ve polling döngülerine ilet
                 LaunchedEffect(windowFocused) {
                     DmRepository.setFocused(windowFocused)
+                    com.furcord.ui.Notifier.windowFocused = windowFocused
+                }
+
+                // Windows bildirimine tıklanınca ilgili DM sohbetini aç
+                val dmOpenReq = com.furcord.ui.Notifier.dmOpenRequest
+                LaunchedEffect(dmOpenReq) {
+                    val (uid, name) = dmOpenReq ?: return@LaunchedEffect
+                    com.furcord.ui.Notifier.dmOpenRequest = null
+                    DmRepository.markRead(listOf(currentUser.uid, uid).sorted().joinToString("_"))
+                    dmTarget = DmTarget(uid, name)
+                    dmWindowOpen = true
+                }
+
+                // Hangi sunucu ekranda — o sunucunun sohbet bildirimleri pencere odaktayken gösterilmez
+                LaunchedEffect(serverState) {
+                    com.furcord.ui.Notifier.visibleServerId = (serverState as? AppServerState.InServer)?.serverId
                 }
 
                 // Global çevrimiçi durumu — her 60 sn'de lastSeen güncelle

@@ -61,7 +61,9 @@ fun StreamViewer(
     onTogglePiP:    (() -> Unit)? = null,
     modifier:       Modifier = Modifier,
 ) {
-    val frame by frameFlow.collectAsState()
+    // Kare yalnızca FrameSurface içinde (çizim aşamasında) okunur; burada sadece "kare var mı" izlenir
+    val frameState = frameFlow.collectAsState()
+    val hasFrame by remember { derivedStateOf { frameState.value != null } }
 
     // When this composable leaves the composition (e.g. activeStreamUid → null),
     // stop the receiver so the native FFmpeg thread exits cleanly. This prevents
@@ -79,20 +81,14 @@ fun StreamViewer(
     val controlsHovered     by controlsInteraction.collectIsHoveredAsState()
 
     // Show controls when hovering; always show when waiting for first frame
-    val showControls = controlsHovered || frame == null
+    val showControls = controlsHovered || !hasFrame
 
     Box(
         modifier         = modifier.fillMaxSize().background(Color(0xFF111214)),
         contentAlignment = Alignment.Center,
     ) {
-        val bmp = frame
-        if (bmp != null) {
-            Image(
-                bitmap             = bmp,
-                contentDescription = "Ekran Paylaşımı",
-                modifier           = Modifier.fillMaxSize(),
-                contentScale       = ContentScale.Fit,
-            )
+        if (hasFrame) {
+            FrameSurface(frameFlow, Modifier.fillMaxSize())
         } else {
             // Waiting for first frame
             Column(
@@ -197,7 +193,44 @@ fun StreamViewer(
                         }
                     }
                     Spacer(Modifier.weight(1f))
-// ── Yayın kalitesi (yayıncı, yayın sırasında değiştirebilir) ──                    if (isSelfView) {                        val currentQ by ScreenShareManager.quality.collectAsState()                        val srcTitle by ScreenShareManager.sourceTitle.collectAsState()                        var qMenu by remember { mutableStateOf(false) }                        if (srcTitle.isNotEmpty()) {                            Text(                                text     = srcTitle,                                color    = Color(0xFF8E9297),                                fontSize = 11.sp,                                maxLines = 1,                                modifier = Modifier.widthIn(max = 220.dp),                            )                        }                        Box {                            TextButton(onClick = { qMenu = true }) {                                Text(                                    text       = "Kalite: ${currentQ.label}",                                    color      = Color(0xFFD4D6DA),                                    fontSize   = 12.sp,                                    fontWeight = FontWeight.SemiBold,                                )                            }                            DropdownMenu(expanded = qMenu, onDismissRequest = { qMenu = false }) {                                StreamQuality.entries.forEach { q ->                                    DropdownMenuItem(                                        text = {                                            Text(                                                "${q.label}  ·  ${q.desc}",                                                color = if (q == currentQ) Color(0xFF7C5CF6) else Color.Unspecified,                                            )                                        },                                        onClick = { ScreenShareManager.setQuality(q); qMenu = false },                                    )                                }                            }                        }                    }
+                    // ── Yayın kalitesi (yayıncı, yayın sırasında değiştirebilir) ──
+                    if (isSelfView) {
+                        val currentQ by ScreenShareManager.quality.collectAsState()
+                        val srcTitle by ScreenShareManager.sourceTitle.collectAsState()
+                        var qMenu by remember { mutableStateOf(false) }
+                        if (srcTitle.isNotEmpty()) {
+                            Text(
+                                text     = srcTitle,
+                                color    = Color(0xFF8E9297),
+                                fontSize = 11.sp,
+                                maxLines = 1,
+                                modifier = Modifier.widthIn(max = 220.dp),
+                            )
+                        }
+                        Box {
+                            TextButton(onClick = { qMenu = true }) {
+                                Text(
+                                    text       = "Kalite: ${currentQ.label}",
+                                    color      = Color(0xFFD4D6DA),
+                                    fontSize   = 12.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                )
+                            }
+                            DropdownMenu(expanded = qMenu, onDismissRequest = { qMenu = false }) {
+                                StreamQuality.entries.forEach { q ->
+                                    DropdownMenuItem(
+                                        text = {
+                                            Text(
+                                                "${q.label}  ·  ${q.desc}",
+                                                color = if (q == currentQ) Color(0xFF7C5CF6) else Color.Unspecified,
+                                            )
+                                        },
+                                        onClick = { ScreenShareManager.setQuality(q); qMenu = false },
+                                    )
+                                }
+                            }
+                        }
+                    }
 
                     // PiP toggle button (küçült / genişlet)
                     if (onTogglePiP != null) {
@@ -234,7 +267,7 @@ fun StreamViewer(
         }
 
         // FPS overlay — top-right corner (only when frame is present)
-        if (bmp != null) {
+        if (hasFrame) {
             Box(
                 modifier = Modifier
                     .align(Alignment.TopEnd)

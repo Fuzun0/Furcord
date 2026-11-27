@@ -147,8 +147,11 @@ fun ServerLobbyScreen(
                         "Zaten bir sunucun var: \"${existing.first().second}\""
                     } else {
                         val id = FirestoreClient.createServer(name, currentUser.uid, currentUser.idToken)
-                        FirestoreClient.createVoiceChannel(id, "Genel", 0, currentUser.idToken)
-                        FirestoreClient.createVoiceChannel(id, "Oyun",  1, currentUser.idToken)
+                        // Her sunucuda tek sabit ses kanalı: "Genel". Diğerlerini sahip oluşturur.
+                        FirestoreClient.ensureDefaultVoiceChannel(id, currentUser.idToken)
+                        FirestoreClient.upsertMember(id, currentUser.uid,
+                            currentUser.nickname.ifEmpty { currentUser.displayName.ifEmpty { currentUser.email } },
+                            currentUser.photoURL, currentUser.idToken)
                         connectToServer(id, name)
                         null
                     }

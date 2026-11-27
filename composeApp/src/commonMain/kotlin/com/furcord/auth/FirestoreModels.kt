@@ -49,6 +49,7 @@ data class FsMapValue(
 data class FsDocument(
     @SerialName("name")   val name:   String               = "",
     @SerialName("fields") val fields: Map<String, FsValue> = emptyMap(),
+    @SerialName("createTime") val createTime: String       = "",
 )
 
 /**
