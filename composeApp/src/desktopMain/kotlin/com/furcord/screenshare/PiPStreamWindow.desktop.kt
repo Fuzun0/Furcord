@@ -9,6 +9,10 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Fullscreen
 import androidx.compose.material.icons.filled.FullscreenExit
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.VolumeDown
+import androidx.compose.material.icons.filled.VolumeOff
+import androidx.compose.material.icons.filled.VolumeUp
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -121,6 +125,7 @@ actual fun PiPStreamWindow(
     var showQualityMenu by remember { mutableStateOf(false) }
     var chatOpen        by remember { mutableStateOf(true) }
     val currentQuality  by ScreenEngine.quality.collectAsState()
+    val viewerHeight    by ScreenEngine.viewerMaxHeight.collectAsState()
 
     // Kontroller: küçük pencerede hep görünür; tam ekranda fare hareketinden sonra 3 sn
     var lastActivityMs    by remember { mutableStateOf(System.currentTimeMillis()) }
@@ -207,18 +212,53 @@ actual fun PiPStreamWindow(
                         Icon(Icons.Default.Close, "Kapat", tint = Color(0xFFED4245), modifier = Modifier.size(22.dp))
                     }
 
-                    // Sağ alt: kalite + sohbet + tam ekran
+                    // Alt çubuk: ses · çözünürlük · sohbet · tam ekran — hepsi yan yana, aynı düğme stili
                     Row(
-                        modifier = Modifier.align(Alignment.BottomEnd).padding(8.dp),
-                        horizontalArrangement = Arrangement.spacedBy(4.dp),
+                        modifier = Modifier
+                            .align(Alignment.BottomEnd)
+                            .padding(10.dp)
+                            .background(Color(0xB3111214), RoundedCornerShape(24.dp))
+                            .padding(horizontal = 6.dp),
+                        horizontalArrangement = Arrangement.spacedBy(2.dp),
                         verticalAlignment     = Alignment.CenterVertically,
                     ) {
-                        if (isSelfView) {
-                            Box {
-                                IconButton(onClick = { showQualityMenu = !showQualityMenu }, modifier = Modifier.size(44.dp)) {
-                                    Icon(Icons.Default.Settings, "Kalite", tint = Color(0xFFB5BAC1), modifier = Modifier.size(22.dp))
-                                }
-                                DropdownMenu(expanded = showQualityMenu, onDismissRequest = { showQualityMenu = false }) {
+                        // Ses (yalnızca izleyici): yayıncının sesini kıs/arttır
+                        if (!isSelfView) {
+                            var lastNonZero by remember { mutableStateOf(1f) }
+                            if (peerVolume > 0f) lastNonZero = peerVolume
+                            IconButton(
+                                onClick  = { onVolumeChange(if (peerVolume == 0f) lastNonZero else 0f) },
+                                modifier = Modifier.size(44.dp),
+                            ) {
+                                Icon(
+                                    when {
+                                        peerVolume == 0f  -> Icons.Default.VolumeOff
+                                        peerVolume < 0.5f -> Icons.Default.VolumeDown
+                                        else              -> Icons.Default.VolumeUp
+                                    },
+                                    "Ses", tint = Color(0xFFD4D6DA), modifier = Modifier.size(22.dp),
+                                )
+                            }
+                            Slider(
+                                value         = peerVolume,
+                                onValueChange = onVolumeChange,
+                                valueRange    = 0f..2f,
+                                modifier      = Modifier.width(110.dp).height(32.dp),
+                                colors        = SliderDefaults.colors(
+                                    thumbColor         = Color(0xFF5865F2),
+                                    activeTrackColor   = Color(0xFF5865F2),
+                                    inactiveTrackColor = Color(0xFF4E5058),
+                                ),
+                            )
+                            Spacer(Modifier.width(6.dp))
+                        }
+                        // Çözünürlük: yayıncıda yayın kalitesi, izleyicide kendine özel izleme çözünürlüğü (YouTube gibi)
+                        Box {
+                            IconButton(onClick = { showQualityMenu = !showQualityMenu }, modifier = Modifier.size(44.dp)) {
+                                Icon(Icons.Default.Settings, "Çözünürlük", tint = Color(0xFFD4D6DA), modifier = Modifier.size(22.dp))
+                            }
+                            DropdownMenu(expanded = showQualityMenu, onDismissRequest = { showQualityMenu = false }) {
+                                if (isSelfView) {
                                     StreamQuality.entries.forEach { q ->
                                         DropdownMenuItem(
                                             text = {
@@ -230,40 +270,32 @@ actual fun PiPStreamWindow(
                                             onClick = { ScreenEngine.setQuality(q); showQualityMenu = false },
                                         )
                                     }
+                                } else {
+                                    listOf(0 to "Otomatik (kaynak)", 1440 to "1440p", 1080 to "1080p", 720 to "720p", 480 to "480p", 360 to "360p")
+                                        .forEach { (h, label) ->
+                                            DropdownMenuItem(
+                                                text = {
+                                                    Text(
+                                                        label,
+                                                        color = if (viewerHeight == h) Color(0xFF7C5CF6) else Color.Unspecified,
+                                                    )
+                                                },
+                                                onClick = { ScreenEngine.setViewerMaxHeight(h); showQualityMenu = false },
+                                            )
+                                        }
                                 }
                             }
                         }
                         if (isFullscreen && chatPanel != null) {
                             TextButton(onClick = { chatOpen = !chatOpen }) {
-                                Text(if (chatOpen) "Sohbeti Gizle" else "Sohbeti Göster", color = Color(0xFFB5BAC1), fontSize = 12.sp)
+                                Text(if (chatOpen) "Sohbeti Gizle" else "Sohbeti Göster", color = Color(0xFFD4D6DA), fontSize = 12.sp)
                             }
                         }
                         IconButton(onClick = { toggleFullscreen(); showQualityMenu = false }, modifier = Modifier.size(44.dp)) {
                             Icon(
                                 if (isFullscreen) Icons.Default.FullscreenExit else Icons.Default.Fullscreen,
                                 if (isFullscreen) "Küçült" else "Tam ekran",
-                                tint = Color(0xFFB5BAC1), modifier = Modifier.size(24.dp),
-                            )
-                        }
-                    }
-
-                    // Sol alt: ses (sadece izleyici)
-                    if (!isSelfView) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier.align(Alignment.BottomStart).padding(8.dp).width(160.dp),
-                        ) {
-                            Text("🔊", fontSize = 14.sp)
-                            Slider(
-                                value         = peerVolume,
-                                onValueChange = onVolumeChange,
-                                valueRange    = 0f..2f,
-                                modifier      = Modifier.weight(1f).height(32.dp),
-                                colors        = SliderDefaults.colors(
-                                    thumbColor         = Color(0xFF5865F2),
-                                    activeTrackColor   = Color(0xFF5865F2),
-                                    inactiveTrackColor = Color(0xFF4E5058),
-                                ),
+                                tint = Color(0xFFD4D6DA), modifier = Modifier.size(24.dp),
                             )
                         }
                     }

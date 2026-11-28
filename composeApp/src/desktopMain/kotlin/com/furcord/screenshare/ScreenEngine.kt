@@ -76,8 +76,24 @@ object ScreenEngine {
     private var watchJob: Job? = null
     @Volatile private var lastFrameMs = 0L
 
+    internal fun activeViewers(): Set<Int> {
+        val now = System.currentTimeMillis()
+        return viewers.filterValues { now - it < VIEWER_TTL_MS }.keys
+    }
+
     /** İzleyici uidHash → son "watch" isteği zamanı */
     private val viewers = ConcurrentHashMap<Int, Long>()
+
+    /** İzleyici uidHash → istediği en büyük yükseklik (0 = otomatik/kaynak). İzleyici kendi kalitesini seçer. */
+    private val viewerHeights = ConcurrentHashMap<Int, Int>()
+
+    private val _viewerMaxHeight = MutableStateFlow(0)
+    /** İzleyici tarafı: bu izleyicinin seçtiği çözünürlük sınırı (0 = otomatik). */
+    val viewerMaxHeight: StateFlow<Int> = _viewerMaxHeight
+    fun setViewerMaxHeight(h: Int) {
+        _viewerMaxHeight.value = h
+        VoiceEngine.sendViewQuality(_broadcastingUidHash.value, h)   // beklemeden bildir
+    }
 
     @Suppress("DEPRECATION")
     private val decodeChannel = Channel<ByteArray>(Channel.CONFLATED)
@@ -157,9 +173,11 @@ object ScreenEngine {
         _quality.value = q
         _sourceTitle.value = source?.title ?: "Ana ekran"
         isActive = true
-        viewers.clear()
+        viewers.clear(); viewerHeights.clear()
         VoiceEngine.onScreenFrame = ::onPacketReceived
         VoiceEngine.onWatchRequest = { hash -> viewers[hash] = System.currentTimeMillis() }
+        VoiceEngine.onQualityRequest = { hash, h -> viewerHeights[hash] = h }
+        if (StreamAudioPrefs.shareSystemAudio.value) StreamAudio.startCapture(source) { activeViewers() }
         captureThread = Thread({ runCapture(source) }, "furcord-screen-capture").apply {
             isDaemon = true; start()
         }
@@ -173,15 +191,16 @@ object ScreenEngine {
         if (t != null && t !== Thread.currentThread()) runCatching { t.join(2_000) }
         _localFrame.value = null
         _sourceTitle.value = ""
-        viewers.clear()
-        VoiceEngine.onWatchRequest = null
+        viewers.clear(); viewerHeights.clear()
+        VoiceEngine.onWatchRequest = null; VoiceEngine.onQualityRequest = null
+        StreamAudio.stopCapture()
         if (!isReceiving) VoiceEngine.onScreenFrame = null
     }
 
     // ── Yakalama döngüsü (özel thread) ───────────────────────────────────────
 
     /** Yakalama thread'inden kodlayıcı thread'ine devredilen kare. */
-    private class EncodeJob(val img: BufferedImage, val q: StreamQuality, val targets: Set<Int>)
+    private class EncodeJob(val img: BufferedImage, val q: StreamQuality, val groups: Map<Int, Set<Int>>)
 
     private fun runCapture(source: ShareSource?) {
         val grabber: WinCapture.Grabber? = WinCapture.Grabber.open(source)
@@ -238,7 +257,7 @@ object ScreenEngine {
                             val dst = (copy.raster.dataBuffer as DataBufferInt).data
                             System.arraycopy(src, 0, dst, 0, minOf(src.size, dst.size))
                             jobs.poll()?.let { pool.offer(it.img) }   // eski kareyi at, tamponu geri ver
-                            jobs.offer(EncodeJob(copy, q, targets))
+                            jobs.offer(EncodeJob(copy, q, targets.groupBy { viewerHeights[it] ?: 0 }.mapValues { e -> e.value.toSet() }))
                         }
                     }
                 }
@@ -261,21 +280,29 @@ object ScreenEngine {
         pool: java.util.concurrent.ArrayBlockingQueue<BufferedImage>,
     ) {
         val writer = ImageIO.getImageWritersByFormatName("jpeg").next()
-        var jpegQ = 0.6f
+        val jpegQs = HashMap<Int, Float>()      // çözünürlük sınırı (0=kaynak) → JPEG kalitesi
         try {
             while (isActive) {
                 val job = jobs.poll(250, java.util.concurrent.TimeUnit.MILLISECONDS) ?: continue
                 try {
                     val q = job.q
-                    val budget = (q.kbps * 1000L / 8 / q.fps).toInt().coerceAtMost(MAX_FRAME_BYTES)
-                    val jpeg = encodeJpeg(writer, job.img, jpegQ)
-                    jpegQ = when {
-                        jpeg.size > budget * 1.15f -> (jpegQ - 0.06f).coerceAtLeast(0.25f)
-                        jpeg.size < budget * 0.6f  -> (jpegQ + 0.03f).coerceAtMost(0.9f)
-                        else -> jpegQ
-                    }
-                    if (jpeg.size <= MAX_FRAME_BYTES) {
-                        VoiceEngine.sendScreenPackets(jpeg, seqCounter.incrementAndGet(), job.targets)
+                    val fullPixels = (q.maxWidth.toLong() * q.maxHeight).coerceAtLeast(1)
+                    // Her izleyici grubu (kendi seçtiği çözünürlük) için ayrı ölçekle + kodla + gönder
+                    for ((h, targets) in job.groups) {
+                        val src = if (h in 1 until job.img.height) scaleToHeight(job.img, h) else job.img
+                        val ratio = (src.width.toLong() * src.height / fullPixels.toFloat()).coerceIn(0.05f, 1f)
+                        val budget = (q.kbps * 1000L / 8 / q.fps * ratio).toInt().coerceIn(6_000, MAX_FRAME_BYTES)
+                        var jq = jpegQs[h] ?: 0.6f
+                        val jpeg = encodeJpeg(writer, src, jq)
+                        jq = when {
+                            jpeg.size > budget * 1.15f -> (jq - 0.06f).coerceAtLeast(0.25f)
+                            jpeg.size < budget * 0.6f  -> (jq + 0.03f).coerceAtMost(0.9f)
+                            else -> jq
+                        }
+                        jpegQs[h] = jq
+                        if (jpeg.size <= MAX_FRAME_BYTES) {
+                            VoiceEngine.sendScreenPackets(jpeg, seqCounter.incrementAndGet(), targets)
+                        }
                     }
                 } catch (_: Exception) {
                 } finally {
@@ -286,6 +313,16 @@ object ScreenEngine {
         } finally {
             runCatching { writer.dispose() }
         }
+    }
+
+    private fun scaleToHeight(src: BufferedImage, h: Int): BufferedImage {
+        val w = ((src.width.toLong() * h / src.height).toInt() and 1.inv()).coerceAtLeast(2)
+        val out = BufferedImage(w, h, BufferedImage.TYPE_INT_RGB)
+        val g = out.createGraphics()
+        g.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BILINEAR)
+        g.drawImage(src, 0, 0, w, h, null)
+        g.dispose()
+        return out
     }
 
     private fun encodeJpeg(writer: javax.imageio.ImageWriter, img: BufferedImage, quality: Float): ByteArray {
@@ -326,13 +363,17 @@ object ScreenEngine {
     fun startReceiver() {
         if (isReceiving) return
         isReceiving = true
+        StreamAudio.startPlayback()
         VoiceEngine.onScreenFrame = ::onPacketReceived
         // Yayıncıya "izliyorum" isteğini 2 sn'de bir gönder (yayıncı sadece izleyenlere yollar)
         watchJob?.cancel()
         watchJob = scope.launch {
             while (isActive && isReceiving) {
                 val hash = _broadcastingUidHash.value
-                if (hash != 0) VoiceEngine.sendWatchRequest(hash)
+                if (hash != 0) {
+                    VoiceEngine.sendWatchRequest(hash)
+                    VoiceEngine.sendViewQuality(hash, _viewerMaxHeight.value)   // izleyiciye özel çözünürlük
+                }
                 delay(if (hash != 0) 2_000 else 500)
             }
         }
@@ -340,6 +381,7 @@ object ScreenEngine {
 
     fun stopReceiver() {
         isReceiving = false
+        StreamAudio.stopPlayback()
         watchJob?.cancel(); watchJob = null
         _receiverFrame.value = null
         // broadcastingUidHash bilerek temizlenmez: yayın bitince 5 sn zaman aşımı devreye girer.
@@ -348,6 +390,7 @@ object ScreenEngine {
     /** Ses kanalından tamamen ayrılırken çağrılır — tüm alım durumunu sıfırlar. */
     fun stopReceiverFull() {
         isReceiving = false
+        StreamAudio.stopPlayback()
         watchJob?.cancel(); watchJob = null
         _receiverFrame.value = null
         _broadcastingUidHash.value = 0

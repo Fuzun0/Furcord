@@ -104,10 +104,17 @@ fun ServerLobbyScreen(
                 }
             }
         } catch (_: Exception) {}
-        // Arkadaş listesini odağa göre yenile: odakta 30s, arka planda 3 dakika
+        // Arkadaş listesi: odakta 30 sn, değişiklik yoksa 5 dk'ya kadar uzar; odak dışında 5 dk.
+        // Profiller FirestoreClient'ta 5 dk bellekte tutulur (her turda arkadaş başına okuma yok).
+        val backoff = PollBackoff(baseMs = 30_000, maxMs = 5 * 60_000, unfocusedMs = 5 * 60_000)
         while (isActive) {
-            runCatching { friends = FirestoreClient.listFriends(currentUser.uid, currentUser.idToken) }
-            delay(if (latestFocused) 30_000L else 3 * 60_000L)
+            var changed = false
+            runCatching {
+                val fresh = FirestoreClient.listFriends(currentUser.uid, currentUser.idToken)
+                changed = fresh != friends
+                friends = fresh
+            }
+            delay(backoff.next(changed))
         }
     }
 

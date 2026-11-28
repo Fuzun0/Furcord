@@ -61,6 +61,8 @@ object VoiceEngine {
     private const val SCREEN_CHUNK_SIZE   = 1_400  // MTU altı (1500B) — IP fragmantasyonu önlenir
     private const val SCREEN_MAGIC        = 0x53435200.toInt() // "SCR\0" — ScreenEngine ile eşleşmeli
     private const val WATCH_MAGIC         = 0x57415443         // "WATC" — izleyici → yayıncı isteği
+    private const val QUAL_MAGIC          = 0x5155414C         // "QUAL" — izleyici → yayıncı: istenen çözünürlük (8 bayt; eski sürümler yok sayar)
+    private const val SAUD_MAGIC          = 0x53415544         // "SAUD" — yayın sesi (Opus stereo): [magic:4][seq:4][opus]
     private const val MAX_UDP_PAYLOAD     = 65_507 // RFC 768 maks. UDP yükü
 
     private val STUN_SERVERS = listOf(
@@ -80,6 +82,8 @@ object VoiceEngine {
 
     /** Bir izleyici "izliyorum" isteği gönderdiğinde (yayıncı tarafında) çağrılır. Parametre: izleyici uidHash. */
     var onWatchRequest: ((Int) -> Unit)? = null
+    var onQualityRequest: ((Int, Int) -> Unit)? = null   // (izleyici uidHash, istenen yükseklik; 0 = otomatik)
+    var onStreamAudio: ((ByteArray, Int, Int) -> Unit)? = null   // (opus yükü, seq, gönderen uidHash)
 
     @Volatile var isMuted      = false
     @Volatile var isDeafened   = false
@@ -316,6 +320,31 @@ object VoiceEngine {
         runCatching { sock.send(DatagramPacket(pkt, pkt.size, addr)) }
     }
 
+    /** Yayıncıya bu izleyicinin istediği en büyük yüksekliği bildirir (0 = otomatik/kaynak). */
+    fun sendViewQuality(broadcasterUidHash: Int, maxHeight: Int) {
+        if (!isActive) return
+        val sock = socket ?: return
+        val peer = peers.values.find { it.uid.hashCode() == broadcasterUidHash } ?: return
+        val addr = peerAddrs[peer.uid] ?: return
+        val pkt = ByteBuffer.allocate(8).apply { putInt(QUAL_MAGIC); putInt(maxHeight) }.array()
+        runCatching { sock.send(DatagramPacket(pkt, pkt.size, addr)) }
+    }
+
+    /** Yayın sesini (Opus) yalnızca [targetUidHashes] içindeki izleyicilere gönderir. */
+    fun sendStreamAudio(opus: ByteArray, len: Int, seq: Int, targetUidHashes: Set<Int>) {
+        if (!isActive) return
+        val sock = socket ?: return
+        val targets = peers.values.filter { it.uid.hashCode() in targetUidHashes }.mapNotNull { peerAddrs[it.uid] }
+        if (targets.isEmpty()) return
+        val pkt = ByteArray(8 + len)
+        ByteBuffer.wrap(pkt).putInt(SAUD_MAGIC).putInt(seq)
+        System.arraycopy(opus, 0, pkt, 8, len)
+        for (addr in targets) runCatching { sock.send(DatagramPacket(pkt, pkt.size, addr)) }
+    }
+
+    /** Yayıncının sesini (uidHash ile) ayarla. */
+    fun setPeerVolumeByHash(hash: Int, volume: Float) { if (hash != 0) peerVolumes[hash] = volume.coerceIn(0f, 2f) }
+
     /** uidHash bazlı konuşma göstergesi — son 500ms içinde ses alındıysa true */
     fun isSpeaking(uidHash: Int): Boolean =
         (System.currentTimeMillis() - (speakingTimestamps[uidHash] ?: 0L)) < 500L
@@ -455,6 +484,17 @@ object VoiceEngine {
                 // Ekran paylaşımı → ScreenEngine
                 if (dp.length >= 12 && magic == SCREEN_MAGIC) {
                     onScreenFrame?.invoke(buf.copyOfRange(0, dp.length), senderHashOf(dp))
+                    continue
+                }
+                // Yayın sesi → StreamAudio
+                if (magic == SAUD_MAGIC && dp.length > 8) {
+                    onStreamAudio?.invoke(buf.copyOfRange(8, dp.length), ByteBuffer.wrap(buf, 4, 4).int, senderHashOf(dp))
+                    continue
+                }
+                // İzleyici çözünürlük isteği → yayıncı tarafı
+                if (magic == QUAL_MAGIC && dp.length == 8) {
+                    val h = senderHashOf(dp)
+                    if (h != 0) onQualityRequest?.invoke(h, ByteBuffer.wrap(buf, 4, 4).int)
                     continue
                 }
                 // İzleyici isteği → yayıncı tarafı

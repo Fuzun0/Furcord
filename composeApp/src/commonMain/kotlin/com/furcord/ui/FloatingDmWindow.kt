@@ -435,15 +435,18 @@ private fun DmChatPane(
 
     // Periyodik mesaj yoklama — timestamp cursor (kota tasarrufu); gelen kutusu yeni DM bildirirse hemen
     LaunchedEffect(recipientUid, incoming) {
+        val backoff = PollBackoff(baseMs = 3_000, maxMs = 20_000, unfocusedMs = 15_000)
         while (isActive) {
+            var changed = false
             runCatching {
                 val lastTs = messages.maxOfOrNull { it.timestamp } ?: 0L
                 val newMsgs = FirestoreClient.listDmsSince(currentUser.uid, recipientUid, lastTs, currentUser.idToken)
                 if (newMsgs.isNotEmpty()) {
+                    changed = true
                     messages = (messages + newMsgs).distinctBy { it.id }.sortedBy { it.timestamp }
                 }
             }
-            delay(3_000)
+            delay(backoff.next(changed))
         }
     }
 
@@ -472,14 +475,21 @@ private fun DmChatPane(
 
     // Karşı tarafın tepkilerini tazele (son 30 mesaj; yalnızca pencere odaktayken)
     LaunchedEffect(recipientUid) {
+        // 8 sn → tepki değişmiyorsa 2 dk'ya kadar uzar; odak dışında okunmaz
+        val backoff = PollBackoff(baseMs = 8_000, maxMs = 120_000)
+        var wait = 8_000L
         while (isActive) {
-            delay(8_000)
-            if (!Notifier.windowFocused) continue
+            delay(wait)
+            if (!Notifier.windowFocused) { wait = 15_000L; continue }
+            var changed = false
             runCatching {
                 val fresh = FirestoreClient.listRecentDms(currentUser.uid, recipientUid, 30, currentUser.idToken).associateBy { it.id }
-                if (messages.any { m -> fresh[m.id]?.let { it.reactions != m.reactions } == true })
+                if (messages.any { m -> fresh[m.id]?.let { it.reactions != m.reactions } == true }) {
+                    changed = true
                     messages = messages.map { m -> fresh[m.id]?.let { m.copy(reactions = it.reactions) } ?: m }
+                }
             }
+            wait = backoff.next(changed)
         }
     }
 

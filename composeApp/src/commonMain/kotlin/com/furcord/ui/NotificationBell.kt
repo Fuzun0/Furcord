@@ -57,9 +57,9 @@ fun NotificationBell(
 ) {
     val scope = rememberCoroutineScope()
 
-    var friendRequests  by remember { mutableStateOf<List<FriendRequest>>(emptyList()) }
-    var serverInvites   by remember { mutableStateOf<List<ServerInviteNotif>>(emptyList()) }
-    var joinRequests    by remember { mutableStateOf<List<JoinRequestNotif>>(emptyList()) }
+    val friendRequests by com.furcord.auth.NotificationPoller.friendRequests.collectAsState()
+    val serverInvites  by com.furcord.auth.NotificationPoller.serverInvites.collectAsState()
+    val joinRequests   by com.furcord.auth.NotificationPoller.joinRequests.collectAsState()
     var showPanel       by remember { mutableStateOf(false) }
     var expandFriends   by remember { mutableStateOf(true) }
     var expandInvites   by remember { mutableStateOf(true) }
@@ -69,18 +69,6 @@ fun NotificationBell(
     var expandedInviteId    by remember { mutableStateOf<String?>(null) }
 
     val totalCount = friendRequests.size + serverInvites.size + joinRequests.size + (if (hasUpdate) 1 else 0)
-
-    // 10 sn'de bir bildirimleri yenile (unified: users/{uid}/notifications)
-    LaunchedEffect(currentUser.uid) {
-        while (isActive) {
-            runCatching {
-                friendRequests = FirestoreClient.listFriendRequests(currentUser.uid, currentUser.idToken)
-                serverInvites  = FirestoreClient.listServerInviteNotifs(currentUser.uid, currentUser.idToken)
-                joinRequests   = FirestoreClient.listJoinRequests(currentUser.uid, currentUser.idToken)
-            }
-            delay(10_000)
-        }
-    }
 
     Box {
         // ── Çan butonu ────────────────────────────────────────────────────────
@@ -195,14 +183,14 @@ fun NotificationBell(
                                             onAccept = {
                                                 scope.launch {
                                                     FirestoreClient.acceptFriendRequest(currentUser.uid, req.fromUid, currentUser.idToken)
-                                                    friendRequests = friendRequests.filter { it.fromUid != req.fromUid }
+                                                    com.furcord.auth.NotificationPoller.dropFriendRequest(req.fromUid)
                                                     if (expandedFriendUid == req.fromUid) expandedFriendUid = null
                                                 }
                                             },
                                             onReject = {
                                                 scope.launch {
                                                     FirestoreClient.rejectFriendRequest(currentUser.uid, req.fromUid, currentUser.idToken)
-                                                    friendRequests = friendRequests.filter { it.fromUid != req.fromUid }
+                                                    com.furcord.auth.NotificationPoller.dropFriendRequest(req.fromUid)
                                                     if (expandedFriendUid == req.fromUid) expandedFriendUid = null
                                                 }
                                             },
@@ -243,13 +231,13 @@ fun NotificationBell(
                                                         currentUser.nickname.ifEmpty { currentUser.displayName.ifEmpty { currentUser.email } },
                                                         currentUser.idToken,
                                                     )
-                                                }.onSuccess { joinRequests = joinRequests.filter { it !== req } }
+                                                }.onSuccess { com.furcord.auth.NotificationPoller.dropJoinRequest(req) }
                                             }
                                         },
                                         onReject = {
                                             scope.launch {
                                                 FirestoreClient.removeJoinRequest(currentUser.uid, req.serverId, req.fromUid, currentUser.idToken)
-                                                joinRequests = joinRequests.filter { it !== req }
+                                                com.furcord.auth.NotificationPoller.dropJoinRequest(req)
                                             }
                                         },
                                     )
@@ -296,7 +284,7 @@ fun NotificationBell(
                                             onAccept = {
                                                 scope.launch {
                                                     FirestoreClient.removeServerInviteNotif(currentUser.uid, inv.serverId, currentUser.idToken)
-                                                    serverInvites = serverInvites.filter { it.serverId != inv.serverId }
+                                                    com.furcord.auth.NotificationPoller.dropServerInvite(inv.serverId)
                                                     if (expandedInviteId == inv.serverId) expandedInviteId = null
                                                     showPanel = false
                                                     onJoinServer?.invoke(inv.serverId, inv.serverName)
@@ -305,7 +293,7 @@ fun NotificationBell(
                                             onReject = {
                                                 scope.launch {
                                                     FirestoreClient.removeServerInviteNotif(currentUser.uid, inv.serverId, currentUser.idToken)
-                                                    serverInvites = serverInvites.filter { it.serverId != inv.serverId }
+                                                    com.furcord.auth.NotificationPoller.dropServerInvite(inv.serverId)
                                                     if (expandedInviteId == inv.serverId) expandedInviteId = null
                                                 }
                                             },

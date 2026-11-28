@@ -40,6 +40,7 @@ import com.furcord.auth.VoicePeer
 import com.furcord.auth.VoiceChannel
 import com.furcord.voice.VoiceEngine
 import com.furcord.screenshare.ScreenShareManager
+import com.furcord.screenshare.StreamAudioPrefs
 import com.furcord.screenshare.StreamViewerComposable
 import com.furcord.screenshare.PiPStreamWindow
 import androidx.compose.foundation.Image
@@ -336,6 +337,7 @@ private fun ChannelRow(
     onUserRightClick: ((ActiveUser) -> Unit)? = null,
     speakingSet: Set<Int> = emptySet(),
     liveUids: Set<String> = emptySet(),
+    onLiveClick: (ActiveUser) -> Unit = {},
     timerStr: String? = null,
     onChannelRightClick: (() -> Unit)? = null,
     isDropTarget: Boolean = false,
@@ -491,6 +493,8 @@ private fun ChannelRow(
                             modifier = Modifier
                                 .clip(RoundedCornerShape(4.dp))
                                 .background(AppColors.Danger)
+                                .pointerHoverIcon(androidx.compose.ui.input.pointer.PointerIcon.Hand)
+                                .clickable { onLiveClick(u) }
                                 .padding(horizontal = 4.dp, vertical = 1.dp),
                         ) {
                             Text("YAYINDA", fontSize = 8.sp, fontWeight = FontWeight.Bold, color = Color.White)
@@ -902,7 +906,7 @@ fun ServerDetailScreen(
 
     var streamMsgs by remember(serverId) { mutableStateOf<List<ChatMessage>>(emptyList()) }
     var streamChatError by remember { mutableStateOf("") }
-    // Yayın izleyici ses seviyesi: yayıncının sesi ses kanalından geldiği için kanaldaki diğer kullanıcılara uygulanır
+    // Yayın izleyici ses seviyesi: yalnızca yayıncının sesine uygulanır
     var streamVolume by remember { mutableStateOf(1f) }
     var channels         by remember { mutableStateOf(VoiceStateCache.channels[serverId] ?: emptyList()) }
     var channelUsers       by remember { mutableStateOf(VoiceStateCache.users[serverId] ?: emptyMap()) }
@@ -952,11 +956,7 @@ fun ServerDetailScreen(
     }
     fun setStreamVolume(v: Float) {
         streamVolume = v
-        val cid = connectedChannelId ?: return
-        (channelUsers[cid] ?: emptyList()).filter { it.uid != currentUser.uid }.forEach {
-            peerVolumes[it.uid] = v
-            VoiceEngine.setPeerVolume(it.uid, v)
-        }
+        StreamAudioPrefs.volume.value = v   // yalnızca yayından gelen ses (bilgisayar sesi); sesli sohbeti etkilemez
     }
     // Sunucu sahibi mi?
     var isOwner           by remember { mutableStateOf(false) }
@@ -1127,20 +1127,32 @@ fun ServerDetailScreen(
     // Bellekteki son mesajın zaman damgasından sonrasını sorar (önceki mesajlar yeniden okunmaz).
     LaunchedEffect(serverId, showPiP) {
         if (!showPiP) return@LaunchedEffect
+        val chatBackoff = PollBackoff(baseMs = 3_000, maxMs = 15_000, unfocusedMs = 15_000)
         while (isActive) {
+            var chatChanged = false
             runCatching {
                 val real = streamMsgs.filter { !it.id.startsWith("pending-") }
                 val last = real.maxOfOrNull { it.timestamp } ?: 0L
                 val fresh = FirestoreClient.listStreamChat(serverId, last, currentUser.idToken)
                 if (fresh.isNotEmpty()) {
+                    chatChanged = true
                     val pend = streamMsgs.filter { p ->
                         p.id.startsWith("pending-") && fresh.none { it.uid == p.uid && it.text == p.text }
                     }
                     streamMsgs = ((real + fresh).distinctBy { it.id }.sortedBy { it.timestamp } + pend).takeLast(300)
                 }
             }
-            delay(pollMs(3_000, 15_000))
+            delay(chatBackoff.next(chatChanged))
         }
+    }
+
+    // Yayın oynatıcısını (yeniden) aç: yayıncı için önizleme, izleyici için yayını izle
+    fun openStreamFor(u: ActiveUser) {
+        if (u.uid != currentUser.uid) {
+            ScreenShareManager.startReceiver()
+            isAttemptingReceive = true
+        }
+        showPiP = true
     }
 
     if (showPiP) {
@@ -1181,16 +1193,23 @@ fun ServerDetailScreen(
     LaunchedEffect(serverId, "channels") {
         var prevUsers = mapOf<String, List<ActiveUser>>()
         var firstPoll = true
+        // Boştayken 5 sn → 30 sn (odak dışında 30 sn). Ses kanalındayken odak ayrımı yok, en çok 10 sn.
+        val idleBo  = PollBackoff(baseMs = 5_000, maxMs = 30_000, unfocusedMs = 30_000)
+        val voiceBo = PollBackoff(baseMs = 5_000, maxMs = 10_000)
+        fun nextDelay(changed: Boolean): Long =
+            if (connectedChannelId != null) voiceBo.next(changed, ignoreFocus = true) else idleBo.next(changed)
         while (true) {
+            var changedCh = false
             try {
                 // Tek istek: kanallar + aktif kullanıcılar. Hata/kota → mevcut görünümü koru (boşaltma).
                 val snapshot = FirestoreClient.listVoiceChannelsWithUsers(serverId, currentUser.idToken)
                 if (snapshot == null || snapshot.first.isEmpty()) {
                     loading = false
-                    delay(pollMs(5_000, 20_000))
+                    delay(nextDelay(false))
                     continue
                 }
                 val fetched = snapshot.first
+                changedCh = fetched != channels || snapshot.second != channelUsers
                 channels = fetched
                 VoiceStateCache.channels[serverId] = fetched
                 val newUsers = mutableMapOf<String, List<ActiveUser>>()
@@ -1253,13 +1272,15 @@ fun ServerDetailScreen(
             } catch (_: Exception) {
                 loading = false
             }
-            delay(pollMs(5_000, 20_000))
+            delay(nextDelay(changedCh))
         }
     }
 
     // ── Poll chat messages — timestamp cursor (kota tasarrufu) ───────────────
     LaunchedEffect(serverId, "messages") {
+        val msgBackoff = PollBackoff(baseMs = 4_000, maxMs = 30_000, unfocusedMs = 30_000)
         while (true) {
+            var newMsgsArrived = false
             try {
                 // Son bilinen timestamp'ten sonrasını çek; 0L ise ilk yükleme (full fetch)
                 val lastTs = messages.filter { !it.id.startsWith("pending-") && !it.id.startsWith("img-pending-") }
@@ -1279,6 +1300,7 @@ fun ServerDetailScreen(
                     }
                 }
                 if (newMsgs.isNotEmpty()) {
+                    newMsgsArrived = true
                     val hasPending = messages.any { it.id.startsWith("pending-") || it.id.startsWith("img-pending-") }
                     val wasAtBottom = messages.isEmpty() || listState.layoutInfo.let { info ->
                         val last = info.visibleItemsInfo.lastOrNull()?.index ?: -1
@@ -1296,7 +1318,7 @@ fun ServerDetailScreen(
                     if (wasAtBottom) listState.animateScrollToItem(withPending.size - 1)
                 }
             } catch (_: Exception) {}
-            delay(pollMs(4_000, 12_000))
+            delay(msgBackoff.next(newMsgsArrived))
         }
     }
 
@@ -1345,12 +1367,15 @@ fun ServerDetailScreen(
 
     // ── Presence poll — 5s'de bir oku ────────────────────────────────────────
     LaunchedEffect(serverId, "presence") {
+        // Sunucu tarafında süzülen sorgu; değişiklik yoksa 15 sn → 60 sn, odak dışında 60 sn
+        val backoff = PollBackoff(baseMs = 15_000, maxMs = 60_000, unfocusedMs = 60_000)
         while (true) {
+            var changed = false
             runCatching {
                 val fetched = FirestoreClient.listPresence(serverId, currentUser.idToken)
-                if (fetched != presenceUsers) presenceUsers = fetched
+                if (fetched != presenceUsers) { presenceUsers = fetched; changed = true }
             }
-            delay(pollMs(15_000, 60_000))
+            delay(backoff.next(changed))
         }
     }
 
@@ -1430,13 +1455,31 @@ fun ServerDetailScreen(
             VoiceEngine.updatePeers(emptyList())
             return@LaunchedEffect
         }
+        // peer kayıtları YALNIZCA katılımcı listesi değişince okunur (biri girdi/çıktı).
+        // Liste aynıysa sorgu yok. Giren kişinin peer kaydı birkaç saniye geç yazılabildiği için,
+        // eksik peer varsa önce 2 sn arayla (10 deneme), sonra 10 sn arayla yeniden denenir.
+        var lastUids: Set<String>? = null
+        var lastFetchMs = 0L
+        var lastPeerCount = 0
+        var retries = 0
         while (true) {
-            try {
-                val peers = FirestoreClient.getVoicePeers(serverId, cid, currentUser.idToken)
-                    .filter { it.uid != currentUser.uid }
-                VoiceEngine.updatePeers(peers)
-            } catch (_: Exception) {}
-            delay(2_000)
+            val uids = (channelUsers[cid] ?: emptyList()).map { it.uid }.filter { it != currentUser.uid }.toSet()
+            val now = System.currentTimeMillis()
+            val changed = uids != lastUids
+            val retryDue = !changed && lastPeerCount < uids.size &&
+                now - lastFetchMs >= (if (retries < 10) 2_000L else 10_000L)
+            if (changed || retryDue) {
+                try {
+                    val peers = FirestoreClient.getVoicePeers(serverId, cid, currentUser.idToken)
+                        .filter { it.uid != currentUser.uid }
+                    VoiceEngine.updatePeers(peers)
+                    lastUids = uids
+                    lastPeerCount = peers.size
+                    retries = if (changed) 0 else retries + 1
+                } catch (_: Exception) {}
+                lastFetchMs = now
+            }
+            delay(1_000)   // yalnızca bellekteki listeye bakar, ağ isteği yok
         }
     }
 
@@ -1467,7 +1510,7 @@ fun ServerDetailScreen(
                 val fetched = FirestoreClient.listMembers(serverId, currentUser.idToken)
                 if (fetched.isNotEmpty() && fetched != members) members = fetched
             }
-            delay(pollMs(60_000, 180_000))
+            delay(10 * 60_000L)   // üyeler: girişte bir kez, sonra 10 dakikada bir
         }
     }
 
@@ -1655,7 +1698,7 @@ fun ServerDetailScreen(
     LaunchedEffect(connectedChannelId, "voiceMove") {
         if (connectedChannelId == null) return@LaunchedEffect
         while (true) {
-            delay(pollMs(4_000, 15_000))
+            delay(10_000)   // ses kanalındayken odak ayrımı yok (küçültülmüşken de çalışır)
             val target = runCatching { FirestoreClient.getVoiceMove(serverId, currentUser.uid, currentUser.idToken) }.getOrNull()
                 ?: continue
             FirestoreClient.clearVoiceMove(serverId, currentUser.uid, currentUser.idToken)
@@ -2107,6 +2150,7 @@ fun ServerDetailScreen(
                             onUserRightClick = { u -> contextMenuUser = u; showVolumeSlider = false },
                             speakingSet      = speakingSet,
                             liveUids         = liveUids,
+                            onLiveClick      = { u -> openStreamFor(u) },
                             timerStr        = if (connectedChannelId == ch.id) voiceTimerStr else null,
                             onChannelRightClick = if (isOwner) {{ channelRowMenu = ch }} else null,
                             isDropTarget     = dragUser != null && dragTargetId == ch.id && dragFromChannel != ch.id,
@@ -2266,7 +2310,7 @@ fun ServerDetailScreen(
                     }
                 },
                 onKick = if (isOwner && sidebarCtxUser.uid != creatorUid) {{ contextMenuUser = null; memberToKick = sidebarCtxUser }} else null,
-                onWatchStream = if (broadcastingUidHash != 0 && sidebarCtxUser.uid.hashCode() == broadcastingUidHash) {{
+                onWatchStream = if (sidebarCtxUser.uid in liveUids) {{
                     contextMenuUser = null
                     ScreenShareManager.startReceiver()
                     isAttemptingReceive = true
@@ -2475,6 +2519,20 @@ fun ServerDetailScreen(
                                             }
                                             if (isSelf) {
                                                 Text("Ekranını paylaşıyorsun", fontSize = 11.sp, color = AppColors.TextMuted)
+                                                if (!showPiP) {
+                                                    Box(
+                                                        modifier = Modifier
+                                                            .fillMaxWidth()
+                                                            .clip(RoundedCornerShape(6.dp))
+                                                            .background(AppColors.Accent)
+                                                            .pointerHoverIcon(androidx.compose.ui.input.pointer.PointerIcon.Hand)
+                                                            .clickable { openStreamFor(u) }
+                                                            .padding(vertical = 6.dp),
+                                                        contentAlignment = Alignment.Center,
+                                                    ) {
+                                                        Text("Önizlemeyi aç", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = Color.White)
+                                                    }
+                                                }
                                             } else {
                                                 Box(
                                                     modifier = Modifier
@@ -2525,7 +2583,7 @@ fun ServerDetailScreen(
                                             }
                                         },
                                         onKick = if (isOwner && u.uid != creatorUid) {{ contextMenuUser = null; memberToKick = u }} else null,
-                                        onWatchStream = if (broadcastingUidHash != 0 && u.uid.hashCode() == broadcastingUidHash) {{
+                                        onWatchStream = if (u.uid in liveUids) {{
                                             contextMenuUser = null
                                             ScreenShareManager.startReceiver()
                                             isAttemptingReceive = true

@@ -535,12 +535,21 @@ object FirestoreClient {
         request("PATCH", "$BASE/servers/$serverId/voicePeers/$uid?updateMask.fieldPaths=isBroadcasting", idToken = idToken, body = body)
     }
 
-    /** Aynı ses kanalındaki diğer kullanıcıların bağlantı bilgilerini getirir. */
+    /** Aynı ses kanalındaki diğer kullanıcıların bağlantı bilgilerini getirir (sorgu sunucuda kanala göre süzülür). */
     suspend fun getVoicePeers(serverId: String, channelId: String, idToken: String): List<VoicePeer> =
         withContext(Dispatchers.IO) {
-            val (code, text) = request("GET", "$BASE/servers/$serverId/voicePeers?pageSize=50", idToken = idToken)
+            val body = """{"structuredQuery":{"from":[{"collectionId":"voicePeers"}],"where":{"fieldFilter":{"field":{"fieldPath":"channelId"},"op":"EQUAL","value":{"stringValue":"${channelId.replace("\\", "\\\\").replace("\"", "\\\"")}"}}},"limit":50}}"""
+            val (code, text) = request("POST", "$BASE/servers/$serverId:runQuery", body, idToken)
             if (code !in 200..299) return@withContext emptyList()
-            parseVoicePeers(text, channelId)
+            val docs = runCatching { fsJson.decodeFromString<List<FsQueryItem>>(text) }.getOrNull()
+                ?.mapNotNull { it.document } ?: return@withContext emptyList()
+            docs.mapNotNull { doc ->
+                val f    = doc.fields
+                val uid  = doc.name.substringAfterLast("/").takeIf { it.isNotEmpty() } ?: return@mapNotNull null
+                val ip   = f.str("ip").takeIf { it.isNotEmpty() } ?: return@mapNotNull null
+                val port = f["port"]?.integer?.toIntOrNull() ?: return@mapNotNull null
+                VoicePeer(uid = uid, ip = ip, port = port, isBroadcasting = f.bool("isBroadcasting"))
+            }
         }
 
     /** Kullanıcının ses kanalı bağlantı kaydını siler (kanal terk edildiğinde). */
@@ -1059,18 +1068,17 @@ object FirestoreClient {
     /** Sunucudaki tüm çevrimiçi kullanıcıları döner (son 90 sn içinde lastSeen güncellemiş). */
     suspend fun listPresence(serverId: String, idToken: String): List<ActiveUser> =
         withContext(Dispatchers.IO) {
-            val (code, text) = request("GET", "$BASE/servers/$serverId/presence?pageSize=100", idToken = idToken)
-            if (code !in 200..299) return@withContext emptyList()
-            val resp = runCatching { fsJson.decodeFromString<FsListResponse>(text) }.getOrNull()
-                ?: return@withContext emptyList()
+            // Sunucu tarafında süzülür: eski (çıkmış) kullanıcıların belgeleri okunmaz/faturalanmaz.
             val cutoff = System.currentTimeMillis() - 90_000L
-            resp.documents.mapNotNull { doc ->
-                val f        = doc.fields
-                val uid      = f.str("uid").takeIf { it.isNotEmpty() } ?: return@mapNotNull null
-                val lastSeen = f.lng("lastSeen")
-                if (lastSeen < cutoff) return@mapNotNull null
-                ActiveUser(uid, f.str("username"), "#5865F2", f.str("photoURL"))
-            }
+            val body = """{"structuredQuery":{"from":[{"collectionId":"presence"}],"where":{"fieldFilter":{"field":{"fieldPath":"lastSeen"},"op":"GREATER_THAN","value":{"integerValue":"$cutoff"}}},"limit":100}}"""
+            val (code, text) = request("POST", "$BASE/servers/$serverId:runQuery", body, idToken)
+            if (code !in 200..299) return@withContext emptyList()
+            runCatching { fsJson.decodeFromString<List<FsQueryItem>>(text) }.getOrNull()
+                ?.mapNotNull { it.document }?.mapNotNull { doc ->
+                    val f   = doc.fields
+                    val uid = f.str("uid").takeIf { it.isNotEmpty() } ?: return@mapNotNull null
+                    ActiveUser(uid, f.str("username"), "#5865F2", f.str("photoURL"))
+                } ?: emptyList()
         }
 
     /** Kullanıcının sunucu presence kaydını siler (sunucudan çıkınca). */
@@ -1143,9 +1151,69 @@ object FirestoreClient {
             found.sortedByDescending { it.lastTimestamp }
         }
 
+    // ── Bildirimler: tek çağrı, zaman damgası imleci ─────────────────────────
+
+    data class NotifBatch(
+        val friendRequests: List<FriendRequest>,
+        val serverInvites: List<ServerInviteNotif>,
+        val joinRequests: List<JoinRequestNotif>,
+        val dms: List<DmNotif>,
+        val maxTimestamp: Long,
+    )
+
     /**
-     * Bu kullanıcının arkadaş listesini döner.
-     * Firestore: friends/{myUid}/list/{friendUid} → friends koleksiyonunu okur.
+     * users/{uid}/notifications — [afterTimestamp] > 0 ise yalnızca o zamandan sonrakileri sorgular
+     * (okuma = yeni belge sayısı), 0 ise tam liste. Hata olursa null.
+     */
+    suspend fun fetchNotifications(myUid: String, afterTimestamp: Long, idToken: String): NotifBatch? =
+        withContext(Dispatchers.IO) {
+            val docs: List<FsDocument> = if (afterTimestamp <= 0L) {
+                val (code, text) = request("GET", "$BASE/users/$myUid/notifications?pageSize=100", idToken = idToken)
+                if (code !in 200..299) return@withContext null
+                runCatching { fsJson.decodeFromString<FsListResponse>(text) }.getOrNull()?.documents
+                    ?: return@withContext null
+            } else {
+                val body = """{"structuredQuery":{"from":[{"collectionId":"notifications"}],"where":{"fieldFilter":{"field":{"fieldPath":"timestamp"},"op":"GREATER_THAN","value":{"integerValue":"$afterTimestamp"}}},"orderBy":[{"field":{"fieldPath":"timestamp"},"direction":"ASCENDING"}]}}"""
+                val (code, text) = request("POST", "$BASE/users/$myUid:runQuery", body, idToken)
+                if (code !in 200..299) return@withContext null
+                runCatching { fsJson.decodeFromString<List<FsQueryItem>>(text) }.getOrNull()
+                    ?.mapNotNull { it.document } ?: return@withContext null
+            }
+            val fr = mutableListOf<FriendRequest>(); val si = mutableListOf<ServerInviteNotif>()
+            val jr = mutableListOf<JoinRequestNotif>(); val dm = mutableListOf<DmNotif>()
+            var maxTs = 0L
+            for (doc in docs) {
+                val f = doc.fields
+                maxTs = maxOf(maxTs, f.lng("timestamp"))
+                when (f.str("type")) {
+                    "friend_request" -> f.str("fromUid").takeIf { it.isNotEmpty() }?.let {
+                        fr += FriendRequest(it, f.str("fromName"), f.str("furcordId"), f.lng("timestamp"))
+                    }
+                    "server_invite" -> f.str("serverId").takeIf { it.isNotEmpty() }?.let {
+                        si += ServerInviteNotif(it, f.str("serverName"), f.str("fromUid"), f.str("fromName"), f.lng("timestamp"), approved = f.bool("approved"))
+                    }
+                    "join_request" -> {
+                        val sid = f.str("serverId").takeIf { it.isNotEmpty() }
+                        val uid = f.str("fromUid").takeIf { it.isNotEmpty() }
+                        if (sid != null && uid != null) jr += JoinRequestNotif(sid, f.str("serverName"), uid, f.str("fromName"), f.lng("timestamp"))
+                    }
+                    "dm" -> f.str("fromUid").takeIf { it.isNotEmpty() }?.let {
+                        dm += DmNotif(doc.name.substringAfterLast("/"), it, f.str("fromName"), f.str("text"), f.bool("hasAttachment"), f.lng("timestamp"))
+                    }
+                }
+            }
+            NotifBatch(fr.sortedByDescending { it.timestamp }, si.sortedByDescending { it.timestamp },
+                jr.sortedByDescending { it.timestamp }, dm.sortedBy { it.timestamp }, maxTs)
+        }
+
+    // ── Arkadaş profilleri: bellek önbelleği ─────────────────────────────────
+    private class CachedProfile(val entry: FriendEntry, val at: Long)
+    private val friendProfiles = java.util.concurrent.ConcurrentHashMap<String, CachedProfile>()
+    private const val FRIEND_PROFILE_TTL_MS = 5 * 60_000L
+
+    /**
+     * Bu kullanıcının arkadaş listesini döner (profiller bellekte 5 dk tutulur).
+     * Firestore: friends/{myUid}/list/{friendUid}
      */
     suspend fun listFriends(myUid: String, idToken: String): List<FriendEntry> =
         withContext(Dispatchers.IO) {
@@ -1154,15 +1222,21 @@ object FirestoreClient {
             val resp = runCatching { fsJson.decodeFromString<FsListResponse>(text) }.getOrNull()
                 ?: return@withContext emptyList()
             val entries = mutableListOf<FriendEntry>()
+            val now = System.currentTimeMillis()
             for (fdoc in resp.documents) {
                 val uid = fdoc.name.substringAfterLast("/").takeIf { it.isNotEmpty() } ?: continue
+                val cached = friendProfiles[uid]
+                if (cached != null && now - cached.at < FRIEND_PROFILE_TTL_MS) { entries.add(cached.entry); continue }
                 val (uc, ut) = request("GET", "$BASE/users/$uid", idToken = idToken)
-                if (uc !in 200..299) continue
+                if (uc !in 200..299) { cached?.let { entries.add(it.entry) }; continue }
                 val udoc = runCatching { fsJson.decodeFromString<FsDocument>(ut) }.getOrNull() ?: continue
                 val lastSeen = udoc.fields.lng("lastSeen")
                 val isOnline = lastSeen > 0L && (System.currentTimeMillis() - lastSeen) < 3 * 60_000L
-                entries.add(FriendEntry(uid, udoc.fields.str("nickname").ifEmpty { udoc.fields.str("displayName") }, udoc.fields.str("furcordId"), isOnline))
+                val entry = FriendEntry(uid, udoc.fields.str("nickname").ifEmpty { udoc.fields.str("displayName") }, udoc.fields.str("furcordId"), isOnline)
+                friendProfiles[uid] = CachedProfile(entry, now)
+                entries.add(entry)
             }
+            friendProfiles.keys.retainAll(resp.documents.map { it.name.substringAfterLast("/") }.toSet())
             entries
         }
 

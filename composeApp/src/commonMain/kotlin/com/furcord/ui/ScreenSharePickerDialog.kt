@@ -26,6 +26,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import com.furcord.screenshare.ScreenShareManager
+import com.furcord.screenshare.StreamAudioPrefs
 import com.furcord.screenshare.ShareSource
 import com.furcord.screenshare.StreamQuality
 import kotlinx.coroutines.Dispatchers
@@ -138,6 +139,23 @@ fun ScreenSharePickerDialog(
                     }
                 }
                 Text("Kaliteyi yayın sırasında da değiştirebilirsin.", fontSize = 11.sp, color = AppColors.TextSubtle)
+            }
+
+            // ── Bilgisayar sesi ──────────────────────────────────────────────
+            val shareAudio by StreamAudioPrefs.shareSystemAudio.collectAsState()
+            Row(
+                Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text("Bilgisayar sesini paylaş", fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = AppColors.TextPrimary)
+                    Text(
+                        "Oyun/müzik gibi bilgisayarda çalan ses izleyicilere gider. Furcord sesleri (sesli sohbet) dahil edilmez; pencere paylaşırken yalnızca o uygulamanın sesi gider.",
+                        fontSize = 11.sp, color = AppColors.TextSubtle,
+                    )
+                }
+                Switch(checked = shareAudio, onCheckedChange = { StreamAudioPrefs.shareSystemAudio.value = it })
             }
 
             Row(

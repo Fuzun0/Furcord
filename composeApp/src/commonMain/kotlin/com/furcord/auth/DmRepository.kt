@@ -72,37 +72,37 @@ object DmRepository {
 
         pollJob?.cancel()
         pollJob = repoScope.launch {
+            // Sohbet listesi: odakta 30 sn, değişiklik yoksa 5 dk'ya kadar uzar; odak dışında 5 dk
+            val backoff = com.furcord.ui.PollBackoff(baseMs = 30_000, maxMs = 5 * 60_000, unfocusedMs = 5 * 60_000)
             while (isActive) {
-                refreshNow()
-                delay(if (focused) 30_000L else 3 * 60_000L)
+                val changed = refreshNow()
+                delay(backoff.next(changed))
             }
         }
 
-        inboxJob?.cancel()
-        inboxJob = repoScope.launch {
-            while (isActive) {
-                runCatching { pollInbox() }
-                delay(if (focused) 4_000L else 8_000L)
-            }
-        }
+        // Gelen kutusu yoklaması NotificationPoller'da (çan ile TEK ortak yoklama)
+        inboxJob?.cancel(); inboxJob = null
+        NotificationPoller.dmHandler = { notifs -> runCatching { handleDmNotifs(notifs) } }
+        NotificationPoller.start(uid, idToken)
     }
 
-    private suspend fun refreshNow() {
+    private suspend fun refreshNow(): Boolean {
         val uid = myUid_
-        if (uid.isEmpty()) return
-        runCatching {
+        if (uid.isEmpty()) return false
+        return runCatching {
             val known = _threads.value.map { it.otherUid }
             val fresh = FirestoreClient.listDmConversations(uid, idToken_, known)
             // Kullanıcının sildiği sohbetler, yeni mesaj gelene dek gizli kalır
-            _threads.value = fresh.filter { it.lastTimestamp > clearedAt(it.dmId) }
-        }
+            val visible = fresh.filter { it.lastTimestamp > clearedAt(it.dmId) }
+            val changed = visible != _threads.value
+            _threads.value = visible
+            changed
+        }.getOrDefault(false)
     }
 
-    private suspend fun pollInbox() {
+    private suspend fun handleDmNotifs(notifs: List<FirestoreClient.DmNotif>) {
         val uid = myUid_
-        if (uid.isEmpty()) return
-        val notifs = FirestoreClient.listDmNotifs(uid, idToken_)
-        if (notifs.isEmpty()) return
+        if (uid.isEmpty() || notifs.isEmpty()) return
         for (n in notifs) {
             FirestoreClient.deleteNotification(uid, n.docId, idToken_)
             val dmId    = listOf(uid, n.fromUid).sorted().joinToString("_")
@@ -122,6 +122,7 @@ object DmRepository {
 
     fun updateToken(idToken: String) {
         idToken_ = idToken
+        NotificationPoller.updateToken(idToken)
     }
 
     fun setFocused(focused: Boolean) {

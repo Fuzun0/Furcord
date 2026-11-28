@@ -128,68 +128,43 @@ fun StreamViewer(
                     verticalAlignment   = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(16.dp),
                 ) {
-                    // ── Ses kontrolü (sadece remote view) — Discord-stili speaker icon + popup ──
+                    // ── Ses kontrolü (sadece izleyici): hoparlör simgesi (sessize al) + yatay kaydırıcı ──
+                    // Eskiden açılır pencere (Popup) kullanılıyordu; imleç pencereye geçince çubuk
+                    // gizlenip kaydırıcıyı da kapatıyordu. Artık kaydırıcı çubuğun içinde, hep görünür.
                     if (!isSelfView) {
-                        var showVolumeFlyout by remember { mutableStateOf(false) }
-                        Box {
+                        var lastNonZero by remember { mutableStateOf(1f) }
+                        if (peerVolume > 0f) lastNonZero = peerVolume
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        ) {
                             IconButton(
-                                onClick  = { showVolumeFlyout = !showVolumeFlyout },
+                                onClick  = { onVolumeChange(if (peerVolume == 0f) lastNonZero else 0f) },
                                 modifier = Modifier.size(32.dp),
                             ) {
                                 Icon(
                                     imageVector = when {
-                                        peerVolume == 0f    -> Icons.Default.VolumeOff
+                                        peerVolume == 0f   -> Icons.Default.VolumeOff
                                         peerVolume < 0.5f  -> Icons.Default.VolumeDown
                                         else               -> Icons.Default.VolumeUp
                                     },
-                                    contentDescription = "Ses",
-                                    tint     = if (showVolumeFlyout) Color(0xFF5865F2) else Color(0xFFB5BAC1),
-                                    modifier = Modifier.size(18.dp),
+                                    contentDescription = "Sessize al / aç",
+                                    tint     = Color(0xFFD4D6DA),
+                                    modifier = Modifier.size(20.dp),
                                 )
                             }
-                            // Popup flyout — dikey slider
-                            if (showVolumeFlyout) {
-                                Popup(
-                                    alignment       = Alignment.TopCenter,
-                                    offset          = IntOffset(0, -185),
-                                    onDismissRequest = { showVolumeFlyout = false },
-                                ) {
-                                    Box(
-                                        modifier = Modifier
-                                            .width(40.dp)
-                                            .height(160.dp)
-                                            .clip(RoundedCornerShape(8.dp))
-                                            .background(Color(0xFF2B2D31))
-                                            .border(1.dp, Color(0xFF3A3C43), RoundedCornerShape(8.dp))
-                                            .padding(vertical = 8.dp, horizontal = 4.dp),
-                                        contentAlignment = Alignment.Center,
-                                    ) {
-                                        Column(
-                                            horizontalAlignment = Alignment.CenterHorizontally,
-                                            verticalArrangement = Arrangement.spacedBy(4.dp),
-                                        ) {
-                                            Text(
-                                                text     = "${(peerVolume * 100).toInt()}%",
-                                                color    = Color(0xFFB5BAC1),
-                                                fontSize = 9.sp,
-                                            )
-                                            Slider(
-                                                value         = peerVolume,
-                                                onValueChange = onVolumeChange,
-                                                valueRange    = 0f..2f,
-                                                modifier      = Modifier
-                                                    .height(120.dp)
-                                                    .graphicsLayer { rotationZ = -90f },
-                                                colors = SliderDefaults.colors(
-                                                    thumbColor         = Color(0xFF5865F2),
-                                                    activeTrackColor   = Color(0xFF5865F2),
-                                                    inactiveTrackColor = Color(0xFF4E5058),
-                                                ),
-                                            )
-                                        }
-                                    }
-                                }
-                            }
+                            Slider(
+                                value         = peerVolume,
+                                onValueChange = onVolumeChange,
+                                valueRange    = 0f..2f,
+                                modifier      = Modifier.width(140.dp).height(32.dp),
+                                colors = SliderDefaults.colors(
+                                    thumbColor         = Color(0xFF5865F2),
+                                    activeTrackColor   = Color(0xFF5865F2),
+                                    inactiveTrackColor = Color(0xFF4E5058),
+                                ),
+                            )
+                            Text("${(peerVolume * 100).toInt()}%", color = Color(0xFFB5BAC1), fontSize = 11.sp)
                         }
                     }
                     Spacer(Modifier.weight(1f))
