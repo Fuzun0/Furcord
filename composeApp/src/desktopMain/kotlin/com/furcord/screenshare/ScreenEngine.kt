@@ -66,6 +66,8 @@ object ScreenEngine {
     val broadcastingUidHash: StateFlow<Int> = _broadcastingUidHash
 
     @Volatile var isActive    = false; private set
+    /** Kaynak değişirken kısa süre true; arayüzün yayını bitmiş sanmasını önler. */
+    @Volatile var switching   = false; private set
     @Volatile var isReceiving = false; private set
 
     // ── Dahili ───────────────────────────────────────────────────────────────
@@ -181,6 +183,29 @@ object ScreenEngine {
         captureThread = Thread({ runCapture(source) }, "furcord-screen-capture").apply {
             isDaemon = true; start()
         }
+    }
+
+    /**
+     * Yayın açıkken kaynağı (ekran/pencere) değiştirir; yayın kapanmaz, izleyiciler ve sohbet korunur.
+     * Yayın aktif değilse normal [start] gibi çalışır.
+     */
+    fun switchSource(source: ShareSource?, q: StreamQuality) {
+        if (!isActive) { start(source, q); return }
+        switching = true
+        try {
+            isActive = false
+            val t = captureThread; captureThread = null
+            if (t != null && t !== Thread.currentThread()) runCatching { t.join(2_000) }
+            _quality.value = q
+            _sourceTitle.value = source?.title ?: "Ana ekran"
+            _localFrame.value = null
+            isActive = true
+            StreamAudio.stopCapture()
+            if (StreamAudioPrefs.shareSystemAudio.value) StreamAudio.startCapture(source) { activeViewers() }
+            captureThread = Thread({ runCapture(source) }, "furcord-screen-capture").apply {
+                isDaemon = true; start()
+            }
+        } finally { switching = false }
     }
 
     /** Yayını durdurur ve kaynakları serbest bırakır. */

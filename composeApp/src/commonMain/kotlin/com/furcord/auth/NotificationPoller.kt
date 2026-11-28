@@ -34,8 +34,9 @@ object NotificationPoller {
         job = scope.launch {
             var cursor = 0L
             var lastFull = 0L
-            // Odakta 5 sn → boştayken 30 sn'ye kadar; odak dışında en az 45 sn (tamamen durmaz)
-            val backoff = PollBackoff(baseMs = 5_000, maxMs = 30_000, unfocusedMs = 45_000)
+            // Odakta 5 sn → sonuç öncekinden FARKLI değilse 60 sn'ye kadar; odak dışında en az 45 sn (tamamen durmaz)
+            val backoff = PollBackoff(baseMs = 5_000, maxMs = 60_000, unfocusedMs = 45_000)
+            var prevDmIds = emptySet<String>()
             while (isActive) {
                 val now = System.currentTimeMillis()
                 val full = cursor <= 0L || now - lastFull > 10 * 60_000L
@@ -52,17 +53,21 @@ object NotificationPoller {
                         _joinRequests.value   = batch.joinRequests
                         lastFull = now
                     } else {
-                        val fr = (batch.friendRequests + _friendRequests.value).distinctBy { it.fromUid }
-                        val si = (batch.serverInvites + _serverInvites.value).distinctBy { it.serverId }
-                        val jr = (batch.joinRequests + _joinRequests.value).distinctBy { "${it.serverId}_${it.fromUid}" }
+                        // Önce sırala, sonra karşılaştır: sıra farkı "yeni veri" sayılmasın
+                        val fr = (batch.friendRequests + _friendRequests.value).distinctBy { it.fromUid }.sortedByDescending { it.timestamp }
+                        val si = (batch.serverInvites + _serverInvites.value).distinctBy { it.serverId }.sortedByDescending { it.timestamp }
+                        val jr = (batch.joinRequests + _joinRequests.value).distinctBy { "${it.serverId}_${it.fromUid}" }.sortedByDescending { it.timestamp }
                         changed = fr != _friendRequests.value || si != _serverInvites.value || jr != _joinRequests.value
-                        _friendRequests.value = fr.sortedByDescending { it.timestamp }
-                        _serverInvites.value  = si.sortedByDescending { it.timestamp }
-                        _joinRequests.value   = jr.sortedByDescending { it.timestamp }
+                        _friendRequests.value = fr
+                        _serverInvites.value  = si
+                        _joinRequests.value   = jr
                     }
                     cursor = maxOf(cursor, batch.maxTimestamp, 1L)
+                    // Zaman damgası imleci örtüşmesi aynı DM'leri tekrar getirir: kimlikler öncekinden farklıysa yeni say
+                    val dmIds = batch.dms.map { it.docId }.toSet()
+                    if (dmIds != prevDmIds) changed = true
+                    prevDmIds = dmIds
                     if (batch.dms.isNotEmpty()) {
-                        changed = true
                         runCatching { dmHandler?.invoke(batch.dms) }
                     }
                 }

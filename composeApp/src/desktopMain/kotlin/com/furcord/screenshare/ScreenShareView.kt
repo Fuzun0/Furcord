@@ -131,14 +131,13 @@ fun StreamViewer(
                     // ── Ses kontrolü (sadece izleyici): hoparlör simgesi (sessize al) + yatay kaydırıcı ──
                     // Eskiden açılır pencere (Popup) kullanılıyordu; imleç pencereye geçince çubuk
                     // gizlenip kaydırıcıyı da kapatıyordu. Artık kaydırıcı çubuğun içinde, hep görünür.
-                    if (!isSelfView) {
+                    run { // yayıncı önizlemesinde de görünür
                         var lastNonZero by remember { mutableStateOf(1f) }
                         if (peerVolume > 0f) lastNonZero = peerVolume
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(6.dp),
-                        ) {
-                            IconButton(
+                        ) {                            IconButton(
                                 onClick  = { onVolumeChange(if (peerVolume == 0f) lastNonZero else 0f) },
                                 modifier = Modifier.size(32.dp),
                             ) {

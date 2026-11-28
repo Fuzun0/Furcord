@@ -222,8 +222,8 @@ actual fun PiPStreamWindow(
                         horizontalArrangement = Arrangement.spacedBy(2.dp),
                         verticalAlignment     = Alignment.CenterVertically,
                     ) {
-                        // Ses (yalnızca izleyici): yayıncının sesini kıs/arttır
-                        if (!isSelfView) {
+                        // Ses: yayıncının sesini kıs/arttır (yayıncı önizlemesinde de görünür)
+                        run {
                             var lastNonZero by remember { mutableStateOf(1f) }
                             if (peerVolume > 0f) lastNonZero = peerVolume
                             IconButton(

@@ -995,6 +995,7 @@ fun ServerDetailScreen(
     // Ekran paylaşımı
     var isScreenSharing      by remember { mutableStateOf(false) }
     var showSharePicker      by remember { mutableStateOf(false) }
+    var showShareMenu        by remember { mutableStateOf(false) }
     var showPiP              by remember { mutableStateOf(false) }
     var isAttemptingReceive  by remember { mutableStateOf(false) }
     val broadcastingUidHash  by ScreenShareManager.broadcastingUidHash.collectAsState()
@@ -1091,6 +1092,11 @@ fun ServerDetailScreen(
             onDismiss = { showSharePicker = false },
             onStart   = { src, q ->
                 showSharePicker = false
+                if (isScreenSharing) {
+                    // Yayın açık: yalnızca kaynağı değiştir (yayın, izleyiciler ve sohbet korunur)
+                    ScreenShareManager.switchSource(src, q)
+                    return@ScreenSharePickerDialog
+                }
                 showTextChannel = false  // ses kanalı görünümüne geç
                 // Önceki yayından kalan sohbeti temizle, yeni yayının sohbeti boş başlasın
                 streamMsgs = emptyList()
@@ -1193,8 +1199,10 @@ fun ServerDetailScreen(
     LaunchedEffect(serverId, "channels") {
         var prevUsers = mapOf<String, List<ActiveUser>>()
         var firstPoll = true
-        // Boştayken 5 sn → 30 sn (odak dışında 30 sn). Ses kanalındayken odak ayrımı yok, en çok 10 sn.
-        val idleBo  = PollBackoff(baseMs = 5_000, maxMs = 30_000, unfocusedMs = 30_000)
+        // Boştayken 5 sn → 60 sn (odak dışında en az 30 sn). Ses kanalındayken odak ayrımı yok, en çok 10 sn.
+        // "Yeni veri" = bir önceki ham sonuçtan FARKLI olması.
+        var prevSnapshot: Pair<List<VoiceChannel>, Map<String, List<ActiveUser>>>? = null
+        val idleBo  = PollBackoff(baseMs = 5_000, maxMs = 60_000, unfocusedMs = 30_000)
         val voiceBo = PollBackoff(baseMs = 5_000, maxMs = 10_000)
         fun nextDelay(changed: Boolean): Long =
             if (connectedChannelId != null) voiceBo.next(changed, ignoreFocus = true) else idleBo.next(changed)
@@ -1209,7 +1217,8 @@ fun ServerDetailScreen(
                     continue
                 }
                 val fetched = snapshot.first
-                changedCh = fetched != channels || snapshot.second != channelUsers
+                changedCh = snapshot != prevSnapshot
+                prevSnapshot = snapshot
                 channels = fetched
                 VoiceStateCache.channels[serverId] = fetched
                 val newUsers = mutableMapOf<String, List<ActiveUser>>()
@@ -1367,13 +1376,18 @@ fun ServerDetailScreen(
 
     // ── Presence poll — 5s'de bir oku ────────────────────────────────────────
     LaunchedEffect(serverId, "presence") {
-        // Sunucu tarafında süzülen sorgu; değişiklik yoksa 15 sn → 60 sn, odak dışında 60 sn
+        // Sunucu tarafında süzülen sorgu; sonuç öncekinden FARKLI değilse 15 sn → 60 sn, odak dışında 60 sn.
+        // Karşılaştırmada kendi kullanıcım hariç tutulur (kendi kalp atışım "yeni veri" sayılmaz).
         val backoff = PollBackoff(baseMs = 15_000, maxMs = 60_000, unfocusedMs = 60_000)
+        var prevOthers: List<ActiveUser>? = null
         while (true) {
             var changed = false
             runCatching {
                 val fetched = FirestoreClient.listPresence(serverId, currentUser.idToken)
-                if (fetched != presenceUsers) { presenceUsers = fetched; changed = true }
+                val others = fetched.filter { it.uid != currentUser.uid }
+                changed = others != prevOthers
+                prevOthers = others
+                if (fetched != presenceUsers) presenceUsers = fetched
             }
             delay(backoff.next(changed))
         }
@@ -1505,12 +1519,18 @@ fun ServerDetailScreen(
 
     // ── Üye listesi — 20 sn'de bir ──────────────────────────────────────────
     LaunchedEffect(serverId, "members") {
+        // Sonuç öncekinden FARKLI değilse aralık 20 sn → 60 sn'ye uzar; odak dışında 60 sn
+        val backoff = PollBackoff(baseMs = 20_000, maxMs = 600_000, unfocusedMs = 60_000)
+        var prev: List<ActiveUser>? = null
         while (true) {
+            var changed = false
             runCatching {
                 val fetched = FirestoreClient.listMembers(serverId, currentUser.idToken)
+                changed = fetched != prev
+                prev = fetched
                 if (fetched.isNotEmpty() && fetched != members) members = fetched
             }
-            delay(10 * 60_000L)   // üyeler: girişte bir kez, sonra 10 dakikada bir
+            delay(backoff.next(changed))
         }
     }
 
@@ -1546,11 +1566,18 @@ fun ServerDetailScreen(
 
     // ── Kicked polling — 5s'de bir kontrol et ────────────────────────────────
     LaunchedEffect(serverId, currentUser.uid) {
+        // Sonuç öncekinden FARKLI değilse 20 sn → 60 sn'ye uzar; odak dışında 60 sn
+        val backoff = PollBackoff(baseMs = 20_000, maxMs = 60_000, unfocusedMs = 60_000)
+        var prevKicked: Boolean? = null
+        var changed = true   // ilk bekleme baz aralık (20 sn) olsun
         while (true) {
-            delay(pollMs(20_000, 60_000))
+            delay(backoff.next(changed))
+            changed = false
             if (!isOwner) {
                 runCatching {
                     val kicked = FirestoreClient.isKicked(serverId, currentUser.uid, currentUser.idToken)
+                    changed = kicked != prevKicked
+                    prevKicked = kicked
                     if (kicked) {
                         // Kicked kaydını temizle, ses bırak, sunucudan çık
                         FirestoreClient.clearKickedFlag(serverId, currentUser.uid, currentUser.idToken)
@@ -2241,26 +2268,41 @@ fun ServerDetailScreen(
             }
             // Ekran paylaşımı — sadece ses kanalına bağlıyken; renkli zemin ile ayırt edilir
             if (connectedChannelId != null) {
-                IconButton(
-                    onClick = {
-                        if (isScreenSharing) {
-                            ScreenShareManager.stop()
-                            isScreenSharing = false
-                        } else {
-                            showSharePicker = true   // kaynak + kalite seç
-                        }
-                    },
-                    modifier = Modifier
-                        .size(30.dp)
-                        .clip(RoundedCornerShape(8.dp))
-                        .background(if (isScreenSharing) AppColors.Danger else AppColors.Accent),
-                ) {
-                    Icon(
-                        if (isScreenSharing) Icons.Outlined.StopScreenShare else Icons.Outlined.ScreenShare,
-                        if (isScreenSharing) "Paylaşımı Durdur" else "Ekranı Paylaş",
-                        tint = Color.White,
-                        modifier = Modifier.size(18.dp),
-                    )
+                Box {
+                    IconButton(
+                        onClick = {
+                            if (isScreenSharing) {
+                                showShareMenu = true     // Pencere değiştir / Yayını durdur
+                            } else {
+                                showSharePicker = true   // kaynak + kalite seç
+                            }
+                        },
+                        modifier = Modifier
+                            .size(30.dp)
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(if (isScreenSharing) AppColors.Danger else AppColors.Accent),
+                    ) {
+                        Icon(
+                            if (isScreenSharing) Icons.Outlined.StopScreenShare else Icons.Outlined.ScreenShare,
+                            if (isScreenSharing) "Yayın seçenekleri" else "Ekranı Paylaş",
+                            tint = Color.White,
+                            modifier = Modifier.size(18.dp),
+                        )
+                    }
+                    DropdownMenu(expanded = showShareMenu, onDismissRequest = { showShareMenu = false }) {
+                        DropdownMenuItem(
+                            text = { Text("Pencere değiştir") },
+                            onClick = { showShareMenu = false; showSharePicker = true },
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Yayını durdur", color = AppColors.Danger) },
+                            onClick = {
+                                showShareMenu = false
+                                ScreenShareManager.stop()
+                                isScreenSharing = false
+                            },
+                        )
+                    }
                 }
             }
             IconButton(onClick = { isMuted = !isMuted }, modifier = Modifier.size(30.dp)) {

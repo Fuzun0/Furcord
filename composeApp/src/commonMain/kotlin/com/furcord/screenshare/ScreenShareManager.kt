@@ -17,6 +17,8 @@ expect object ScreenShareManager {
     fun start()
     /** Start capturing the chosen [source] (screen or window) with [quality]. No-op if already active. */
     fun start(source: ShareSource, quality: StreamQuality)
+    /** Switch the shared [source] while broadcasting, without ending the stream. */
+    fun switchSource(source: ShareSource, quality: StreamQuality)
     /** Stop broadcasting and release capture resources. */
     fun stop()
     /** Whether a broadcast is currently in progress. */
